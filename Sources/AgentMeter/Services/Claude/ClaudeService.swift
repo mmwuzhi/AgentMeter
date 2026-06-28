@@ -12,8 +12,16 @@ struct ClaudeService: Sendable {
 
     private func fetchQuota() async -> QuotaSnapshot {
         // 1. OAuth (preferred): file token first, then Keychain.
-        if let token = ClaudeCredentials.load() {
-            if let snap = try? await ClaudeOAuthFetcher.fetch(token: token) { return snap }
+        if let token = await ClaudeCredentials.load() {
+            do {
+                return try await ClaudeOAuthFetcher.fetch(token: token)
+            } catch {
+                // Token rejected (vs. a network blip)? Drop the cache so the next
+                // refresh re-reads a freshly rotated token instead of the stale one.
+                if (error as? URLError)?.code == .userAuthenticationRequired {
+                    await ClaudeCredentials.invalidate()
+                }
+            }
         }
         // 2. CLI scrape fallback.
         if ClaudeCLIScraper.isAvailable {

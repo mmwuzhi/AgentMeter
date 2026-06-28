@@ -8,6 +8,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private let model: AppViewModel
     private let coordinator: RefreshCoordinator
+    private var lastRenderedKey: String?
 
     init(model: AppViewModel, coordinator: RefreshCoordinator) {
         self.model = model
@@ -51,10 +52,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func observeModel() {
         withObservationTracking {
             _ = model.headlineWindows
-            _ = model.isRefreshing
         } onChange: { [weak self] in
             Task { @MainActor in
-                self?.updateTitle()
                 self?.observeModel()
             }
         }
@@ -64,8 +63,20 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private func updateTitle() {
         guard let button = statusItem.button else { return }
         let showPercent = UserDefaults.standard.object(forKey: "showPercentInMenuBar") as? Bool ?? true
+        let provider = UserDefaults.standard.string(forKey: "menuBarProvider") ?? "codex"
         let windows = showPercent ? Array(model.headlineWindows.prefix(2)) : []
+        let key = Self.renderKey(showPercent: showPercent, provider: provider, windows: windows)
+        guard key != lastRenderedKey else { return }
+        lastRenderedKey = key
         button.image = Self.renderImage(windows: windows)
+    }
+
+    private static func renderKey(showPercent: Bool, provider: String, windows: [QuotaWindow]) -> String {
+        guard showPercent else { return "icon-only" }
+        let windowKey = windows.map {
+            "\($0.id):\($0.shortLabel):\(Int($0.remainingPercent.rounded()))"
+        }.joined(separator: "|")
+        return "\(provider)|\(windowKey)"
     }
 
     /// Render the menu-bar content (gauge glyph + up to two quota lines, labels

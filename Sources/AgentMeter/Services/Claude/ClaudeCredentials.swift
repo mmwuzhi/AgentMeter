@@ -17,7 +17,42 @@ enum ClaudeCredentials {
 
     static let keychainService = "Claude Code-credentials"
 
-    static func load() -> Token? {
+    /// In-process token cache. On macOS the token usually lives only in the
+    /// Keychain (no `~/.claude/.credentials.json`), so an uncached read hits the
+    /// Keychain. Whenever Claude Code rotates its OAuth token it rewrites the
+    /// Keychain item, which invalidates any prior one-time "Allow" grant and
+    /// makes the next read re-prompt. Reusing a loaded token until it nears
+    /// expiry keeps us off the Keychain between rotations (was: one read per
+    /// 60s refresh, ~1440/day).
+    private actor Cache {
+        private var token: Token?
+        /// Returns the cached token only while it is still comfortably valid.
+        func valid() -> Token? {
+            guard let token, !token.isExpired else { return nil }
+            return token
+        }
+        func store(_ token: Token?) { self.token = token }
+        func clear() { token = nil }
+    }
+    private static let cache = Cache()
+
+    /// Returns a still-valid cached token, otherwise reads from disk/Keychain
+    /// and caches the result.
+    static func load() async -> Token? {
+        if let cached = await cache.valid() { return cached }
+        let fresh = loadUncached()
+        await cache.store(fresh)
+        return fresh
+    }
+
+    /// Drops the cached token so the next `load()` re-reads from disk/Keychain.
+    /// Call this when the token is rejected (auth failure) to recover before its
+    /// nominal expiry.
+    static func invalidate() async {
+        await cache.clear()
+    }
+
+    private static func loadUncached() -> Token? {
         if let t = loadFromFile() { return t }
         return loadFromKeychain()
     }
