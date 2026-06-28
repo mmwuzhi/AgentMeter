@@ -1,6 +1,8 @@
 # AgentMeter
 
-A native macOS menu bar app that shows **Codex** and **Claude Code** usage at a glance —
+[English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md)
+
+A native macOS menu bar app that shows **Codex** and **Claude Code** usage at a glance:
 remaining quota (battery bar), a usage heatmap, and estimated spend. Local-first: it
 reuses your existing CLI logins, so there are **no API keys to configure**.
 
@@ -10,25 +12,25 @@ this workspace actually uses.
 
 ## Features
 
-- **Quota battery bar** — remaining % per window with reset countdowns.
-- **Usage heatmap** — 30-week GitHub-style grid per provider.
-- **Spend** — 7-day and all-time cost, computed from local logs × live pricing.
-- **Auto-update** — Sparkle (once you host an appcast; see below).
+- **Quota battery bar**: remaining % per window with reset countdowns.
+- **Usage heatmap**: 30-week GitHub-style grid per provider.
+- **Spend**: 7-day and all-time cost, computed from local logs × live pricing.
+- **Auto-update**: Sparkle, once you host an appcast. See below.
 - Menu-bar only (no Dock icon), refresh every minute + manual refresh.
 
 ## How it gets data (all local-first)
 
 | | Quota (live) | Usage + spend |
 |---|---|---|
-| **Codex** | `codex app-server` JSON-RPC → falls back to newest `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits`) | sum `last_token_usage` per day from rollout logs |
-| **Claude** | OAuth: token from `~/.claude/.credentials.json` → macOS Keychain `Claude Code-credentials`, then `GET api.anthropic.com/api/oauth/usage` → falls back to scraping `claude /usage`, then usage-only | `~/.claude/projects/**/*.jsonl`, dedup by `message.id`, sum `message.usage.*` |
+| **Codex** | `codex app-server` JSON-RPC, then falls back to newest `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits`) | sum `last_token_usage` per day from rollout logs |
+| **Claude** | OAuth: token from `~/.claude/.credentials.json` to macOS Keychain `Claude Code-credentials`, then `GET api.anthropic.com/api/oauth/usage`, then falls back to scraping `claude /usage`, then usage-only | `~/.claude/projects/**/*.jsonl`, dedup by `message.id`, sum `message.usage.*` |
 
 Pricing comes from [LiteLLM](https://github.com/BerriAI/litellm) (fallback models.dev),
 cached to `~/Library/Application Support/AgentMeter/pricing.json`, with an embedded
 offline snapshot in `Resources/embedded-pricing.json`.
 
 > **Claude quota needs the network.** Unlike Codex, Claude does not store its 5-hour /
-> weekly reset windows on disk — the only source is the OAuth usage endpoint (or scraping
+> weekly reset windows on disk. The only source is the OAuth usage endpoint, or scraping
 > the CLI). The first OAuth read may show a one-time macOS Keychain prompt ("AgentMeter wants
 > to use the keychain"); click **Always Allow**. If you decline or are offline, Claude
 > degrades to usage/spend only and Codex is unaffected.
@@ -88,7 +90,7 @@ Auto-update is wired in code but inert until you configure a feed:
    `SUPublicEDKey`.
 3. Set `SUFeedURL` in `Scripts/Info.plist` to where you'll host `appcast.xml`
    (e.g. a GitHub Releases raw URL).
-4. `make dmg && make appcast` (needs `generate_appcast` on PATH) → produces
+4. `make dmg && make appcast` (needs `generate_appcast` on PATH) produces
    `dist/appcast.xml`. Upload the DMG + `appcast.xml` to your feed host.
 
 Until configured, **Check for Updates** shows a short explainer instead of crashing.
