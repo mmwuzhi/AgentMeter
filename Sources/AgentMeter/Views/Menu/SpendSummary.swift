@@ -30,7 +30,7 @@ private enum SpendWindows {
     }
 }
 
-/// Collapsed headline: token usage for today / 7-day / 30-day, as evenly-spread
+/// Collapsed headline: token usage for local day / 7-day / 30-day, as evenly-spread
 /// right-aligned columns whose right edge lines up with the quota bars above.
 /// The full $/token breakdown (incl. all-time) lives in SpendBreakdownGrid.
 struct SpendSummary: View {
@@ -38,10 +38,11 @@ struct SpendSummary: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            cell("today", TokenFormat.short(SpendWindows.today(usage).tokens))
+            cell("local day", TokenFormat.short(SpendWindows.today(usage).tokens))
             cell("7-day", TokenFormat.short(SpendWindows.lastDays(7, usage).tokens))
             cell("30-day", TokenFormat.short(SpendWindows.lastDays(30, usage).tokens))
         }
+        .help("Usage is read from local Codex logs and resets at local midnight.")
     }
 
     private func cell(_ label: String, _ value: String) -> some View {
@@ -57,7 +58,7 @@ struct SpendSummary: View {
     }
 }
 
-/// Expanded breakdown: $/token across today / 7-day / 30-day / all-time. Equal-width
+/// Expanded breakdown: $/token across local day / 7-day / 30-day / all-time. Equal-width
 /// right-aligned columns spanning the full width, so numbers share one right edge.
 struct SpendBreakdownGrid: View {
     let usage: UsageReport
@@ -67,7 +68,7 @@ struct SpendBreakdownGrid: View {
 
     var body: some View {
         let cols: [(label: String, totals: WindowTotals)] = [
-            ("today", SpendWindows.today(usage)),
+            ("local day", SpendWindows.today(usage)),
             ("7-day", SpendWindows.lastDays(7, usage)),
             ("30-day", SpendWindows.lastDays(30, usage)),
             ("all-time", SpendWindows.allTime(usage)),
