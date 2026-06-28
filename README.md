@@ -48,6 +48,20 @@ make clean
 The app is ad-hoc signed and runs locally. To move it to another Mac, clear quarantine:
 `xattr -dr com.apple.quarantine /Applications/AgentMeter.app`.
 
+## Install
+
+Download the latest `AgentMeter-<version>.dmg` from
+[GitHub Releases](https://github.com/mmwuzhi/AgentMeter/releases/latest), open
+the DMG, and drag `AgentMeter.app` into `/Applications`.
+
+Because the current release is ad-hoc signed and not notarized, macOS may block
+the first launch. If that happens, right-click `AgentMeter.app`, choose
+**Open**, and confirm. If macOS still keeps quarantine attached, run:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/AgentMeter.app
+```
+
 ## GitHub Releases
 
 GitHub Actions can build and publish a DMG automatically. Push a version tag:
