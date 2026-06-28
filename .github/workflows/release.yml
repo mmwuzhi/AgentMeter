@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, with or without a leading v (for example: 1.2.3)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub Release as a prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build DMG and publish release
+    runs-on: macos-15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Show toolchain
+        run: |
+          xcode-select -p
+          xcodebuild -version
+          swift --version
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+          else
+            version="${{ inputs.version }}"
+            version="${version#v}"
+            tag="v${version}"
+          fi
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Version must be X.Y.Z or vX.Y.Z, got: $version" >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build DMG
+        run: |
+          MARKETING_VERSION="${{ steps.version.outputs.version }}" \
+          BUILD_VERSION="${{ github.run_number }}" \
+          make dmg
+
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          app="dist/AgentMeter.app"
+          dmg="dist/AgentMeter-${{ steps.version.outputs.version }}.dmg"
+
+          test -x "$app/Contents/MacOS/AgentMeter"
+          test -d "$app/Contents/Frameworks/Sparkle.framework"
+          test -d "$app/Contents/Resources/AgentMeter_AgentMeter.bundle"
+          test -f "$dmg"
+
+          short_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+          build_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
+          if [[ "$short_version" != "${{ steps.version.outputs.version }}" ]]; then
+            echo "Unexpected CFBundleShortVersionString: $short_version" >&2
+            exit 1
+          fi
+          if [[ "$build_version" != "${{ github.run_number }}" ]]; then
+            echo "Unexpected CFBundleVersion: $build_version" >&2
+            exit 1
+          fi
+
+          codesign --verify --deep --strict "$app"
+          hdiutil imageinfo "$dmg" >/dev/null
+          shasum -a 256 "$dmg" | tee dist/SHA256SUMS
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentMeter-${{ steps.version.outputs.version }}
+          path: |
+            dist/AgentMeter-${{ steps.version.outputs.version }}.dmg
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dmg="dist/AgentMeter-${VERSION}.dmg"
+          {
+            echo "Automated AgentMeter build for ${TAG}."
+            echo
+            echo "SHA-256:"
+            sed 's/^/- /' dist/SHA256SUMS
+          } > release-notes.md
+
+          flags=(--title "AgentMeter ${VERSION}" --notes-file release-notes.md)
+          if [[ "$PRERELEASE" == "true" ]]; then
+            flags+=(--prerelease)
+          else
+            flags+=(--latest)
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$dmg" dist/SHA256SUMS --clobber
+            gh release edit "$TAG" "${flags[@]}"
+          else
+            gh release create "$TAG" "$dmg" dist/SHA256SUMS \
+              --target "$GITHUB_SHA" \
+              "${flags[@]}"
+          fi

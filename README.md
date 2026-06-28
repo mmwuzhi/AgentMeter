@@ -48,6 +48,23 @@ make clean
 The app is ad-hoc signed and runs locally. To move it to another Mac, clear quarantine:
 `xattr -dr com.apple.quarantine /Applications/AgentMeter.app`.
 
+## GitHub Releases
+
+GitHub Actions can build and publish a DMG automatically. Push a version tag:
+
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+Or run the **Release** workflow manually from GitHub Actions and enter `1.2.3`.
+The workflow builds with `MARKETING_VERSION` set to the tag/input version,
+verifies the app bundle and DMG, uploads the DMG as a workflow artifact, and
+creates or updates a GitHub Release with the DMG plus `SHA256SUMS`.
+
+The release artifact is ad-hoc signed. Sparkle appcast generation is still a
+separate step because it requires your private Sparkle signing key.
+
 ## Enabling auto-update (Sparkle)
 
 Auto-update is wired in code but inert until you configure a feed:

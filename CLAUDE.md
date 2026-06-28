@@ -15,6 +15,12 @@ make appcast  # regenerate dist/appcast.xml for the latest DMG
 make clean    # rm -rf .build dist
 ```
 
+GitHub Actions release automation lives in `.github/workflows/release.yml`.
+Pushing a `vX.Y.Z` tag or manually running the **Release** workflow builds the
+DMG, verifies bundle contents/version/signature, uploads workflow artifacts, and
+creates or updates the GitHub Release. Sparkle appcast generation remains manual
+because it needs the private Sparkle signing key.
+
 There is no test suite and no linter configured. Verifying a change means running the app and looking at it.
 
 - **Flaky build error** "input file ... was modified during the build": a running AgentMeter instance touches files SwiftPM is reading. Just re-run `make run` — it succeeds on the second try. `make run` does not kill the old instance, so relaunching leaves the previous process; `pkill -f "AgentMeter.app"` before rebuilding when iterating.
@@ -71,6 +77,12 @@ make dmg      # package dist/AgentMeter-<version>.dmg
 make appcast  # regenerate dist/appcast.xml for the latest DMG
 make clean    # rm -rf .build dist
 ```
+
+GitHub Actions release automation lives in `.github/workflows/release.yml`.
+Pushing a `vX.Y.Z` tag or manually running the **Release** workflow builds the
+DMG, verifies bundle contents/version/signature, uploads workflow artifacts, and
+creates or updates the GitHub Release. Sparkle appcast generation remains manual
+because it needs the private Sparkle signing key.
 
 There is no test suite and no linter configured. Verifying a change means running the app and looking at it.
 
