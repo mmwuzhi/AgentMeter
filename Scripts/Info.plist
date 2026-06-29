@@ -10,6 +10,8 @@
     <string>com.shu.agentmeter</string>
     <key>CFBundleExecutable</key>
     <string>AgentMeter</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

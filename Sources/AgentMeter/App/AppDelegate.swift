@@ -10,6 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Menubar-only app: no Dock icon.
         NSApp.setActivationPolicy(.accessory)
 
+        // Repair launch-at-login if an update (ad-hoc signature change) silently dropped it.
+        LoginItem.reconcile()
+
         // Start Sparkle's background update checks (relocated to Settings → manual check).
         _ = UpdaterController.shared
         coordinator = RefreshCoordinator(viewModel: model)

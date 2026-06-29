@@ -72,7 +72,11 @@ actor PricingService {
     // MARK: - Loading
 
     private func loadEmbedded() {
-        guard let url = Bundle.module.url(forResource: "embedded-pricing", withExtension: "json"),
+        // In the packaged .app the JSON sits in Contents/Resources (Bundle.main), the only
+        // location codesign accepts. Under `swift run`/debug it lives in the SPM resource
+        // bundle next to the binary (Bundle.module). Try both.
+        guard let url = Bundle.main.url(forResource: "embedded-pricing", withExtension: "json")
+                ?? Bundle.module.url(forResource: "embedded-pricing", withExtension: "json"),
               let data = try? Data(contentsOf: url) else { return }
         merge(parseNormalized(data))
     }

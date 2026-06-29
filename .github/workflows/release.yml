@@ -59,6 +59,9 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - name: Install dmgbuild
+        run: pip3 install dmgbuild
+
       - name: Build DMG
         run: |
           MARKETING_VERSION="${{ steps.version.outputs.version }}" \
@@ -76,6 +79,8 @@ jobs:
           test -x "$app/Contents/MacOS/AgentMeter"
           test -d "$app/Contents/Frameworks/Sparkle.framework"
           test -d "$app/Contents/Resources/AgentMeter_AgentMeter.bundle"
+          test -f "$app/Contents/Resources/embedded-pricing.json"
+          test -f "$app/Contents/Resources/AppIcon.icns"
           test -f "$dmg"
 
           short_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"

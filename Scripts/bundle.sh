@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 CONFIG="${CONFIG:-release}"
-MARKETING_VERSION="${MARKETING_VERSION:-1.0.0}"
+MARKETING_VERSION="${MARKETING_VERSION:-1.0.1}"
 BUILD_VERSION="${BUILD_VERSION:-$(date +%Y%m%d%H%M)}"
 APP="$ROOT/dist/AgentMeter.app"
 
@@ -22,8 +22,15 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 # Executable
 cp "$BIN_DIR/AgentMeter" "$APP/Contents/MacOS/AgentMeter"
 
-# SPM resource bundle (embedded-pricing.json) -> Contents/Resources (Bundle.main.resourceURL)
+# Resources go in Contents/Resources (the only place codesign accepts). The SPM
+# resource bundle's generated Bundle.module accessor looks at the .app root, which
+# is illegal for signing, so we ALSO drop embedded-pricing.json loose here and load
+# it via Bundle.main first (see PricingService.loadEmbedded).
 cp -R "$BIN_DIR/AgentMeter_AgentMeter.bundle" "$APP/Contents/Resources/"
+cp "$ROOT/Sources/AgentMeter/Resources/embedded-pricing.json" "$APP/Contents/Resources/"
+
+# App icon (CFBundleIconFile = AppIcon -> Contents/Resources/AppIcon.icns)
+cp "$ROOT/Scripts/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 # Sparkle framework
 cp -R "$BIN_DIR/Sparkle.framework" "$APP/Contents/Frameworks/"

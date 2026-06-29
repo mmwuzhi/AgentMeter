@@ -53,7 +53,7 @@ There is no test suite and no linter configured. Verifying a change means runnin
 
 ### Packaging
 
-SwiftPM produces only a bare executable; `Scripts/bundle.sh` assembles the `.app`: copies the binary, the SPM resource bundle (`AgentMeter_AgentMeter.bundle`, holding `embedded-pricing.json`), and `Sparkle.framework`; substitutes versions into `Scripts/Info.plist`; adds an `@executable_path/../Frameworks` rpath; ad-hoc signs (framework first, then app). The app is ad-hoc signed and local-only — on another Mac clear quarantine with `xattr -dr com.apple.quarantine`.
+SwiftPM produces only a bare executable; `Scripts/bundle.sh` assembles the `.app`: copies the binary, the SPM resource bundle (`AgentMeter_AgentMeter.bundle`), a loose `embedded-pricing.json` for `Bundle.main`, `AppIcon.icns`, and `Sparkle.framework`; substitutes versions into `Scripts/Info.plist`; adds an `@executable_path/../Frameworks` rpath; ad-hoc signs (framework first, then app). `Scripts/dmg.sh` uses `dmgbuild` for the styled installer window and falls back to a plain `hdiutil` DMG when `dmgbuild` is unavailable. The app is ad-hoc signed and local-only — on another Mac clear quarantine with `xattr -dr com.apple.quarantine`.
 
 **Sparkle auto-update is wired but inert** until you set `SUPublicEDKey` + `SUFeedURL` in `Scripts/Info.plist` and host an appcast. Until configured, "Check for Updates" shows an explainer instead of crashing.
 
@@ -116,6 +116,6 @@ There is no test suite and no linter configured. Verifying a change means runnin
 
 ### Packaging
 
-SwiftPM produces only a bare executable; `Scripts/bundle.sh` assembles the `.app`: copies the binary, the SPM resource bundle (`AgentMeter_AgentMeter.bundle`, holding `embedded-pricing.json`), and `Sparkle.framework`; substitutes versions into `Scripts/Info.plist`; adds an `@executable_path/../Frameworks` rpath; ad-hoc signs (framework first, then app). The app is ad-hoc signed and local-only — on another Mac clear quarantine with `xattr -dr com.apple.quarantine`.
+SwiftPM produces only a bare executable; `Scripts/bundle.sh` assembles the `.app`: copies the binary, the SPM resource bundle (`AgentMeter_AgentMeter.bundle`), a loose `embedded-pricing.json` for `Bundle.main`, `AppIcon.icns`, and `Sparkle.framework`; substitutes versions into `Scripts/Info.plist`; adds an `@executable_path/../Frameworks` rpath; ad-hoc signs (framework first, then app). `Scripts/dmg.sh` uses `dmgbuild` for the styled installer window and falls back to a plain `hdiutil` DMG when `dmgbuild` is unavailable. The app is ad-hoc signed and local-only — on another Mac clear quarantine with `xattr -dr com.apple.quarantine`.
 
 **Sparkle auto-update is wired but inert** until you set `SUPublicEDKey` + `SUFeedURL` in `Scripts/Info.plist` and host an appcast. Until configured, "Check for Updates" shows an explainer instead of crashing.
