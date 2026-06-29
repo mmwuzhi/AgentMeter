@@ -22,7 +22,7 @@ if command -v dmgbuild >/dev/null 2>&1; then
         "AgentMeter" "$DMG"
 else
     echo "==> dmgbuild not found; building a plain DMG (no background)."
-    echo "    Install it with: pip3 install dmgbuild"
+    echo "    Install it with: pipx install dmgbuild"
     STAGE="$(mktemp -d)"
     ditto "$APP" "$STAGE/AgentMeter.app"
     ln -s /Applications "$STAGE/Applications"

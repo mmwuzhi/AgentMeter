@@ -60,7 +60,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install dmgbuild
-        run: pip3 install dmgbuild
+        run: pipx install dmgbuild
 
       - name: Build DMG
         run: |
