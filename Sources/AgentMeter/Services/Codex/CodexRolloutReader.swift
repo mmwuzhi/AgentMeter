@@ -108,6 +108,7 @@ enum CodexRolloutReader {
         }
 
         var buckets: [UsageBucket] = []
+        var modelTotals: [String: (tokens: Int, cost: Double)] = [:]
         var totalCost = 0.0
         var totalTokens = 0
         for (day, c) in byDay {
@@ -119,9 +120,17 @@ enum CodexRolloutReader {
             buckets.append(bucket)
             totalCost += cost
             totalTokens += bucket.totalTokens
+            var mt = modelTotals[model] ?? (0, 0)
+            mt.tokens += bucket.totalTokens
+            mt.cost += cost
+            modelTotals[model] = mt
         }
         buckets.sort { $0.day < $1.day }
-        return UsageReport(provider: .codex, buckets: buckets, totalCostUSD: totalCost, totalTokens: totalTokens)
+        let byModel = modelTotals
+            .map { ModelSpend(model: $0.key, tokens: $0.value.tokens, costUSD: $0.value.cost) }
+            .sorted { $0.costUSD > $1.costUSD }
+        return UsageReport(provider: .codex, buckets: buckets, totalCostUSD: totalCost,
+                           totalTokens: totalTokens, byModel: byModel)
     }
 
     static func parseISO(_ s: String) -> Date? {

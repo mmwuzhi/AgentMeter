@@ -14,7 +14,7 @@ enum Provider: String, Codable, Sendable, CaseIterable {
 }
 
 /// A single quota window (e.g. Codex 7-day, Claude 5-hour / weekly).
-struct QuotaWindow: Identifiable, Sendable, Equatable {
+struct QuotaWindow: Identifiable, Codable, Sendable, Equatable {
     let id: String          // stable key, e.g. "five_hour", "primary"
     let label: String       // human label, e.g. "5-hour", "Weekly"
     let usedPercent: Double  // 0...100
@@ -53,8 +53,8 @@ enum TokenFormat {
 }
 
 /// Live quota for one provider, plus how it was obtained.
-struct QuotaSnapshot: Sendable, Equatable {
-    enum SourceKind: String, Sendable {
+struct QuotaSnapshot: Codable, Sendable, Equatable {
+    enum SourceKind: String, Codable, Sendable {
         case appServer      // Codex JSON-RPC
         case rolloutFile    // Codex local log fallback
         case oauth          // Claude /api/oauth/usage
@@ -76,7 +76,7 @@ struct QuotaSnapshot: Sendable, Equatable {
 }
 
 /// One day's aggregated usage for the heatmap and spend.
-struct UsageBucket: Identifiable, Sendable, Equatable {
+struct UsageBucket: Identifiable, Codable, Sendable, Equatable {
     var id: Date { day }
     let day: Date               // start-of-day (local)
     var inputTokens: Int
@@ -89,12 +89,21 @@ struct UsageBucket: Identifiable, Sendable, Equatable {
     var totalTokens: Int { inputTokens + outputTokens + cacheWrite5m + cacheWrite1h + cacheRead }
 }
 
+/// All-time spend + tokens attributed to one model.
+struct ModelSpend: Identifiable, Codable, Sendable, Equatable {
+    var id: String { model }
+    let model: String
+    let tokens: Int
+    let costUSD: Double
+}
+
 /// Per-provider rollup of usage buckets + spend.
-struct UsageReport: Sendable, Equatable {
+struct UsageReport: Codable, Sendable, Equatable {
     let provider: Provider
     let buckets: [UsageBucket]          // sorted ascending by day
     let totalCostUSD: Double
     let totalTokens: Int
+    var byModel: [ModelSpend] = []      // all-time, sorted by cost descending
 
     static func empty(_ provider: Provider) -> UsageReport {
         UsageReport(provider: provider, buckets: [], totalCostUSD: 0, totalTokens: 0)
@@ -102,7 +111,7 @@ struct UsageReport: Sendable, Equatable {
 }
 
 /// Everything the UI renders for one provider.
-struct ProviderState: Sendable, Equatable {
+struct ProviderState: Codable, Sendable, Equatable {
     let provider: Provider
     var quota: QuotaSnapshot
     var usage: UsageReport

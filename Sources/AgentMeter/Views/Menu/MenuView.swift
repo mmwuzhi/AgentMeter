@@ -133,6 +133,7 @@ struct ProviderSection: View {
             if showHeatmap {
                 VStack(alignment: .leading, spacing: 10) {
                     SpendBreakdownGrid(usage: state.usage)
+                    ModelBreakdown(usage: state.usage)
                     UsageHeatmap(buckets: state.usage.buckets, tint: tint)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }

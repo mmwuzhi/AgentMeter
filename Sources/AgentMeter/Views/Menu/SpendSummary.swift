@@ -42,7 +42,7 @@ struct SpendSummary: View {
             cell("7-day", TokenFormat.short(SpendWindows.lastDays(7, usage).tokens))
             cell("30-day", TokenFormat.short(SpendWindows.lastDays(30, usage).tokens))
         }
-        .help("Usage is read from local Codex logs and resets at local midnight.")
+        .help("Usage is read from local logs and the day resets at local midnight.")
     }
 
     private func cell(_ label: String, _ value: String) -> some View {
@@ -102,5 +102,52 @@ struct SpendBreakdownGrid: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
+    }
+}
+
+/// All-time spend split by model (top few). Shown in the expanded activity area so
+/// you can see which model is actually driving cost.
+struct ModelBreakdown: View {
+    let usage: UsageReport
+    var limit: Int = 4
+
+    var body: some View {
+        let models = Array(usage.byModel.prefix(limit))
+        if !models.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("By model · all-time")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                ForEach(models) { m in
+                    HStack(spacing: 6) {
+                        Text(Self.pretty(m.model))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 6)
+                        Text(TokenFormat.short(m.tokens))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                        Text(String(format: "$%.2f", m.costUSD))
+                            .font(.caption.monospacedDigit().weight(.medium))
+                            .foregroundStyle(.primary)
+                            .frame(minWidth: 52, alignment: .trailing)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Trim vendor prefixes and a trailing -YYYYMMDD date so names stay readable.
+    static func pretty(_ model: String) -> String {
+        var s = model
+        for p in ["claude-", "anthropic/", "openai/"] where s.hasPrefix(p) {
+            s.removeFirst(p.count)
+        }
+        if let r = s.range(of: #"-\d{8}$"#, options: .regularExpression) {
+            s.removeSubrange(r)
+        }
+        return s.isEmpty ? model : s
     }
 }

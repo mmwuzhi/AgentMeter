@@ -107,8 +107,10 @@ enum ClaudeJSONLScanner {
             }
         }
 
-        // Roll up per-day (summing across models, cost computed per model).
+        // Roll up per-day (summing across models, cost computed per model) and
+        // per-model (all-time, for the spend breakdown).
         var bucketByDay: [Date: UsageBucket] = [:]
+        var modelTotals: [String: (tokens: Int, cost: Double)] = [:]
         var totalCost = 0.0
         for (_, entry) in byDayModel {
             let cost = await PricingService.shared.cost(model: entry.model, counts: entry.counts)
@@ -123,10 +125,21 @@ enum ClaudeJSONLScanner {
                             cacheRead: b.cacheRead + entry.counts.cacheRead,
                             costUSD: b.costUSD + cost)
             bucketByDay[entry.day] = b
+
+            let entryTokens = entry.counts.input + entry.counts.output
+                + entry.counts.cacheWrite5m + entry.counts.cacheWrite1h + entry.counts.cacheRead
+            var mt = modelTotals[entry.model] ?? (0, 0)
+            mt.tokens += entryTokens
+            mt.cost += cost
+            modelTotals[entry.model] = mt
         }
 
         let buckets = bucketByDay.values.sorted { $0.day < $1.day }
         let totalTokens = buckets.reduce(0) { $0 + $1.totalTokens }
-        return UsageReport(provider: .claude, buckets: buckets, totalCostUSD: totalCost, totalTokens: totalTokens)
+        let byModel = modelTotals
+            .map { ModelSpend(model: $0.key, tokens: $0.value.tokens, costUSD: $0.value.cost) }
+            .sorted { $0.costUSD > $1.costUSD }
+        return UsageReport(provider: .claude, buckets: buckets, totalCostUSD: totalCost,
+                           totalTokens: totalTokens, byModel: byModel)
     }
 }
