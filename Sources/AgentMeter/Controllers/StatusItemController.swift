@@ -8,7 +8,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private let model: AppViewModel
     private let coordinator: RefreshCoordinator
-    private var lastRenderedKey: String?
+    private let contentView = MenuBarContentView()
+    private var lastLength: CGFloat = -1
+
+    /// Two-stage low-quota cue shown as a corner dot (text stays adaptive).
+    private enum AlertLevel { case none, warn, critical }
 
     init(model: AppViewModel, coordinator: RefreshCoordinator) {
         self.model = model
@@ -20,7 +24,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         configurePopover()
         observeModel()
 
-        // Menu-bar title also depends on UserDefaults (which provider, show %).
+        // Menu-bar title also depends on UserDefaults (which items, captions).
         NotificationCenter.default.addObserver(
             self, selector: #selector(defaultsChanged),
             name: UserDefaults.didChangeNotification, object: nil)
@@ -32,9 +36,17 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func configureButton() {
         guard let button = statusItem.button else { return }
-        button.imagePosition = .imageOnly
         button.action = #selector(togglePopover)
         button.target = self
+        // Stats-style live rendering: host an NSView that draws the menu-bar content
+        // in its draw(_:), instead of rasterizing to a template image (which thins
+        // out small/light text). The empty image makes the button reserve a frame;
+        // the subview ignores hit-testing so clicks still reach the button's action.
+        button.image = NSImage()
+        button.imagePosition = .imageOnly
+        contentView.passesClicksThrough = true
+        contentView.autoresizingMask = [.width, .height]
+        button.addSubview(contentView)
     }
 
     private func configurePopover() {
@@ -51,7 +63,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// Refresh the menubar title text when the model changes.
     private func observeModel() {
         withObservationTracking {
-            _ = model.headlineWindows
+            // Touch everything the menu bar can show: both providers' quota and
+            // usage (spend), so spend-only and both-providers modes refresh too.
+            _ = model.codex
+            _ = model.claude
         } onChange: { [weak self] in
             Task { @MainActor in
                 self?.observeModel()
@@ -62,79 +77,65 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func updateTitle() {
         guard let button = statusItem.button else { return }
-        let showPercent = UserDefaults.standard.object(forKey: "showPercentInMenuBar") as? Bool ?? true
-        let provider = UserDefaults.standard.string(forKey: "menuBarProvider") ?? "codex"
-        let windows = showPercent ? Array(model.headlineWindows.prefix(2)) : []
-        let key = Self.renderKey(showPercent: showPercent, provider: provider, windows: windows)
-        guard key != lastRenderedKey else { return }
-        lastRenderedKey = key
-        button.image = Self.renderImage(windows: windows)
+        let (elements, level) = menuBarElements()
+        let showCaptions = UserDefaults.standard.object(forKey: "menuBarShowCaptions") as? Bool ?? true
+        let summary = accessibilitySummary()
+        button.toolTip = summary
+        button.setAccessibilityLabel(summary)
+
+        // Size the status item to the content, then let the view draw it live.
+        let width = MenuBarContentView.width(elements: elements, showCaptions: showCaptions)
+        if abs(width - lastLength) > 0.5 {
+            lastLength = width
+            statusItem.length = width
+        }
+        contentView.frame = button.bounds
+        contentView.apply(elements: elements, showCaptions: showCaptions, alertColor: alertColor(for: level))
     }
 
-    private static func renderKey(showPercent: Bool, provider: String, windows: [QuotaWindow]) -> String {
-        guard showPercent else { return "icon-only" }
-        let windowKey = windows.map {
-            "\($0.id):\($0.shortLabel):\(Int($0.remainingPercent.rounded()))"
-        }.joined(separator: "|")
-        return "\(provider)|\(windowKey)"
+    private func alertColor(for level: AlertLevel) -> NSColor? {
+        switch level {
+        case .none: return nil
+        case .warn: return .systemYellow
+        case .critical: return .systemRed
+        }
     }
 
-    /// Render the menu-bar content (gauge glyph + up to two quota lines, labels
-    /// left, percentages right-aligned) into a vertically-centered template image.
-    /// NSStatusBarButton top-aligns multi-line `attributedTitle` and won't size it,
-    /// so we draw it ourselves; a template image auto-contrasts on the menu bar.
-    private static func renderImage(windows: [QuotaWindow]) -> NSImage {
-        let height = NSStatusBar.system.thickness
-        let iconSize: CGFloat = 15
-        let gap: CGFloat = 4
+    /// Critical (red) threshold — also NotificationManager's notify level.
+    private static var criticalThreshold: Double {
+        let v = UserDefaults.standard.object(forKey: "alertThresholdPercent") as? Double ?? 10
+        return max(1, min(99, v))
+    }
 
-        let symbol = NSImage(systemSymbolName: "gauge.with.dots.needle.67percent",
-                             accessibilityDescription: "AgentMeter")?
-            .withSymbolConfiguration(.init(pointSize: iconSize, weight: .regular))
+    /// Warning (yellow) threshold. Defaults above critical; clamped so it's never lower.
+    private static var warnThreshold: Double {
+        let v = UserDefaults.standard.object(forKey: "warnThresholdPercent") as? Double ?? 25
+        return max(criticalThreshold, min(99, v))
+    }
 
-        func drawIcon() {
-            symbol?.draw(in: NSRect(x: 0, y: (height - iconSize) / 2, width: iconSize, height: iconSize))
+    private static func level(forRemaining remaining: Double) -> AlertLevel {
+        if remaining <= criticalThreshold { return .critical }
+        if remaining <= warnThreshold { return .warn }
+        return .none
+    }
+
+    /// Resolve the user-configured elements, plus the worst alert level across the
+    /// shown quota columns (drives the corner dot).
+    private func menuBarElements() -> (elements: [MenuBarElement], level: AlertLevel) {
+        let elements = MenuBarLayout.activeElements(model)
+        var minRemaining = Double.infinity
+        for case .segment(let s) in elements {
+            if let r = s.remaining { minRemaining = min(minRemaining, r) }
         }
+        let level = minRemaining.isFinite ? Self.level(forRemaining: minRemaining) : .none
+        return (elements, level)
+    }
 
-        guard !windows.isEmpty else {
-            let only = NSImage(size: NSSize(width: iconSize + 2, height: height))
-            only.lockFocus(); drawIcon(); only.unlockFocus()
-            only.isTemplate = true
-            return only
-        }
-
-        let font = NSFont.monospacedDigitSystemFont(ofSize: 9.5, weight: .semibold)
-        let measure: [NSAttributedString.Key: Any] = [.font: font]
-        let labelW = windows.map { ($0.shortLabel as NSString).size(withAttributes: measure).width }.max() ?? 0
-        let valueW = windows.map {
-            ("\(Int($0.remainingPercent.rounded()))%" as NSString).size(withAttributes: measure).width
-        }.max() ?? 0
-        let tabLocation = ceil(labelW + 8 + valueW)
-
-        let para = NSMutableParagraphStyle()
-        para.alignment = .left
-        para.lineSpacing = 0
-        para.tabStops = [NSTextTab(textAlignment: .right, location: tabLocation)]
-
-        let text = NSMutableAttributedString()
-        for (i, w) in windows.enumerated() {
-            if i > 0 { text.append(NSAttributedString(string: "\n")) }
-            text.append(NSAttributedString(
-                string: "\(w.shortLabel)\t\(Int(w.remainingPercent.rounded()))%",
-                attributes: [.font: font, .foregroundColor: NSColor.black, .paragraphStyle: para]))
-        }
-
-        let textSize = text.size()
-        let textW = max(tabLocation, ceil(textSize.width))
-        let width = iconSize + gap + textW + 2
-        let image = NSImage(size: NSSize(width: width, height: height))
-        image.lockFocus()
-        drawIcon()
-        text.draw(in: NSRect(x: iconSize + gap, y: (height - textSize.height) / 2,
-                             width: textW + 1, height: textSize.height))
-        image.unlockFocus()
-        image.isTemplate = true
-        return image
+    /// Spoken/hover summary for VoiceOver and the tooltip — the shown columns.
+    private func accessibilitySummary() -> String {
+        let rows = MenuBarLayout.activeSegments(model)
+        guard !rows.isEmpty else { return "AgentMeter — no items shown" }
+        return "AgentMeter — " + rows.map { "\($0.label) \($0.value)" }.joined(separator: ", ")
     }
 
     @objc private func togglePopover() {
