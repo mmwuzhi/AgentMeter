@@ -1,85 +1,41 @@
 import AppKit
 import SwiftUI
 
-// An Ice-style menu-bar layout editor: native AppKit drag-and-drop with animated
-// live reordering, instead of SwiftUI's `.draggable`/`.dropDestination` (which is
-// choppy for reordering). Modeled on Ice's LayoutBarContainer / LayoutBarItemView.
+// An Ice-style two-zone layout editor: native AppKit drag-and-drop with animated
+// live reordering (SwiftUI's `.draggable`/`.dropDestination` is choppy for reorder).
+// Modeled on Ice's LayoutBarContainer / LayoutBarItemView. Generic over what the
+// chips represent via `LayoutEditorBacking`, so it drives both the menu-bar item
+// arrangement and the popover provider-panel arrangement.
 
 extension NSPasteboard.PasteboardType {
     static let agentMeterChip = Self("co.softbrain.AgentMeter.layout-chip")
 }
 
-/// Shared brain for the two zones (Visible / Hidden): holds the canonical item list,
-/// resolves chips, and persists edits. Both zones reference one coordinator so a drag
-/// can move chips between them and a drop can commit the combined order.
+/// What a pair of zones (Visible / Hidden) is editing. The backing owns the canonical
+/// key lists, builds each chip's visual, and persists a drop. One backing is shared by
+/// its two zones so a drag can move chips between them.
 @MainActor
-final class LayoutEditorCoordinator: ObservableObject {
-    let model: AppViewModel
-    private(set) var names: [String: String] = [:]
-    private var visibleKeys: [String] = []
-    private var hiddenKeys: [String] = []
-
-    weak var visibleContainer: ChipContainerView?
-    weak var hiddenContainer: ChipContainerView?
-
-    /// True while a drag session is live, so SwiftUI `updateNSView` passes don't
-    /// rebuild the chips out from under the drag.
-    var isDragging = false
-
-    init(model: AppViewModel) {
-        self.model = model
-        load()
-    }
-
-    private func load() {
-        let merged = MenuBarLayout.merged(model)
-        names = Dictionary(merged.map { ($0.item.key, $0.name) }, uniquingKeysWith: { a, _ in a })
-        visibleKeys = merged.filter { $0.item.enabled }.map(\.item.key)
-        hiddenKeys = merged.filter { !$0.item.enabled }.map(\.item.key)
-    }
-
-    func keys(for zone: ChipContainerView.Zone) -> [String] {
-        zone == .visible ? visibleKeys : hiddenKeys
-    }
-
-    func element(for key: String) -> MenuBarElement {
-        if key == "icon" { return .icon }
-        if let seg = MenuBarLayout.preview(key, model) { return .segment(seg) }
-        return .segment(MenuBarSegment(label: names[key] ?? key, value: "—", remaining: nil))
-    }
-
-    func register(_ container: ChipContainerView, zone: ChipContainerView.Zone) {
-        if zone == .visible { visibleContainer = container } else { hiddenContainer = container }
-    }
-
-    /// Commit the live arrangement after a drop. Reads both containers (their order is
-    /// the source of truth post-drag); enforces "at least one visible" by snapping back.
-    func commit() {
-        guard let visibleContainer, let hiddenContainer else { return }
-        let vis = visibleContainer.arrangedViews.map(\.key)
-        let hid = hiddenContainer.arrangedViews.map(\.key)
-        guard !vis.isEmpty else { reload(); return }   // never let Visible go empty
-
-        visibleKeys = vis
-        hiddenKeys = hid
-        let items = vis.map { MenuBarItem(key: $0, enabled: true) }
-            + hid.map { MenuBarItem(key: $0, enabled: false) }
-        MenuBarLayout.save(items)   // fires UserDefaults change → menu bar re-renders
-    }
-
-    /// Reset both zones to the last saved arrangement (used to snap back an illegal move).
-    func reload() {
-        load()
-        visibleContainer?.reconfigure(force: true)
-        hiddenContainer?.reconfigure(force: true)
-    }
+protocol LayoutEditorBacking: AnyObject {
+    /// Set while a drag is live so SwiftUI `updateNSView` passes don't rebuild chips
+    /// out from under the drag.
+    var isDragging: Bool { get set }
+    func keys(for zone: ChipContainerView.Zone) -> [String]
+    func displayName(for key: String) -> String
+    /// A pre-sized NSView drawing the chip's content (white, on the dark bar).
+    func makeContent(for key: String) -> NSView
+    func emptyText(for zone: ChipContainerView.Zone) -> String
+    func register(_ container: ChipContainerView, zone: ChipContainerView.Zone)
+    /// Persist the live arrangement after a drop (reads the registered containers).
+    func commit()
+    /// Reset both zones to the last saved arrangement (snap back an illegal move).
+    func reload()
 }
 
-/// One draggable chip — draws a menu-bar element via the shared `MenuBarContentView`
-/// on a token background, and is the `NSDraggingSource`.
+/// One draggable chip — wraps a backing-supplied content view on a token background
+/// and is the `NSDraggingSource`.
 final class ChipItemView: NSView, NSDraggingSource {
     let key: String
-    private let content = MenuBarContentView()
+    private let content: NSView
 
     /// Where the chip lived before being dragged out, so it can be reinserted if the
     /// drop lands nowhere (mirrors Ice's `oldContainerInfo`).
@@ -94,19 +50,19 @@ final class ChipItemView: NSView, NSDraggingSource {
     }
 
     private static let hPad: CGFloat = 8
-    private static let height: CGFloat = 30
+    private static let minHeight: CGFloat = 30
 
-    init(key: String, name: String, element: MenuBarElement, showCaptions: Bool) {
+    init(key: String, name: String, content: NSView) {
         self.key = key
-        let w = MenuBarContentView.width(elements: [element], showCaptions: showCaptions)
-        super.init(frame: CGRect(x: 0, y: 0, width: w + Self.hPad * 2, height: Self.height))
+        self.content = content
+        let cw = content.frame.width
+        let ch = content.frame.height
+        let h = max(Self.minHeight, ch + 8)
+        super.init(frame: CGRect(x: 0, y: 0, width: cw + Self.hPad * 2, height: h))
         wantsLayer = true
-        content.forcedColor = .white
-        content.passesClicksThrough = true   // mouse events reach this chip, not the text
-        content.frame = CGRect(x: Self.hPad, y: (Self.height - 22) / 2, width: w, height: 22)
-        content.apply(elements: [element], showCaptions: showCaptions, alertColor: nil)
+        content.frame = CGRect(x: Self.hPad, y: (h - ch) / 2, width: cw, height: ch)
         addSubview(content)
-        toolTip = name   // human-readable, e.g. "Claude · Weekly" (not the raw key)
+        toolTip = name
     }
 
     @available(*, unavailable)
@@ -128,7 +84,7 @@ final class ChipItemView: NSView, NSDraggingSource {
         beginDraggingSession(with: [dragItem], event: event, source: self)
     }
 
-    /// A bitmap of the chip (bg + text) for the floating drag image.
+    /// A bitmap of the chip (bg + content) for the floating drag image.
     private func snapshot() -> NSImage? {
         guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
         cacheDisplay(in: bounds, to: rep)
@@ -142,7 +98,7 @@ final class ChipItemView: NSView, NSDraggingSource {
     }
 
     func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
-        (superview as? ChipContainerView)?.coordinator?.isDragging = true
+        (superview as? ChipContainerView)?.backing?.isDragging = true
         session.animatesToStartingPositionsOnCancelOrFail = false
         DispatchQueue.main.async { self.isDraggingPlaceholder = true }
     }
@@ -150,9 +106,8 @@ final class ChipItemView: NSView, NSDraggingSource {
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         defer { oldContainerInfo = nil }
         isDraggingPlaceholder = false
-        let coordinator = (superview as? ChipContainerView)?.coordinator
-            ?? oldContainerInfo?.container.coordinator
-        coordinator?.isDragging = false
+        let backing = (superview as? ChipContainerView)?.backing ?? oldContainerInfo?.container.backing
+        backing?.isDragging = false
         // Dropped outside any container: put it back where it started.
         if !hasContainer, let (container, index) = oldContainerInfo {
             container.shouldAnimateNextLayoutPass = false
@@ -168,20 +123,20 @@ final class ChipContainerView: NSView {
     enum DraggingPhase { case entered, exited, updated, ended }
 
     let zone: Zone
-    weak var coordinator: LayoutEditorCoordinator?
+    weak var backing: (any LayoutEditorBacking)?
 
     private let spacing: CGFloat = 8
     private let inset: CGFloat = 8
-    private var currentShowCaptions = true
+    private var currentSignature = ""
     var shouldAnimateNextLayoutPass = true
 
     var arrangedViews = [ChipItemView]() {
         didSet { layoutArrangedViews(oldViews: oldValue) }
     }
 
-    init(zone: Zone, coordinator: LayoutEditorCoordinator) {
+    init(zone: Zone, backing: any LayoutEditorBacking) {
         self.zone = zone
-        self.coordinator = coordinator
+        self.backing = backing
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 10
@@ -194,24 +149,25 @@ final class ChipContainerView: NSView {
 
     // MARK: Population
 
-    func configure(showCaptions: Bool) {
-        guard !(coordinator?.isDragging ?? false) else { return }
-        let keys = coordinator?.keys(for: zone) ?? []
-        if keys == arrangedViews.map(\.key), showCaptions == currentShowCaptions { return }
-        currentShowCaptions = showCaptions
-        rebuild(keys: keys, showCaptions: showCaptions)
+    /// Rebuild chips when the keys change or `signature` (extra display state, e.g.
+    /// the menu bar's caption toggle) changes — but never mid-drag.
+    func configure(signature: String) {
+        guard let backing, !backing.isDragging else { return }
+        let keys = backing.keys(for: zone)
+        if keys == arrangedViews.map(\.key), signature == currentSignature { return }
+        currentSignature = signature
+        rebuild(keys: keys)
     }
 
     func reconfigure(force: Bool) {
-        rebuild(keys: coordinator?.keys(for: zone) ?? [], showCaptions: currentShowCaptions)
+        rebuild(keys: backing?.keys(for: zone) ?? [])
     }
 
-    private func rebuild(keys: [String], showCaptions: Bool) {
-        guard let coordinator else { return }
+    private func rebuild(keys: [String]) {
+        guard let backing else { return }
         shouldAnimateNextLayoutPass = false
         arrangedViews = keys.map { key in
-            ChipItemView(key: key, name: coordinator.names[key] ?? key,
-                         element: coordinator.element(for: key), showCaptions: showCaptions)
+            ChipItemView(key: key, name: backing.displayName(for: key), content: backing.makeContent(for: key))
         }
     }
 
@@ -242,7 +198,7 @@ final class ChipContainerView: NSView {
     override func layout() {
         super.layout()
         // Re-center vertically when the bar gets its height from Auto Layout.
-        if !(coordinator?.isDragging ?? false) {
+        if !(backing?.isDragging ?? false) {
             shouldAnimateNextLayoutPass = false
             layoutArrangedViews()
         }
@@ -251,7 +207,7 @@ final class ChipContainerView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         guard arrangedViews.isEmpty else { return }
-        let text = zone == .visible ? "Drag items here to show them." : "Everything is shown."
+        let text = backing?.emptyText(for: zone) ?? ""
         let attr: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11),
             .foregroundColor: NSColor.white.withAlphaComponent(0.5),
@@ -277,7 +233,7 @@ final class ChipContainerView: NSView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard sender.draggingSource is ChipItemView else { return false }
-        coordinator?.commit()
+        backing?.commit()
         return true
     }
 
@@ -337,20 +293,173 @@ final class ChipContainerView: NSView {
     }
 }
 
-/// SwiftUI bridge for one zone.
-struct MenuBarZoneView: NSViewRepresentable {
+/// SwiftUI bridge for one zone. `signature` carries extra display state that should
+/// trigger a chip rebuild (e.g. the menu bar's caption toggle); pass "" if none.
+struct LayoutZoneView: NSViewRepresentable {
     let zone: ChipContainerView.Zone
-    let coordinator: LayoutEditorCoordinator
-    let showCaptions: Bool
+    let backing: any LayoutEditorBacking
+    var signature: String = ""
 
     func makeNSView(context: Context) -> ChipContainerView {
-        let view = ChipContainerView(zone: zone, coordinator: coordinator)
-        coordinator.register(view, zone: zone)
-        view.configure(showCaptions: showCaptions)
+        let view = ChipContainerView(zone: zone, backing: backing)
+        backing.register(view, zone: zone)
+        view.configure(signature: signature)
         return view
     }
 
     func updateNSView(_ view: ChipContainerView, context: Context) {
-        view.configure(showCaptions: showCaptions)
+        view.configure(signature: signature)
+    }
+}
+
+// MARK: - Menu-bar item backing
+
+/// Backs the menu-bar item arrangement (icon + quota/spend columns) via `MenuBarLayout`.
+@MainActor
+final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
+    let model: AppViewModel
+    private(set) var names: [String: String] = [:]
+    private var visibleKeys: [String] = []
+    private var hiddenKeys: [String] = []
+
+    weak var visibleContainer: ChipContainerView?
+    weak var hiddenContainer: ChipContainerView?
+    var isDragging = false
+
+    init(model: AppViewModel) {
+        self.model = model
+        load()
+    }
+
+    private func load() {
+        let merged = MenuBarLayout.merged(model)
+        names = Dictionary(merged.map { ($0.item.key, $0.name) }, uniquingKeysWith: { a, _ in a })
+        visibleKeys = merged.filter { $0.item.enabled }.map(\.item.key)
+        hiddenKeys = merged.filter { !$0.item.enabled }.map(\.item.key)
+    }
+
+    func keys(for zone: ChipContainerView.Zone) -> [String] {
+        zone == .visible ? visibleKeys : hiddenKeys
+    }
+
+    func displayName(for key: String) -> String { names[key] ?? key }
+
+    func emptyText(for zone: ChipContainerView.Zone) -> String {
+        zone == .visible ? "Drag items here to show them." : "Everything is shown."
+    }
+
+    func makeContent(for key: String) -> NSView {
+        let showCaptions = UserDefaults.standard.object(forKey: "menuBarShowCaptions") as? Bool ?? true
+        let element: MenuBarElement = {
+            if key == "icon" { return .icon }
+            if let seg = MenuBarLayout.preview(key, model) { return .segment(seg) }
+            return .segment(MenuBarSegment(label: names[key] ?? key, value: "—", remaining: nil))
+        }()
+        let v = MenuBarContentView()
+        v.forcedColor = .white
+        v.passesClicksThrough = true
+        let w = MenuBarContentView.width(elements: [element], showCaptions: showCaptions)
+        v.frame = CGRect(x: 0, y: 0, width: w, height: 22)
+        v.apply(elements: [element], showCaptions: showCaptions, alertColor: nil)
+        return v
+    }
+
+    func register(_ container: ChipContainerView, zone: ChipContainerView.Zone) {
+        if zone == .visible { visibleContainer = container } else { hiddenContainer = container }
+    }
+
+    func commit() {
+        guard let visibleContainer, let hiddenContainer else { return }
+        let vis = visibleContainer.arrangedViews.map(\.key)
+        let hid = hiddenContainer.arrangedViews.map(\.key)
+        guard !vis.isEmpty else { reload(); return }   // never let the menu bar go empty
+        visibleKeys = vis
+        hiddenKeys = hid
+        let items = vis.map { MenuBarItem(key: $0, enabled: true) }
+            + hid.map { MenuBarItem(key: $0, enabled: false) }
+        MenuBarLayout.save(items)   // fires UserDefaults change → menu bar re-renders
+    }
+
+    func reload() {
+        load()
+        visibleContainer?.reconfigure(force: true)
+        hiddenContainer?.reconfigure(force: true)
+    }
+}
+
+// MARK: - Popover provider-panel backing
+
+/// A simple white "● Name" chip for a provider.
+private final class ProviderChipContentView: NSView {
+    private let title: String
+    private let dotColor: NSColor
+
+    init(title: String, dotColor: NSColor) {
+        self.title = title
+        self.dotColor = dotColor
+        let textW = (title as NSString).size(withAttributes: [.font: Self.font]).width
+        super.init(frame: CGRect(x: 0, y: 0, width: 7 + 6 + ceil(textW), height: 18))
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }   // events reach the chip
+
+    private static let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+
+    override func draw(_ dirtyRect: NSRect) {
+        let dotSize: CGFloat = 7
+        let dotRect = NSRect(x: 0, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)
+        dotColor.setFill()
+        NSBezierPath(ovalIn: dotRect).fill()
+        let attr: [NSAttributedString.Key: Any] = [.font: Self.font, .foregroundColor: NSColor.white]
+        let size = (title as NSString).size(withAttributes: attr)
+        (title as NSString).draw(at: NSPoint(x: dotSize + 6, y: (bounds.height - size.height) / 2), withAttributes: attr)
+    }
+}
+
+/// Backs the popover provider-panel arrangement via `PopoverOrder` (which providers
+/// show, in what order). Reuses the same drag editor as the menu bar.
+@MainActor
+final class PopoverOrderCoordinator: ObservableObject, LayoutEditorBacking {
+    weak var visibleContainer: ChipContainerView?
+    weak var hiddenContainer: ChipContainerView?
+    var isDragging = false
+
+    func keys(for zone: ChipContainerView.Zone) -> [String] {
+        let providers = zone == .visible ? PopoverOrder.visible() : PopoverOrder.hidden()
+        return providers.map(\.rawValue)
+    }
+
+    func displayName(for key: String) -> String {
+        Provider(rawValue: key)?.displayName ?? key
+    }
+
+    func emptyText(for zone: ChipContainerView.Zone) -> String {
+        zone == .visible ? "Drag a provider here to show it." : "Drag a provider here to hide it."
+    }
+
+    func makeContent(for key: String) -> NSView {
+        let p = Provider(rawValue: key)
+        return ProviderChipContentView(title: p?.displayName ?? key,
+                                       dotColor: NSColor(PopoverOrder.tint(p ?? .codex)))
+    }
+
+    func register(_ container: ChipContainerView, zone: ChipContainerView.Zone) {
+        if zone == .visible { visibleContainer = container } else { hiddenContainer = container }
+    }
+
+    func commit() {
+        guard let visibleContainer, let hiddenContainer else { return }
+        let vis = visibleContainer.arrangedViews.map(\.key).compactMap(Provider.init(rawValue:))
+        let hid = hiddenContainer.arrangedViews.map(\.key).compactMap(Provider.init(rawValue:))
+        guard !vis.isEmpty else { reload(); return }   // keep at least one panel
+        PopoverOrder.save(visible: vis, hidden: hid)   // fires UserDefaults change → popover updates
+    }
+
+    func reload() {
+        visibleContainer?.reconfigure(force: true)
+        hiddenContainer?.reconfigure(force: true)
     }
 }

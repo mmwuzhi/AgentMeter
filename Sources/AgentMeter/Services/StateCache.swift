@@ -8,6 +8,25 @@ enum StateCache {
     struct Snapshot: Codable {
         var codex: ProviderState
         var claude: ProviderState
+        var copilot: ProviderState
+
+        init(codex: ProviderState, claude: ProviderState, copilot: ProviderState) {
+            self.codex = codex
+            self.claude = claude
+            self.copilot = copilot
+        }
+
+        // Tolerate caches written before Copilot existed: fall back to an empty
+        // Copilot state instead of failing the whole decode (which would blank the
+        // Codex/Claude values on the first launch after upgrading).
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            codex = try c.decode(ProviderState.self, forKey: .codex)
+            claude = try c.decode(ProviderState.self, forKey: .claude)
+            copilot = try c.decodeIfPresent(ProviderState.self, forKey: .copilot)
+                ?? ProviderState(provider: .copilot, quota: .unavailable(.copilot, note: "Loading…"),
+                                 usage: .empty(.copilot))
+        }
     }
 
     private static var dir: URL {
@@ -21,8 +40,8 @@ enum StateCache {
         return try? JSONDecoder().decode(Snapshot.self, from: data)
     }
 
-    static func save(codex: ProviderState, claude: ProviderState) {
-        let snap = Snapshot(codex: codex, claude: claude)
+    static func save(codex: ProviderState, claude: ProviderState, copilot: ProviderState) {
+        let snap = Snapshot(codex: codex, claude: claude, copilot: copilot)
         guard let data = try? JSONEncoder().encode(snap) else { return }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? data.write(to: fileURL, options: .atomic)

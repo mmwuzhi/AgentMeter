@@ -46,13 +46,13 @@ private struct MenuBarSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Visible") {
-                MenuBarZoneView(zone: .visible, coordinator: coordinator, showCaptions: showCaptions)
+                LayoutZoneView(zone: .visible, backing: coordinator, signature: "\(showCaptions)")
                     .frame(height: 46)
                 Text("Drag to reorder · drag a chip down to Hidden to remove it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Hidden") {
-                MenuBarZoneView(zone: .hidden, coordinator: coordinator, showCaptions: showCaptions)
+                LayoutZoneView(zone: .hidden, backing: coordinator, signature: "\(showCaptions)")
                     .frame(height: 46)
             }
         }
@@ -98,8 +98,10 @@ private struct AlertSettings: View {
 
 private struct GeneralSettings: View {
     @AppStorage("launchAtLogin") private var launchAtLogin = false
-    @AppStorage("codexFirst") private var codexFirst = true
     @AppStorage("refreshIntervalSeconds") private var refreshIntervalSeconds = 60.0
+    @AppStorage("popoverOrder") private var popoverOrderRaw = ""
+    @AppStorage("popoverHiddenProviders") private var popoverHiddenRaw = ""
+    @StateObject private var popoverCoordinator = PopoverOrderCoordinator()
 
     var body: some View {
         Form {
@@ -112,10 +114,18 @@ private struct GeneralSettings: View {
                     Text("2 minutes").tag(120.0)
                     Text("5 minutes").tag(300.0)
                 }
-                Picker("Popover order", selection: $codexFirst) {
-                    Text("Codex first").tag(true)
-                    Text("Claude first").tag(false)
-                }
+            }
+            Section("Popover order") {
+                LayoutZoneView(zone: .visible, backing: popoverCoordinator,
+                               signature: "\(popoverOrderRaw)|\(popoverHiddenRaw)")
+                    .frame(height: 46)
+                Text("Drag to reorder · drag a provider down to Hidden to remove its panel.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Hidden popover panels") {
+                LayoutZoneView(zone: .hidden, backing: popoverCoordinator,
+                               signature: "\(popoverOrderRaw)|\(popoverHiddenRaw)")
+                    .frame(height: 46)
             }
             Section("Software Update") {
                 LabeledContent("Version", value: Self.appVersion)

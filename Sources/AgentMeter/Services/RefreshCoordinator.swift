@@ -7,6 +7,7 @@ final class RefreshCoordinator {
     private let viewModel: AppViewModel
     private let codex = CodexService()
     private let claude = ClaudeService()
+    private let copilot = CopilotService()
     private var timer: Timer?
     private var wakeObservers: [NSObjectProtocol] = []
     private var defaultsObserver: NSObjectProtocol?
@@ -48,6 +49,7 @@ final class RefreshCoordinator {
         // alerts on) notifies right away instead of waiting for the next fetch.
         NotificationManager.shared.evaluate(provider: .codex, windows: viewModel.codex.quota.windows)
         NotificationManager.shared.evaluate(provider: .claude, windows: viewModel.claude.quota.windows)
+        NotificationManager.shared.evaluate(provider: .copilot, windows: viewModel.copilot.quota.windows)
     }
 
     func stop() {
@@ -72,20 +74,24 @@ final class RefreshCoordinator {
         refreshStartedAt = Date()
         let previousCodexQuota = viewModel.codex.quota
         let previousClaudeQuota = viewModel.claude.quota
+        let previousCopilotQuota = viewModel.copilot.quota
         Task {
             async let codexState = codex.fetch()
             async let claudeState = claude.fetch()
-            let (c, cl) = await (codexState, claudeState)
+            async let copilotState = copilot.fetch()
+            let (c, cl, cp) = await (codexState, claudeState, copilotState)
             let now = Date()
             viewModel.codex = c.preservingLiveQuota(from: previousCodexQuota, at: now)
             viewModel.claude = cl.preservingLiveQuota(from: previousClaudeQuota, at: now)
+            viewModel.copilot = cp.preservingLiveQuota(from: previousCopilotQuota, at: now)
             viewModel.lastRefresh = Date()
             viewModel.isRefreshing = false
             refreshStartedAt = nil
             // Cache for the next launch so the menu bar shows last values instantly.
-            StateCache.save(codex: viewModel.codex, claude: viewModel.claude)
+            StateCache.save(codex: viewModel.codex, claude: viewModel.claude, copilot: viewModel.copilot)
             NotificationManager.shared.evaluate(provider: .codex, windows: viewModel.codex.quota.windows)
             NotificationManager.shared.evaluate(provider: .claude, windows: viewModel.claude.quota.windows)
+            NotificationManager.shared.evaluate(provider: .copilot, windows: viewModel.copilot.quota.windows)
         }
     }
 
