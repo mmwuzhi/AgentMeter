@@ -6,7 +6,7 @@ struct AgentMeterApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView()
+            SettingsView(model: appDelegate.model)
         }
     }
 }

@@ -13,11 +13,27 @@ final class AppViewModel {
     var isRefreshing = false
     var lastRefresh: Date?
 
+    init() {
+        // Show the last values we saw immediately; the first refresh replaces them.
+        if let snap = StateCache.load() {
+            codex = snap.codex
+            claude = snap.claude
+        }
+    }
+
     var totalSpendUSD: Double { codex.usage.totalCostUSD + claude.usage.totalCostUSD }
 
-    /// Quota windows of the provider chosen for the menu bar (default Codex), in order.
-    var headlineWindows: [QuotaWindow] {
-        let useClaude = UserDefaults.standard.string(forKey: "menuBarProvider") == "claude"
-        return useClaude ? claude.quota.windows : codex.quota.windows
+    /// The provider chosen for the menu bar (default Codex).
+    var menuBarProviderState: ProviderState {
+        UserDefaults.standard.string(forKey: "menuBarProvider") == "claude" ? claude : codex
+    }
+
+    /// Quota windows of the provider chosen for the menu bar, in order.
+    var headlineWindows: [QuotaWindow] { menuBarProviderState.quota.windows }
+
+    /// Today's (local-day) spend for a provider, used by the optional menu-bar spend readout.
+    func todaySpendUSD(for state: ProviderState) -> Double {
+        let start = Calendar.current.startOfDay(for: Date())
+        return state.usage.buckets.first { $0.day == start }?.costUSD ?? 0
     }
 }
