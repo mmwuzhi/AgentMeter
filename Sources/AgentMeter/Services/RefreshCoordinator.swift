@@ -9,31 +9,67 @@ final class RefreshCoordinator {
     private let claude = ClaudeService()
     private var timer: Timer?
     private var wakeObservers: [NSObjectProtocol] = []
+    private var defaultsObserver: NSObjectProtocol?
+    private var refreshStartedAt: Date?
 
     init(viewModel: AppViewModel) {
         self.viewModel = viewModel
     }
 
+    /// Refresh cadence in seconds, from Settings (clamped to 15…3600). Default 60.
+    private var refreshInterval: TimeInterval {
+        let v = UserDefaults.standard.object(forKey: "refreshIntervalSeconds") as? Double ?? 60
+        return max(15, min(3600, v))
+    }
+
     func start() {
         Task { await PricingService.shared.refresh() }
+        NotificationManager.shared.requestAuthorizationIfNeeded()
         refresh()
         installWakeObservers()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        scheduleTimer()
+        // Rebuild the timer when the interval setting changes.
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.rescheduleIfIntervalChanged() }
+        }
+    }
+
+    private func scheduleTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
+    }
+
+    private func rescheduleIfIntervalChanged() {
+        if let timer, abs(timer.timeInterval - refreshInterval) > 0.5 { scheduleTimer() }
+        // Re-check alerts against current data so lowering the threshold (or toggling
+        // alerts on) notifies right away instead of waiting for the next fetch.
+        NotificationManager.shared.evaluate(provider: .codex, windows: viewModel.codex.quota.windows)
+        NotificationManager.shared.evaluate(provider: .claude, windows: viewModel.claude.quota.windows)
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+        if let defaultsObserver {
+            NotificationCenter.default.removeObserver(defaultsObserver)
+            self.defaultsObserver = nil
+        }
         let center = NSWorkspace.shared.notificationCenter
         wakeObservers.forEach { center.removeObserver($0) }
         wakeObservers.removeAll()
     }
 
     func refresh() {
-        guard !viewModel.isRefreshing else { return }
+        // Coalesce concurrent refreshes, but never let a wedged fetch (e.g. a hung
+        // network call) suppress refreshes forever — opening the popover must win.
+        if viewModel.isRefreshing {
+            guard let started = refreshStartedAt, Date().timeIntervalSince(started) > 30 else { return }
+        }
         viewModel.isRefreshing = true
+        refreshStartedAt = Date()
         let previousCodexQuota = viewModel.codex.quota
         let previousClaudeQuota = viewModel.claude.quota
         Task {
@@ -45,6 +81,11 @@ final class RefreshCoordinator {
             viewModel.claude = cl.preservingLiveQuota(from: previousClaudeQuota, at: now)
             viewModel.lastRefresh = Date()
             viewModel.isRefreshing = false
+            refreshStartedAt = nil
+            // Cache for the next launch so the menu bar shows last values instantly.
+            StateCache.save(codex: viewModel.codex, claude: viewModel.claude)
+            NotificationManager.shared.evaluate(provider: .codex, windows: viewModel.codex.quota.windows)
+            NotificationManager.shared.evaluate(provider: .claude, windows: viewModel.claude.quota.windows)
         }
     }
 
