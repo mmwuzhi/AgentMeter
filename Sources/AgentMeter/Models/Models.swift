@@ -4,11 +4,13 @@ import Foundation
 enum Provider: String, Codable, Sendable, CaseIterable {
     case codex
     case claude
+    case copilot
 
     var displayName: String {
         switch self {
         case .codex: return "Codex"
         case .claude: return "Claude"
+        case .copilot: return "Copilot"
         }
     }
 }
@@ -29,6 +31,7 @@ struct QuotaWindow: Identifiable, Codable, Sendable, Equatable {
         if lower.contains("hour") { return "\(num)h" }
         if lower.contains("day") { return "\(num)d" }
         if lower.contains("week") { return "7d" }
+        if lower.contains("premium") { return "prem" }   // Copilot premium requests
         return String(label.prefix(3))
     }
 }

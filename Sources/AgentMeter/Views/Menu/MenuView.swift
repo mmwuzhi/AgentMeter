@@ -6,7 +6,8 @@ struct MenuView: View {
     var onRefresh: () -> Void
     var onQuit: () -> Void
 
-    @AppStorage("codexFirst") private var codexFirst = true
+    @AppStorage("popoverOrder") private var popoverOrderRaw = ""
+    @AppStorage("popoverHiddenProviders") private var popoverHiddenRaw = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -14,12 +15,8 @@ struct MenuView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    if codexFirst {
-                        ProviderSection(state: model.codex, tint: .green)
-                        ProviderSection(state: model.claude, tint: .blue)
-                    } else {
-                        ProviderSection(state: model.claude, tint: .blue)
-                        ProviderSection(state: model.codex, tint: .green)
+                    ForEach(visibleProviders, id: \.self) { p in
+                        ProviderSection(state: PopoverOrder.state(p, model), tint: PopoverOrder.tint(p))
                     }
                 }
                 .padding(12)
@@ -29,6 +26,13 @@ struct MenuView: View {
             footer
         }
         .frame(width: 340)
+    }
+
+    private var visibleProviders: [Provider] {
+        PopoverOrder.resolved(from: popoverOrderRaw, hiddenRaw: popoverHiddenRaw).filter { provider in
+            let state = PopoverOrder.state(provider, model)
+            return state.hasPopoverContent || state.isLoadingPlaceholder || PopoverOrder.hasManualVisibilityConfiguration
+        }
     }
 
     private var header: some View {
@@ -67,6 +71,91 @@ struct MenuView: View {
     }
 }
 
+/// The order (and tint) of provider panels in the popover. Visible providers are
+/// persisted as a comma-joined list under `popoverOrder`; hidden providers live
+/// under `popoverHiddenProviders`. It seeds itself from the legacy `codexFirst`
+/// toggle, starts Copilot hidden by default, and backfills newly-added providers
+/// unless the user hid them.
+@MainActor
+enum PopoverOrder {
+    static let key = "popoverOrder"
+    static let hiddenKey = "popoverHiddenProviders"
+    static let all: [Provider] = [.codex, .claude, .copilot]
+    private static let defaultVisible: [Provider] = [.codex, .claude]
+    private static let defaultHidden: [Provider] = [.copilot]
+
+    static var hasManualVisibilityConfiguration: Bool {
+        UserDefaults.standard.object(forKey: hiddenKey) != nil
+    }
+
+    static func resolved(from raw: String, hiddenRaw: String? = nil) -> [Provider] {
+        visible(from: raw, hidden: hidden(from: hiddenRaw, visibleRaw: raw))
+    }
+
+    static func visible() -> [Provider] {
+        let raw = UserDefaults.standard.string(forKey: key) ?? ""
+        return visible(from: raw, hidden: hidden(from: UserDefaults.standard.string(forKey: hiddenKey), visibleRaw: raw))
+    }
+
+    static func hidden() -> [Provider] {
+        hidden(from: UserDefaults.standard.string(forKey: hiddenKey),
+               visibleRaw: UserDefaults.standard.string(forKey: key) ?? "")
+    }
+
+    private static func hidden(from raw: String?, visibleRaw: String) -> [Provider] {
+        if hasManualVisibilityConfiguration { return unique(raw ?? "") }
+        guard UserDefaults.standard.object(forKey: key) != nil else { return defaultHidden }
+        let savedVisible = Set(unique(visibleRaw))
+        return defaultHidden.filter { !savedVisible.contains($0) }
+    }
+
+    private static func visible(from raw: String, hidden: [Provider]) -> [Provider] {
+        let hiddenSet = Set(hidden)
+        var order = unique(raw)
+        if order.isEmpty {
+            let codexFirst = UserDefaults.standard.object(forKey: "codexFirst") as? Bool ?? true
+            order = codexFirst ? defaultVisible : Array(defaultVisible.reversed())
+        }
+        for p in all where !order.contains(p) && !hiddenSet.contains(p) { order.append(p) }
+        return order.filter { all.contains($0) && !hiddenSet.contains($0) }
+    }
+
+    private static func unique(_ raw: String) -> [Provider] {
+        var seen = Set<Provider>()
+        return raw.split(separator: ",")
+            .compactMap { Provider(rawValue: String($0)) }
+            .filter { seen.insert($0).inserted && all.contains($0) }
+    }
+
+    static func save(_ order: [Provider]) {
+        UserDefaults.standard.set(order.map(\.rawValue).joined(separator: ","), forKey: key)
+    }
+
+    static func save(visible: [Provider], hidden: [Provider]) {
+        let visible = visible.filter(all.contains)
+        let visibleSet = Set(visible)
+        let hidden = hidden.filter { all.contains($0) && !visibleSet.contains($0) }
+        UserDefaults.standard.set(visible.map(\.rawValue).joined(separator: ","), forKey: key)
+        UserDefaults.standard.set(hidden.map(\.rawValue).joined(separator: ","), forKey: hiddenKey)
+    }
+
+    static func state(_ p: Provider, _ model: AppViewModel) -> ProviderState {
+        switch p {
+        case .codex: return model.codex
+        case .claude: return model.claude
+        case .copilot: return model.copilot
+        }
+    }
+
+    static func tint(_ p: Provider) -> Color {
+        switch p {
+        case .codex: return .green
+        case .claude: return .blue
+        case .copilot: return .purple
+        }
+    }
+}
+
 /// One provider's grouped panel: title, quota windows, spend, collapsible activity.
 struct ProviderSection: View {
     let state: ProviderState
@@ -98,9 +187,10 @@ struct ProviderSection: View {
                 }
             }
 
-            SpendSummary(usage: state.usage)
-
+            // Copilot is flat-rate (no token spend), so skip the spend block for
+            // providers with no usage history.
             if !state.usage.buckets.isEmpty {
+                SpendSummary(usage: state.usage)
                 activitySection
             }
         }
@@ -150,5 +240,15 @@ struct ProviderSection: View {
         case .cli: return "cli"
         case .unavailable: return "usage only"
         }
+    }
+}
+
+private extension ProviderState {
+    var hasPopoverContent: Bool {
+        !quota.windows.isEmpty || !usage.buckets.isEmpty
+    }
+
+    var isLoadingPlaceholder: Bool {
+        quota.source == .unavailable && quota.note == "Loading…" && usage.buckets.isEmpty
     }
 }

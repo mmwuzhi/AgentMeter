@@ -9,6 +9,8 @@ final class AppViewModel {
         quota: .unavailable(.codex, note: "Loading…"), usage: .empty(.codex))
     var claude: ProviderState = ProviderState(provider: .claude,
         quota: .unavailable(.claude, note: "Loading…"), usage: .empty(.claude))
+    var copilot: ProviderState = ProviderState(provider: .copilot,
+        quota: .unavailable(.copilot, note: "Loading…"), usage: .empty(.copilot))
 
     var isRefreshing = false
     var lastRefresh: Date?
@@ -18,14 +20,21 @@ final class AppViewModel {
         if let snap = StateCache.load() {
             codex = snap.codex
             claude = snap.claude
+            copilot = snap.copilot
         }
     }
 
-    var totalSpendUSD: Double { codex.usage.totalCostUSD + claude.usage.totalCostUSD }
+    var totalSpendUSD: Double {
+        codex.usage.totalCostUSD + claude.usage.totalCostUSD + copilot.usage.totalCostUSD
+    }
 
     /// The provider chosen for the menu bar (default Codex).
     var menuBarProviderState: ProviderState {
-        UserDefaults.standard.string(forKey: "menuBarProvider") == "claude" ? claude : codex
+        switch UserDefaults.standard.string(forKey: "menuBarProvider") {
+        case "claude": return claude
+        case "copilot": return copilot
+        default: return codex
+        }
     }
 
     /// Quota windows of the provider chosen for the menu bar, in order.

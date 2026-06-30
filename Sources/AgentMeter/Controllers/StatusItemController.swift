@@ -67,6 +67,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             // usage (spend), so spend-only and both-providers modes refresh too.
             _ = model.codex
             _ = model.claude
+            _ = model.copilot
         } onChange: { [weak self] in
             Task { @MainActor in
                 self?.observeModel()

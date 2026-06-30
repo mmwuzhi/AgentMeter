@@ -30,11 +30,30 @@ enum MenuBarLayout {
     static let configKey = "menuBarItemsConfig"
 
     private static func provider(_ code: String) -> Provider? {
-        code == "codex" ? .codex : (code == "claude" ? .claude : nil)
+        switch code {
+        case "codex": return .codex
+        case "claude": return .claude
+        case "copilot": return .copilot
+        default: return nil
+        }
     }
 
     private static func state(_ p: Provider, _ model: AppViewModel) -> ProviderState {
-        p == .codex ? model.codex : model.claude
+        switch p {
+        case .codex: return model.codex
+        case .claude: return model.claude
+        case .copilot: return model.copilot
+        }
+    }
+
+    /// Short provider tag used to disambiguate captions when the menu bar mixes
+    /// providers (e.g. "cx 5h", "cl wk", "cp prem").
+    private static func tag(_ p: Provider) -> String {
+        switch p {
+        case .codex: return "cx"
+        case .claude: return "cl"
+        case .copilot: return "cp"
+        }
     }
 
     // MARK: - Persistence
@@ -56,12 +75,15 @@ enum MenuBarLayout {
     /// (per provider: quota windows, then today's spend), with display names.
     static func available(_ model: AppViewModel) -> [(key: String, name: String)] {
         var out: [(String, String)] = [("icon", "Gauge icon")]
-        for (p, name, code) in [(Provider.codex, "Codex", "codex"), (Provider.claude, "Claude", "claude")] {
+        for (p, name, code) in [(Provider.codex, "Codex", "codex"),
+                                (Provider.claude, "Claude", "claude"),
+                                (Provider.copilot, "Copilot", "copilot")] {
             let s = state(p, model)
             for w in s.quota.windows {
                 out.append(("q:\(code):\(w.id)", "\(name) · \(w.label)"))
             }
-            out.append(("s:\(code)", "\(name) · spend (today)"))
+            // Copilot is flat-rate — no per-day spend to show.
+            if p != .copilot { out.append(("s:\(code)", "\(name) · spend (today)")) }
         }
         return out
     }
@@ -149,8 +171,7 @@ enum MenuBarLayout {
     /// always provider-prefixed so each chip is unambiguous (`cx 5h`, `cl wk`, `cx $`).
     static func preview(_ key: String, _ model: AppViewModel) -> MenuBarSegment? {
         guard let (seg, p) = resolve(key, model) else { return nil }
-        let code = p == .codex ? "cx" : "cl"
-        return MenuBarSegment(label: "\(code) \(seg.label)", value: seg.value, remaining: seg.remaining)
+        return MenuBarSegment(label: "\(tag(p)) \(seg.label)", value: seg.value, remaining: seg.remaining)
     }
 
     /// Enabled elements in order (icon + value columns), resolved against the model.
@@ -165,8 +186,7 @@ enum MenuBarLayout {
             if item.key == "icon" { out.append(.icon); continue }
             guard let r = resolve(item.key, model) else { continue }
             if mixed {
-                let code = r.provider == .codex ? "cx" : "cl"
-                out.append(.segment(MenuBarSegment(label: "\(code) \(r.segment.label)",
+                out.append(.segment(MenuBarSegment(label: "\(tag(r.provider)) \(r.segment.label)",
                                                    value: r.segment.value, remaining: r.segment.remaining)))
             } else {
                 out.append(.segment(r.segment))
