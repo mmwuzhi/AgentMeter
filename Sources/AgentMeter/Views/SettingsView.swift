@@ -62,6 +62,7 @@ private struct MenuBarSettings: View {
 
 private struct AlertSettings: View {
     @AppStorage("alertsEnabled") private var alertsEnabled = true
+    @AppStorage("quotaRecoveryNotificationsEnabled") private var quotaRecoveryNotificationsEnabled = true
     @AppStorage("warnThresholdPercent") private var warnThresholdPercent = 25.0
     @AppStorage("alertThresholdPercent") private var alertThresholdPercent = 10.0
 
@@ -71,7 +72,9 @@ private struct AlertSettings: View {
                 thresholdField("Warn (yellow dot) at", $warnThresholdPercent)
                 thresholdField("Critical (red dot) at", $alertThresholdPercent)
                 Toggle("Notify when critical", isOn: $alertsEnabled)
-                Text("A yellow then red dot appears as quota runs low. The notification fires once at the critical level and re-arms after the window recovers.")
+                Toggle("Notify when quota recovers after critical", isOn: $quotaRecoveryNotificationsEnabled)
+                    .disabled(!alertsEnabled)
+                Text("A yellow then red dot appears as quota runs low. Critical notifications fire once, and recovery notifications fire only after a critical window resets.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
