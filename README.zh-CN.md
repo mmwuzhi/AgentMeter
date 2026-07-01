@@ -2,15 +2,17 @@
 
 [English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-AgentMeter 是一个原生 macOS 菜单栏应用，可以快速查看 **Codex** 和 **Claude Code** 的使用情况：剩余额度、电池条、使用热力图和预估花费。它优先使用本机数据，复用你已经登录的 CLI，不需要配置 API key。
+AgentMeter 是一个原生 macOS 菜单栏应用，可以快速查看 **Codex**、**Claude Code** 和 **GitHub Copilot** 的使用情况：剩余额度、电池条、重置时间、使用热力图、预估花费和菜单栏状态。它优先使用本机数据，复用你已经登录的 CLI，不需要配置 API key。
 
-灵感来自 [bob-zebedy/CodexBar](https://github.com/bob-zebedy/CodexBar) 和 [steipete/codexbar](https://github.com/steipete/codexbar)，但只保留这个工作区实际使用的两个 agent。
+灵感来自 [bob-zebedy/CodexBar](https://github.com/bob-zebedy/CodexBar) 和 [steipete/codexbar](https://github.com/steipete/codexbar)，聚焦本机优先的 agent 使用量追踪。
 
 ## 功能
 
-- **额度电池条**：按窗口显示剩余额度百分比和重置倒计时。
+- **额度电池条**：按窗口显示剩余额度百分比和重置倒计时；只有当前速度会在重置前撞限额时才显示风险文案。
 - **使用热力图**：每个 provider 一张 30 周 GitHub 风格热力图。
 - **花费**：从本地日志和实时价格计算 7 天、全部时间的预估成本。
+- **自定义菜单栏**：拖拽排序可见项目；低额度红/黄点会贴在触发它的具体窗口旁边。
+- **通知**：关键额度提醒，以及可选的“关键窗口重置后恢复”提醒。
 - **自动更新**：通过 Sparkle 支持，前提是你已经托管 appcast。见下文。
 - 仅菜单栏运行，无 Dock 图标，每分钟自动刷新，也可以手动刷新。
 
@@ -20,6 +22,7 @@ AgentMeter 是一个原生 macOS 菜单栏应用，可以快速查看 **Codex** 
 |---|---|---|
 | **Codex** | `codex app-server` JSON-RPC，然后回退到最新的 `~/.codex/sessions/**/rollout-*.jsonl`（`rate_limits`） | 汇总 rollout 日志里每天的 `last_token_usage` |
 | **Claude** | OAuth：先读 `~/.claude/.credentials.json`，再读 macOS 钥匙串 `Claude Code-credentials`，然后请求 `GET api.anthropic.com/api/oauth/usage`，再回退到抓取 `claude /usage`，最后回退到仅使用量 | 扫描 `~/.claude/projects/**/*.jsonl`，按 `message.id` 去重后汇总 `message.usage.*` |
+| **Copilot** | `gh api /copilot_internal/user`，复用已有 GitHub CLI 登录；如果缺少 `gh` 或未登录则不可用 | 固定费率，不显示 token 花费 |
 
 价格来自 [LiteLLM](https://github.com/BerriAI/litellm)，并以 models.dev 作为回退；缓存位置是 `~/Library/Application Support/AgentMeter/pricing.json`，应用内还带有 `Resources/embedded-pricing.json` 离线快照。
 
@@ -84,8 +87,8 @@ Sources/AgentMeter/
   App/            AgentMeterApp (@main), AppDelegate
   Controllers/    StatusItemController (NSStatusItem + popover)
   Models/         QuotaSnapshot, UsageBucket, ProviderState
-  Services/       Codex/, Claude/, Pricing/, RefreshCoordinator, LoginItem, UpdaterController
+  Services/       Codex/, Claude/, Copilot/, Pricing/, QuotaTrendTracker, RefreshCoordinator
   ViewModels/     AppViewModel (@Observable)
-  Views/          Menu/ (battery bar, quota row, heatmap, spend), SettingsView
+  Views/          Menu/ (battery bar, quota row, heatmap, spend), MenuBarContentView, SettingsView
 Scripts/          Info.plist, bundle.sh, dmg.sh, appcast.sh
 ```

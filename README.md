@@ -2,19 +2,25 @@
 
 [English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-A native macOS menu bar app that shows **Codex** and **Claude Code** usage at a glance:
-remaining quota (battery bar), a usage heatmap, and estimated spend. Local-first: it
-reuses your existing CLI logins, so there are **no API keys to configure**.
+A native macOS menu bar app that shows **Codex**, **Claude Code**, and
+**GitHub Copilot** usage at a glance: remaining quota (battery bar), reset timing,
+usage heatmaps, estimated spend, and menu-bar status. Local-first: it reuses your
+existing CLI logins, so there are **no API keys to configure**.
 
 Inspired by [bob-zebedy/CodexBar](https://github.com/bob-zebedy/CodexBar) and
-[steipete/codexbar](https://github.com/steipete/codexbar), narrowed to the two agents
-this workspace actually uses.
+[steipete/codexbar](https://github.com/steipete/codexbar), focused on local-first
+agent usage tracking.
 
 ## Features
 
-- **Quota battery bar**: remaining % per window with reset countdowns.
+- **Quota battery bar**: remaining % per window with reset countdowns and risk text
+  only when current pace would hit the window before reset.
 - **Usage heatmap**: 30-week GitHub-style grid per provider.
 - **Spend**: 7-day and all-time cost, computed from local logs × live pricing.
+- **Custom menu bar**: drag visible items into order, with per-window warning dots
+  anchored to the quota item that triggered them.
+- **Notifications**: critical quota alerts, plus optional recovery alerts after a
+  previously critical window resets.
 - **Auto-update**: Sparkle, once you host an appcast. See below.
 - Menu-bar only (no Dock icon), refresh every minute + manual refresh.
 
@@ -24,6 +30,7 @@ this workspace actually uses.
 |---|---|---|
 | **Codex** | `codex app-server` JSON-RPC, then falls back to newest `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits`) | sum `last_token_usage` per day from rollout logs |
 | **Claude** | OAuth: token from `~/.claude/.credentials.json` to macOS Keychain `Claude Code-credentials`, then `GET api.anthropic.com/api/oauth/usage`, then falls back to scraping `claude /usage`, then usage-only | `~/.claude/projects/**/*.jsonl`, dedup by `message.id`, sum `message.usage.*` |
+| **Copilot** | `gh api /copilot_internal/user`, reusing your existing GitHub CLI login; unavailable if `gh` is missing or not authenticated | flat-rate, so no token spend is shown |
 
 Pricing comes from [LiteLLM](https://github.com/BerriAI/litellm) (fallback models.dev),
 cached to `~/Library/Application Support/AgentMeter/pricing.json`, with an embedded
@@ -102,8 +109,8 @@ Sources/AgentMeter/
   App/            AgentMeterApp (@main), AppDelegate
   Controllers/    StatusItemController (NSStatusItem + popover)
   Models/         QuotaSnapshot, UsageBucket, ProviderState
-  Services/       Codex/, Claude/, Pricing/, RefreshCoordinator, LoginItem, UpdaterController
+  Services/       Codex/, Claude/, Copilot/, Pricing/, QuotaTrendTracker, RefreshCoordinator
   ViewModels/     AppViewModel (@Observable)
-  Views/          Menu/ (battery bar, quota row, heatmap, spend), SettingsView
+  Views/          Menu/ (battery bar, quota row, heatmap, spend), MenuBarContentView, SettingsView
 Scripts/          Info.plist, bundle.sh, dmg.sh, appcast.sh
 ```

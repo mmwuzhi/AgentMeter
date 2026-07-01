@@ -60,8 +60,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     /// Refresh the menubar title text when the model changes.
     private func observeModel() {
         withObservationTracking {
-            // Touch everything the menu bar can show: both providers' quota and
-            // usage (spend), so spend-only and both-providers modes refresh too.
+            // Touch everything the menu bar can show: all providers' quota and
+            // usage (spend), so spend-only and mixed-provider modes refresh too.
             _ = model.codex
             _ = model.claude
             _ = model.copilot
