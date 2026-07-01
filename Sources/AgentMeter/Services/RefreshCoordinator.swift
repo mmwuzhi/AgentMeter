@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// Drives periodic + manual refresh of both providers and publishes into the view model.
+/// Drives periodic + manual refresh of all providers and publishes into the view model.
 @MainActor
 final class RefreshCoordinator {
     private let viewModel: AppViewModel
