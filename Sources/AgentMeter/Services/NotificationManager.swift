@@ -1,6 +1,74 @@
 import Foundation
 import UserNotifications
 
+struct QuotaNotificationState: Equatable {
+    var criticalNotified: Set<String> = []
+    var criticalResetAt: [String: Date] = [:]
+}
+
+enum QuotaNotificationEvent: Equatable {
+    case critical(provider: Provider, window: QuotaWindow)
+    case recovered(provider: Provider, window: QuotaWindow)
+}
+
+enum QuotaNotificationPolicy {
+    static func evaluate(
+        provider: Provider,
+        windows: [QuotaWindow],
+        now: Date = Date(),
+        threshold: Double,
+        alertsEnabled: Bool,
+        recoveryEnabled: Bool,
+        canDeliver: Bool,
+        state: inout QuotaNotificationState
+    ) -> [QuotaNotificationEvent] {
+        guard alertsEnabled else {
+            state = QuotaNotificationState()
+            return []
+        }
+        guard canDeliver else { return [] }
+
+        var events: [QuotaNotificationEvent] = []
+        for window in windows {
+            let key = Self.key(provider: provider, windowID: window.id)
+            if window.remainingPercent <= threshold {
+                guard !state.criticalNotified.contains(key) else { continue }
+                state.criticalNotified.insert(key)
+                if let reset = window.resetsAt {
+                    state.criticalResetAt[key] = reset
+                } else {
+                    state.criticalResetAt.removeValue(forKey: key)
+                }
+                events.append(.critical(provider: provider, window: window))
+            } else {
+                if state.criticalNotified.contains(key),
+                   recoveryEnabled,
+                   hasRecoveredAfterReset(window: window, previousReset: state.criticalResetAt[key], now: now) {
+                    events.append(.recovered(provider: provider, window: window))
+                }
+                state.criticalNotified.remove(key)
+                state.criticalResetAt.removeValue(forKey: key)
+            }
+        }
+        return events
+    }
+
+    private static func key(provider: Provider, windowID: String) -> String {
+        "\(provider.rawValue):\(windowID)"
+    }
+
+    private static func hasRecoveredAfterReset(
+        window: QuotaWindow,
+        previousReset: Date?,
+        now: Date
+    ) -> Bool {
+        guard let previousReset else { return false }
+        if previousReset <= now { return true }
+        guard let currentReset = window.resetsAt else { return false }
+        return currentReset.timeIntervalSince(previousReset) > 1
+    }
+}
+
 /// Posts a system notification when a provider's quota drops to/below the user's
 /// critical threshold. Dedups per window so each depletion notifies once and
 /// re-arms only after the window climbs back above the threshold (e.g. a reset).
@@ -10,12 +78,16 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     private var authorized = false
     private var requested = false
-    private var notified: Set<String> = []   // "provider:windowId" already alerted
+    private var notificationState = QuotaNotificationState()
 
     private override init() { super.init() }
 
     private var enabled: Bool {
         UserDefaults.standard.object(forKey: "alertsEnabled") as? Bool ?? true
+    }
+
+    private var recoveryEnabled: Bool {
+        UserDefaults.standard.object(forKey: "quotaRecoveryNotificationsEnabled") as? Bool ?? true
     }
 
     /// Clamped to a sane 1…99 so a bad default can't silence or spam alerts.
@@ -40,24 +112,27 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     /// Evaluate one provider's windows and notify on downward threshold crossings.
     func evaluate(provider: Provider, windows: [QuotaWindow]) {
-        guard enabled else { return }
-        let t = threshold
-        for w in windows {
-            let key = "\(provider.rawValue):\(w.id)"
-            if w.remainingPercent <= t {
-                guard !notified.contains(key) else { continue }
-                // Only mark as notified once we've actually managed to post —
-                // otherwise an alert that fires before authorization lands would
-                // be suppressed forever.
-                if post(provider: provider, window: w) { notified.insert(key) }
-            } else {
-                notified.remove(key)   // re-arm for the next depletion
+        let events = QuotaNotificationPolicy.evaluate(
+            provider: provider,
+            windows: windows,
+            threshold: threshold,
+            alertsEnabled: enabled,
+            recoveryEnabled: recoveryEnabled,
+            canDeliver: authorized && hasBundle,
+            state: &notificationState
+        )
+        for event in events {
+            switch event {
+            case let .critical(provider, window):
+                postCritical(provider: provider, window: window)
+            case let .recovered(provider, window):
+                postRecovered(provider: provider, window: window)
             }
         }
     }
 
     @discardableResult
-    private func post(provider: Provider, window: QuotaWindow) -> Bool {
+    private func postCritical(provider: Provider, window: QuotaWindow) -> Bool {
         guard authorized, hasBundle else { return false }
         let content = UNMutableNotificationContent()
         content.title = "\(provider.displayName) quota low"
@@ -70,6 +145,25 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         content.sound = .default
         let request = UNNotificationRequest(
             identifier: "agentmeter.\(provider.rawValue).\(window.id).\(Int(Date().timeIntervalSince1970))",
+            content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+        return true
+    }
+
+    @discardableResult
+    private func postRecovered(provider: Provider, window: QuotaWindow) -> Bool {
+        guard authorized, hasBundle else { return false }
+        let content = UNMutableNotificationContent()
+        content.title = "\(provider.displayName) quota recovered"
+        let pct = Int(window.remainingPercent.rounded())
+        if let reset = window.resetsAt {
+            content.body = "\(window.label): \(pct)% left · next reset \(QuotaRow.relative(reset))"
+        } else {
+            content.body = "\(window.label): \(pct)% left"
+        }
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: "agentmeter.\(provider.rawValue).\(window.id).recovered.\(Int(Date().timeIntervalSince1970))",
             content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
         return true
