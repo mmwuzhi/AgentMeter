@@ -1,0 +1,233 @@
+import Foundation
+
+/// Keeps recent quota observations bounded and derives per-window runway.
+enum QuotaTrendTracker {
+    static let maxObservationAge: TimeInterval = 60 * 60 * 24
+    static let maxObservationCount = 200
+
+    static func record(
+        existing: [QuotaObservation],
+        states: [ProviderState],
+        at now: Date = Date()
+    ) -> [QuotaObservation] {
+        let newest = states.flatMap { state in
+            observations(from: state.quota, at: now)
+        }
+        return bounded(existing + newest, at: now)
+    }
+
+    private static func observations(from quota: QuotaSnapshot, at now: Date) -> [QuotaObservation] {
+        guard quota.source != .unavailable else { return [] }
+        return quota.windows.map { window in
+            QuotaObservation(
+                provider: quota.provider,
+                windowID: window.id,
+                remainingPercent: window.remainingPercent,
+                observedAt: now,
+                resetsAt: window.resetsAt
+            )
+        }
+    }
+
+    private static func bounded(_ observations: [QuotaObservation], at now: Date) -> [QuotaObservation] {
+        let cutoff = now.addingTimeInterval(-maxObservationAge)
+        let recent = observations
+            .filter { $0.observedAt >= cutoff }
+            .sorted { $0.observedAt < $1.observedAt }
+        if recent.count <= maxObservationCount { return recent }
+        return Array(recent.suffix(maxObservationCount))
+    }
+
+    static func runway(
+        provider: Provider,
+        window: QuotaWindow,
+        observations: [QuotaObservation],
+        now: Date = Date(),
+        peerWindows: [QuotaWindow] = []
+    ) -> QuotaRunway {
+        let samples = observations
+            .filter { observation in
+                observation.provider == provider
+                    && observation.windowID == window.id
+                    && sameResetEpoch(observation.resetsAt, window.resetsAt)
+            }
+            .sorted { $0.observedAt < $1.observedAt }
+
+        guard samples.count >= 2 else {
+            return QuotaRunway(
+                provider: provider,
+                windowID: window.id,
+                status: .insufficientData,
+                percentPerHour: nil,
+                estimatedDepletionAt: nil,
+                safePercentPerHour: safePercentPerHour(window: window, now: now),
+                message: "needs another refresh"
+            )
+        }
+
+        let current = samples.last!
+        guard let previous = previousDrainingSample(before: current, in: samples) else {
+            return QuotaRunway(
+                provider: provider,
+                windowID: window.id,
+                status: .steady,
+                percentPerHour: 0,
+                estimatedDepletionAt: nil,
+                safePercentPerHour: safePercentPerHour(window: window, now: now),
+                message: "pace steady"
+            )
+        }
+
+        let elapsedHours = max(current.observedAt.timeIntervalSince(previous.observedAt) / 3600, 1 / 120)
+        let percentPerHour = (previous.remainingPercent - current.remainingPercent) / elapsedHours
+        guard percentPerHour > 0 else {
+            return QuotaRunway(
+                provider: provider,
+                windowID: window.id,
+                status: .steady,
+                percentPerHour: 0,
+                estimatedDepletionAt: nil,
+                safePercentPerHour: safePercentPerHour(window: window, now: now),
+                message: "pace steady"
+            )
+        }
+
+        let depletion = current.observedAt.addingTimeInterval((current.remainingPercent / percentPerHour) * 3600)
+        let safeRate = safePercentPerHour(window: window, now: now)
+        let status = statusFor(depletion: depletion, reset: window.resetsAt)
+        let raw = QuotaRunway(
+            provider: provider,
+            windowID: window.id,
+            status: status,
+            percentPerHour: percentPerHour,
+            estimatedDepletionAt: depletion,
+            safePercentPerHour: safeRate,
+            message: message(for: status, depletion: depletion, percentPerHour: percentPerHour, now: now)
+        )
+        return constrainedByShorterWindow(
+            raw,
+            provider: provider,
+            window: window,
+            observations: observations,
+            now: now,
+            peerWindows: peerWindows
+        )
+    }
+
+    private static func sameResetEpoch(_ lhs: Date?, _ rhs: Date?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): return true
+        case let (l?, r?): return abs(l.timeIntervalSince(r)) < 1
+        default: return false
+        }
+    }
+
+    private static func safePercentPerHour(window: QuotaWindow, now: Date) -> Double? {
+        guard let reset = window.resetsAt else { return nil }
+        let hours = reset.timeIntervalSince(now) / 3600
+        guard hours > 0 else { return nil }
+        return window.remainingPercent / hours
+    }
+
+    private static func constrainedByShorterWindow(
+        _ raw: QuotaRunway,
+        provider: Provider,
+        window: QuotaWindow,
+        observations: [QuotaObservation],
+        now: Date,
+        peerWindows: [QuotaWindow]
+    ) -> QuotaRunway {
+        guard raw.status == .atRisk,
+              let rawDepletion = raw.estimatedDepletionAt,
+              let reset = window.resetsAt else {
+            return raw
+        }
+
+        let blocker = peerWindows
+            .filter { peer in
+                guard peer.id != window.id, let peerReset = peer.resetsAt else { return false }
+                return peerReset < reset
+            }
+            .compactMap { peer -> (QuotaWindow, Date)? in
+                let peerRunway = runway(
+                    provider: provider,
+                    window: peer,
+                    observations: observations,
+                    now: now
+                )
+                guard peerRunway.status == .atRisk,
+                      let peerDepletion = peerRunway.estimatedDepletionAt,
+                      peerDepletion < rawDepletion else {
+                    return nil
+                }
+                return (peer, peerDepletion)
+            }
+            .min { $0.1 < $1.1 }
+
+        guard let blocker else { return raw }
+        return QuotaRunway(
+            provider: raw.provider,
+            windowID: raw.windowID,
+            status: .safe,
+            percentPerHour: raw.percentPerHour,
+            estimatedDepletionAt: nil,
+            safePercentPerHour: raw.safePercentPerHour,
+            message: "\(blocker.0.label) limit hits first"
+        )
+    }
+
+    private static func previousDrainingSample(
+        before current: QuotaObservation,
+        in samples: [QuotaObservation]
+    ) -> QuotaObservation? {
+        for sample in samples.dropLast().reversed() {
+            if sample.remainingPercent < current.remainingPercent - 0.1 {
+                return nil
+            }
+            if sample.remainingPercent > current.remainingPercent + 0.1,
+               current.observedAt.timeIntervalSince(sample.observedAt) >= 30 {
+                return sample
+            }
+        }
+        return nil
+    }
+
+    private static func statusFor(
+        depletion: Date,
+        reset: Date?
+    ) -> QuotaRunwayStatus {
+        guard let reset else { return .watch }
+        if depletion < reset { return .atRisk }
+        return .safe
+    }
+
+    private static func message(
+        for status: QuotaRunwayStatus,
+        depletion: Date,
+        percentPerHour: Double,
+        now: Date
+    ) -> String {
+        switch status {
+        case .insufficientData:
+            return "needs another refresh"
+        case .steady:
+            return "pace steady"
+        case .safe:
+            return "pace safe"
+        case .watch:
+            return String(format: "using %.1f%%/h", percentPerHour)
+        case .atRisk:
+            return "would run out \(relative(depletion, now: now))"
+        }
+    }
+
+    private static func relative(_ date: Date, now: Date) -> String {
+        let interval = date.timeIntervalSince(now)
+        if interval <= 0 { return "now" }
+        let f = DateComponentsFormatter()
+        f.allowedUnits = [.day, .hour, .minute]
+        f.maximumUnitCount = 2
+        f.unitsStyle = .abbreviated
+        return "in " + (f.string(from: interval) ?? "?")
+    }
+}
