@@ -8,11 +8,18 @@ struct MenuBarItem: Codable, Identifiable, Equatable, Sendable {
     var id: String { key }
 }
 
+enum MenuBarAlertLevel: Equatable {
+    case none
+    case warn
+    case critical
+}
+
 /// A resolved item ready to draw.
 struct MenuBarSegment: Equatable {
     let label: String       // caption (short)
     let value: String       // value line
     let remaining: Double?  // 0…100 for quota items; nil for spend (drives the alert dot)
+    let alertLevel: MenuBarAlertLevel
 }
 
 /// One thing the menu bar draws, in config order: the gauge glyph or a value column.
@@ -54,6 +61,24 @@ enum MenuBarLayout {
         case .claude: return "cl"
         case .copilot: return "cp"
         }
+    }
+
+    /// Critical (red) threshold — also NotificationManager's notify level.
+    private static var criticalThreshold: Double {
+        let v = UserDefaults.standard.object(forKey: "alertThresholdPercent") as? Double ?? 10
+        return max(1, min(99, v))
+    }
+
+    /// Warning (yellow) threshold. Defaults above critical; clamped so it's never lower.
+    private static var warnThreshold: Double {
+        let v = UserDefaults.standard.object(forKey: "warnThresholdPercent") as? Double ?? 25
+        return max(criticalThreshold, min(99, v))
+    }
+
+    private static func alertLevel(forRemaining remaining: Double) -> MenuBarAlertLevel {
+        if remaining <= criticalThreshold { return .critical }
+        if remaining <= warnThreshold { return .warn }
+        return .none
     }
 
     // MARK: - Persistence
@@ -157,21 +182,28 @@ enum MenuBarLayout {
             guard parts.count == 3, let w = s.quota.windows.first(where: { $0.id == parts[2] }) else { return nil }
             return (MenuBarSegment(label: w.shortLabel,
                                    value: "\(Int(w.remainingPercent.rounded()))%",
-                                   remaining: w.remainingPercent), p)
+                                   remaining: w.remainingPercent,
+                                   alertLevel: alertLevel(forRemaining: w.remainingPercent)), p)
         case "s":
-            return (MenuBarSegment(label: "$",
+            return (MenuBarSegment(label: "usd",
                                    value: String(format: "%.2f", model.todaySpendUSD(for: s)),
-                                   remaining: nil), p)
+                                   remaining: nil,
+                                   alertLevel: .none), p)
         default:
             return nil
         }
     }
 
     /// A single item's current caption + value for the settings preview chips,
-    /// always provider-prefixed so each chip is unambiguous (`cx 5h`, `cl wk`, `cx $`).
+    /// always provider-prefixed so each chip is unambiguous (`cx 5h`, `cl wk`, `cx usd`).
     static func preview(_ key: String, _ model: AppViewModel) -> MenuBarSegment? {
         guard let (seg, p) = resolve(key, model) else { return nil }
-        return MenuBarSegment(label: "\(tag(p)) \(seg.label)", value: seg.value, remaining: seg.remaining)
+        return MenuBarSegment(
+            label: "\(tag(p)) \(seg.label)",
+            value: seg.value,
+            remaining: seg.remaining,
+            alertLevel: seg.alertLevel
+        )
     }
 
     /// Enabled elements in order (icon + value columns), resolved against the model.
@@ -187,7 +219,9 @@ enum MenuBarLayout {
             guard let r = resolve(item.key, model) else { continue }
             if mixed {
                 out.append(.segment(MenuBarSegment(label: "\(tag(r.provider)) \(r.segment.label)",
-                                                   value: r.segment.value, remaining: r.segment.remaining)))
+                                                   value: r.segment.value,
+                                                   remaining: r.segment.remaining,
+                                                   alertLevel: r.segment.alertLevel)))
             } else {
                 out.append(.segment(r.segment))
             }
