@@ -84,11 +84,21 @@ final class RefreshCoordinator {
             viewModel.codex = c.preservingLiveQuota(from: previousCodexQuota, at: now)
             viewModel.claude = cl.preservingLiveQuota(from: previousClaudeQuota, at: now)
             viewModel.copilot = cp.preservingLiveQuota(from: previousCopilotQuota, at: now)
+            viewModel.quotaObservations = QuotaTrendTracker.record(
+                existing: viewModel.quotaObservations,
+                states: [c, cl, cp],
+                at: now
+            )
             viewModel.lastRefresh = Date()
             viewModel.isRefreshing = false
             refreshStartedAt = nil
             // Cache for the next launch so the menu bar shows last values instantly.
-            StateCache.save(codex: viewModel.codex, claude: viewModel.claude, copilot: viewModel.copilot)
+            StateCache.save(
+                codex: viewModel.codex,
+                claude: viewModel.claude,
+                copilot: viewModel.copilot,
+                quotaObservations: viewModel.quotaObservations
+            )
             NotificationManager.shared.evaluate(provider: .codex, windows: viewModel.codex.quota.windows)
             NotificationManager.shared.evaluate(provider: .claude, windows: viewModel.claude.quota.windows)
             NotificationManager.shared.evaluate(provider: .copilot, windows: viewModel.copilot.quota.windows)

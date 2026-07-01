@@ -3,9 +3,9 @@ import SwiftUI
 /// One quota window: label + large remaining % anchor + continuous bar + reset countdown.
 struct QuotaRow: View {
     let window: QuotaWindow
+    var runway: QuotaRunway?
 
     private var color: Color { QuotaColor.forRemaining(window.remainingPercent) }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline) {
@@ -26,6 +26,11 @@ struct QuotaRow: View {
                 Text("resets \(Self.relative(resets))")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+            }
+            if let runway, runway.status == .atRisk {
+                Text(runway.message)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
             }
         }
     }

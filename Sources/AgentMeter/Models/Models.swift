@@ -36,6 +36,40 @@ struct QuotaWindow: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
+/// One observed quota point, captured after a successful provider refresh.
+struct QuotaObservation: Identifiable, Codable, Sendable, Equatable {
+    let provider: Provider
+    let windowID: String
+    let remainingPercent: Double
+    let observedAt: Date
+    let resetsAt: Date?
+
+    var id: String {
+        "\(provider.rawValue):\(windowID):\(observedAt.timeIntervalSince1970)"
+    }
+}
+
+enum QuotaRunwayStatus: String, Codable, Sendable, Equatable {
+    case insufficientData
+    case steady
+    case safe
+    case watch
+    case atRisk
+}
+
+/// Derived prediction for one quota window, based on observed percent drain.
+struct QuotaRunway: Codable, Sendable, Equatable {
+    let provider: Provider
+    let windowID: String
+    let status: QuotaRunwayStatus
+    let percentPerHour: Double?
+    let estimatedDepletionAt: Date?
+    let safePercentPerHour: Double?
+    let message: String
+
+    var isAtRisk: Bool { status == .atRisk }
+}
+
 /// Compact token-count formatter: 1.2k / 3.4M / 1.1B / 2.0T (drops trailing .0).
 enum TokenFormat {
     static func short(_ n: Int) -> String {

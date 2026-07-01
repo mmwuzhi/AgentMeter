@@ -14,6 +14,7 @@ final class AppViewModel {
 
     var isRefreshing = false
     var lastRefresh: Date?
+    var quotaObservations: [QuotaObservation] = []
 
     init() {
         // Show the last values we saw immediately; the first refresh replaces them.
@@ -21,6 +22,7 @@ final class AppViewModel {
             codex = snap.codex
             claude = snap.claude
             copilot = snap.copilot
+            quotaObservations = snap.quotaObservations
         }
     }
 
@@ -45,4 +47,22 @@ final class AppViewModel {
         let start = Calendar.current.startOfDay(for: Date())
         return state.usage.buckets.first { $0.day == start }?.costUSD ?? 0
     }
+
+    func runway(for provider: Provider, window: QuotaWindow, now: Date = Date()) -> QuotaRunway {
+        let peerWindows: [QuotaWindow] = {
+            switch provider {
+            case .codex: return codex.quota.windows
+            case .claude: return claude.quota.windows
+            case .copilot: return copilot.quota.windows
+            }
+        }()
+        return QuotaTrendTracker.runway(
+            provider: provider,
+            window: window,
+            observations: quotaObservations,
+            now: now,
+            peerWindows: peerWindows
+        )
+    }
+
 }

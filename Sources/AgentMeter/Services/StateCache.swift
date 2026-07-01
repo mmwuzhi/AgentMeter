@@ -9,11 +9,18 @@ enum StateCache {
         var codex: ProviderState
         var claude: ProviderState
         var copilot: ProviderState
+        var quotaObservations: [QuotaObservation]
 
-        init(codex: ProviderState, claude: ProviderState, copilot: ProviderState) {
+        init(
+            codex: ProviderState,
+            claude: ProviderState,
+            copilot: ProviderState,
+            quotaObservations: [QuotaObservation] = []
+        ) {
             self.codex = codex
             self.claude = claude
             self.copilot = copilot
+            self.quotaObservations = quotaObservations
         }
 
         // Tolerate caches written before Copilot existed: fall back to an empty
@@ -26,6 +33,7 @@ enum StateCache {
             copilot = try c.decodeIfPresent(ProviderState.self, forKey: .copilot)
                 ?? ProviderState(provider: .copilot, quota: .unavailable(.copilot, note: "Loading…"),
                                  usage: .empty(.copilot))
+            quotaObservations = try c.decodeIfPresent([QuotaObservation].self, forKey: .quotaObservations) ?? []
         }
     }
 
@@ -40,8 +48,18 @@ enum StateCache {
         return try? JSONDecoder().decode(Snapshot.self, from: data)
     }
 
-    static func save(codex: ProviderState, claude: ProviderState, copilot: ProviderState) {
-        let snap = Snapshot(codex: codex, claude: claude, copilot: copilot)
+    static func save(
+        codex: ProviderState,
+        claude: ProviderState,
+        copilot: ProviderState,
+        quotaObservations: [QuotaObservation] = []
+    ) {
+        let snap = Snapshot(
+            codex: codex,
+            claude: claude,
+            copilot: copilot,
+            quotaObservations: quotaObservations
+        )
         guard let data = try? JSONEncoder().encode(snap) else { return }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? data.write(to: fileURL, options: .atomic)

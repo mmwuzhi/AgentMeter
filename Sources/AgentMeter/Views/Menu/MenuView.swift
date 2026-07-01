@@ -16,7 +16,13 @@ struct MenuView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(visibleProviders, id: \.self) { p in
-                        ProviderSection(state: PopoverOrder.state(p, model), tint: PopoverOrder.tint(p))
+                        ProviderSection(
+                            state: PopoverOrder.state(p, model),
+                            tint: PopoverOrder.tint(p),
+                            runway: { provider, window in
+                                model.runway(for: provider, window: window)
+                            }
+                        )
                     }
                 }
                 .padding(12)
@@ -160,6 +166,7 @@ enum PopoverOrder {
 struct ProviderSection: View {
     let state: ProviderState
     var tint: Color
+    var runway: (Provider, QuotaWindow) -> QuotaRunway
     @State private var showHeatmap = false
 
     var body: some View {
@@ -183,7 +190,9 @@ struct ProviderSection: View {
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 10) {
-                    ForEach(state.quota.windows) { w in QuotaRow(window: w) }
+                    ForEach(state.quota.windows) { w in
+                        QuotaRow(window: w, runway: runway(state.provider, w))
+                    }
                 }
             }
 
