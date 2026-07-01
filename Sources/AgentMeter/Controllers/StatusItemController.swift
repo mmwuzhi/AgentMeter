@@ -11,9 +11,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let contentView = MenuBarContentView()
     private var lastLength: CGFloat = -1
 
-    /// Two-stage low-quota cue shown as a corner dot (text stays adaptive).
-    private enum AlertLevel { case none, warn, critical }
-
     init(model: AppViewModel, coordinator: RefreshCoordinator) {
         self.model = model
         self.coordinator = coordinator
@@ -78,7 +75,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func updateTitle() {
         guard let button = statusItem.button else { return }
-        let (elements, level) = menuBarElements()
+        let elements = MenuBarLayout.activeElements(model)
         let showCaptions = UserDefaults.standard.object(forKey: "menuBarShowCaptions") as? Bool ?? true
         let summary = accessibilitySummary()
         button.toolTip = summary
@@ -91,45 +88,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             statusItem.length = width
         }
         contentView.frame = button.bounds
-        contentView.apply(elements: elements, showCaptions: showCaptions, alertColor: alertColor(for: level))
-    }
-
-    private func alertColor(for level: AlertLevel) -> NSColor? {
-        switch level {
-        case .none: return nil
-        case .warn: return .systemYellow
-        case .critical: return .systemRed
-        }
-    }
-
-    /// Critical (red) threshold — also NotificationManager's notify level.
-    private static var criticalThreshold: Double {
-        let v = UserDefaults.standard.object(forKey: "alertThresholdPercent") as? Double ?? 10
-        return max(1, min(99, v))
-    }
-
-    /// Warning (yellow) threshold. Defaults above critical; clamped so it's never lower.
-    private static var warnThreshold: Double {
-        let v = UserDefaults.standard.object(forKey: "warnThresholdPercent") as? Double ?? 25
-        return max(criticalThreshold, min(99, v))
-    }
-
-    private static func level(forRemaining remaining: Double) -> AlertLevel {
-        if remaining <= criticalThreshold { return .critical }
-        if remaining <= warnThreshold { return .warn }
-        return .none
-    }
-
-    /// Resolve the user-configured elements, plus the worst alert level across the
-    /// shown quota columns (drives the corner dot).
-    private func menuBarElements() -> (elements: [MenuBarElement], level: AlertLevel) {
-        let elements = MenuBarLayout.activeElements(model)
-        var minRemaining = Double.infinity
-        for case .segment(let s) in elements {
-            if let r = s.remaining { minRemaining = min(minRemaining, r) }
-        }
-        let level = minRemaining.isFinite ? Self.level(forRemaining: minRemaining) : .none
-        return (elements, level)
+        contentView.apply(elements: elements, showCaptions: showCaptions)
     }
 
     /// Spoken/hover summary for VoiceOver and the tooltip — the shown columns.

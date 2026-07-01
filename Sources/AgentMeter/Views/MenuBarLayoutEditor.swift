@@ -353,14 +353,14 @@ final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
         let element: MenuBarElement = {
             if key == "icon" { return .icon }
             if let seg = MenuBarLayout.preview(key, model) { return .segment(seg) }
-            return .segment(MenuBarSegment(label: names[key] ?? key, value: "—", remaining: nil))
+            return .segment(MenuBarSegment(label: names[key] ?? key, value: "—", remaining: nil, alertLevel: .none))
         }()
         let v = MenuBarContentView()
         v.forcedColor = .white
         v.passesClicksThrough = true
         let w = MenuBarContentView.width(elements: [element], showCaptions: showCaptions)
         v.frame = CGRect(x: 0, y: 0, width: w, height: 22)
-        v.apply(elements: [element], showCaptions: showCaptions, alertColor: nil)
+        v.apply(elements: [element], showCaptions: showCaptions)
         return v
     }
 
