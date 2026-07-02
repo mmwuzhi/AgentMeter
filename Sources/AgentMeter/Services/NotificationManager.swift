@@ -136,12 +136,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         guard authorized, hasBundle else { return false }
         let content = UNMutableNotificationContent()
         content.title = "\(provider.displayName) quota low"
-        let pct = Int(window.remainingPercent.rounded())
-        if let reset = window.resetsAt {
-            content.body = "\(window.label): \(pct)% left · resets \(QuotaRow.relative(reset))"
-        } else {
-            content.body = "\(window.label): \(pct)% left"
-        }
+        content.body = Self.criticalBody(for: window)
         content.sound = .default
         let request = UNNotificationRequest(
             identifier: "agentmeter.\(provider.rawValue).\(window.id).\(Int(Date().timeIntervalSince1970))",
@@ -155,18 +150,31 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         guard authorized, hasBundle else { return false }
         let content = UNMutableNotificationContent()
         content.title = "\(provider.displayName) quota recovered"
-        let pct = Int(window.remainingPercent.rounded())
-        if let reset = window.resetsAt {
-            content.body = "\(window.label): \(pct)% left · next reset \(QuotaRow.relative(reset))"
-        } else {
-            content.body = "\(window.label): \(pct)% left"
-        }
+        content.body = Self.recoveredBody(for: window)
         content.sound = .default
         let request = UNNotificationRequest(
             identifier: "agentmeter.\(provider.rawValue).\(window.id).recovered.\(Int(Date().timeIntervalSince1970))",
             content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
         return true
+    }
+
+    nonisolated static func criticalBody(for window: QuotaWindow) -> String {
+        let pct = Int(window.remainingPercent.rounded())
+        guard let reset = window.resetsAt else {
+            return "\(window.label): \(pct)% left"
+        }
+        let verb = window.isOneTimeCredit == true ? "expires" : "resets"
+        return "\(window.label): \(pct)% left · \(verb) \(QuotaRow.relative(reset))"
+    }
+
+    nonisolated static func recoveredBody(for window: QuotaWindow) -> String {
+        let pct = Int(window.remainingPercent.rounded())
+        guard let reset = window.resetsAt else {
+            return "\(window.label): \(pct)% left"
+        }
+        let prefix = window.isOneTimeCredit == true ? "expires" : "next reset"
+        return "\(window.label): \(pct)% left · \(prefix) \(QuotaRow.relative(reset))"
     }
 
     // Show the banner + play sound even when AgentMeter is the active app
