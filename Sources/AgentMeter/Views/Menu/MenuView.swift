@@ -194,6 +194,11 @@ struct ProviderSection: View {
                         QuotaRow(window: w, runway: runway(state.provider, w))
                     }
                 }
+                if let resetCreditsSummary {
+                    Text(resetCreditsSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             // Copilot is flat-rate (no token spend), so skip the spend block for
@@ -249,6 +254,15 @@ struct ProviderSection: View {
         case .cli: return "cli"
         case .unavailable: return "usage only"
         }
+    }
+
+    private var resetCreditsSummary: String? {
+        guard let text = state.quota.resetCreditsCountText else { return nil }
+        guard let expiresAt = state.quota.resetCreditsExpiresAt else { return text }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return "\(text) · nearest expiry \(formatter.string(from: expiresAt))"
     }
 }
 

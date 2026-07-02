@@ -10,17 +10,20 @@ enum StateCache {
         var claude: ProviderState
         var copilot: ProviderState
         var quotaObservations: [QuotaObservation]
+        var codexResetCreditState: CodexResetCreditState
 
         init(
             codex: ProviderState,
             claude: ProviderState,
             copilot: ProviderState,
-            quotaObservations: [QuotaObservation] = []
+            quotaObservations: [QuotaObservation] = [],
+            codexResetCreditState: CodexResetCreditState = CodexResetCreditState()
         ) {
             self.codex = codex
             self.claude = claude
             self.copilot = copilot
             self.quotaObservations = quotaObservations
+            self.codexResetCreditState = codexResetCreditState
         }
 
         // Tolerate caches written before Copilot existed: fall back to an empty
@@ -34,6 +37,10 @@ enum StateCache {
                 ?? ProviderState(provider: .copilot, quota: .unavailable(.copilot, note: "Loading…"),
                                  usage: .empty(.copilot))
             quotaObservations = try c.decodeIfPresent([QuotaObservation].self, forKey: .quotaObservations) ?? []
+            codexResetCreditState = try c.decodeIfPresent(
+                CodexResetCreditState.self,
+                forKey: .codexResetCreditState
+            ) ?? CodexResetCreditState()
         }
     }
 
@@ -52,13 +59,15 @@ enum StateCache {
         codex: ProviderState,
         claude: ProviderState,
         copilot: ProviderState,
-        quotaObservations: [QuotaObservation] = []
+        quotaObservations: [QuotaObservation] = [],
+        codexResetCreditState: CodexResetCreditState = CodexResetCreditState()
     ) {
         let snap = Snapshot(
             codex: codex,
             claude: claude,
             copilot: copilot,
-            quotaObservations: quotaObservations
+            quotaObservations: quotaObservations,
+            codexResetCreditState: codexResetCreditState
         )
         guard let data = try? JSONEncoder().encode(snap) else { return }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

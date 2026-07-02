@@ -76,6 +76,8 @@ final class AppServerSession {
 
     static func parseQuota(_ result: [String: Any]) throws -> QuotaSnapshot {
         let rl = (result["rateLimits"] as? [String: Any]) ?? result
+        let resetCredits = (result["rateLimitResetCredits"] as? [String: Any])
+            ?? (result["rate_limit_reset_credits"] as? [String: Any])
         var windows: [QuotaWindow] = []
         func add(_ id: String, _ d: [String: Any]?) {
             guard let d else { return }
@@ -90,7 +92,37 @@ final class AppServerSession {
         add("secondary", rl["secondary"] as? [String: Any])
         guard !windows.isEmpty else { throw SessionError.badResponse }
         return QuotaSnapshot(provider: .codex, windows: windows, source: .appServer,
-                             planType: rl["planType"] as? String, fetchedAt: Date(), note: nil)
+                             planType: rl["planType"] as? String,
+                             resetCreditsAvailable: Self.resetCreditsAvailable(in: resetCredits),
+                             resetCreditsExpiresAt: Self.resetCreditsExpiresAt(in: resetCredits),
+                             fetchedAt: Date(), note: nil)
+    }
+
+    private static func resetCreditsAvailable(in obj: [String: Any]?) -> Int? {
+        guard let obj else { return nil }
+        if let count = obj["availableCount"] as? Int { return count }
+        if let count = obj["available_count"] as? Int { return count }
+        if let count = obj["availableCount"] as? Double { return Int(count) }
+        if let count = obj["available_count"] as? Double { return Int(count) }
+        return nil
+    }
+
+    private static func resetCreditsExpiresAt(in obj: [String: Any]?) -> Date? {
+        guard let obj else { return nil }
+        let keys = ["expiresAt", "expires_at", "expirationDate", "expiration_date", "expires"]
+        for key in keys {
+            if let seconds = obj[key] as? Double {
+                return Date(timeIntervalSince1970: seconds)
+            }
+            if let seconds = obj[key] as? Int {
+                return Date(timeIntervalSince1970: Double(seconds))
+            }
+            if let string = obj[key] as? String,
+               let date = CodexRolloutReader.parseISO(string) {
+                return date
+            }
+        }
+        return nil
     }
 
     // MARK: - JSON-RPC plumbing

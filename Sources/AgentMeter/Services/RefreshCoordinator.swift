@@ -81,7 +81,17 @@ final class RefreshCoordinator {
             async let copilotState = copilot.fetch()
             let (c, cl, cp) = await (codexState, claudeState, copilotState)
             let now = Date()
-            viewModel.codex = c.preservingLiveQuota(from: previousCodexQuota, at: now)
+            var nextCodex = c.preservingLiveQuota(from: previousCodexQuota, at: now)
+            viewModel.codexResetCreditState = CodexResetCreditTracker.reconcile(
+                existing: viewModel.codexResetCreditState,
+                quota: nextCodex.quota,
+                at: now
+            )
+            if nextCodex.quota.resetCreditsExpiresAt == nil,
+               let nearestExpiry = viewModel.codexResetCreditState.nearestExpiry {
+                nextCodex.quota = nextCodex.quota.withResetCreditsExpiresAt(nearestExpiry)
+            }
+            viewModel.codex = nextCodex
             viewModel.claude = cl.preservingLiveQuota(from: previousClaudeQuota, at: now)
             viewModel.copilot = cp.preservingLiveQuota(from: previousCopilotQuota, at: now)
             viewModel.quotaObservations = QuotaTrendTracker.record(
@@ -97,7 +107,8 @@ final class RefreshCoordinator {
                 codex: viewModel.codex,
                 claude: viewModel.claude,
                 copilot: viewModel.copilot,
-                quotaObservations: viewModel.quotaObservations
+                quotaObservations: viewModel.quotaObservations,
+                codexResetCreditState: viewModel.codexResetCreditState
             )
             NotificationManager.shared.evaluate(provider: .codex, windows: viewModel.codex.quota.windows)
             NotificationManager.shared.evaluate(provider: .claude, windows: viewModel.claude.quota.windows)

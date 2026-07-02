@@ -15,6 +15,7 @@ final class AppViewModel {
     var isRefreshing = false
     var lastRefresh: Date?
     var quotaObservations: [QuotaObservation] = []
+    var codexResetCreditState = CodexResetCreditState()
 
     init() {
         // Show the last values we saw immediately; the first refresh replaces them.
@@ -23,6 +24,7 @@ final class AppViewModel {
             claude = snap.claude
             copilot = snap.copilot
             quotaObservations = snap.quotaObservations
+            codexResetCreditState = snap.codexResetCreditState
         }
     }
 

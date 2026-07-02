@@ -35,7 +35,7 @@ struct QuotaRow: View {
         }
     }
 
-    static func relative(_ date: Date) -> String {
+    nonisolated static func relative(_ date: Date) -> String {
         let interval = date.timeIntervalSinceNow
         if interval <= 0 { return "now" }
         let f = DateComponentsFormatter()
@@ -44,4 +44,5 @@ struct QuotaRow: View {
         f.unitsStyle = .abbreviated
         return "in " + (f.string(from: interval) ?? "?")
     }
+
 }
