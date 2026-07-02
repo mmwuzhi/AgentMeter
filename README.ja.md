@@ -46,6 +46,10 @@ make clean
 xattr -dr com.apple.quarantine /Applications/AgentMeter.app
 ```
 
+### 署名とKeychainプロンプト
+
+`Scripts/bundle.sh` は `Apple Development` 証明書があればそれで署名し、なければad-hoc（`-`、`CODESIGN_IDENTITY` で上書き可）にフォールバックします。AgentMeterは `Claude Code-credentials` のKeychain項目を読むため、初回読み取り時にmacOSがKeychainアクセスを求めます。安定した証明書なら「常に許可」は再ビルドしても有効ですが、ad-hocは再ビルドごとに署名が変わるため、プロンプトが再び出ます。（Claude CodeがOAuthトークンをローテーションしたときも、署名に関係なくプロンプトが再度出ます。）これはKeychainのACLであり、TCC権限ではないため、`tccutil` は適用されません。リリースはad-hocのままです——有料のApple Developer Programアカウントがないためです。
+
 ## インストール
 
 [GitHub Releases](https://github.com/mmwuzhi/AgentMeter/releases/latest)から最新の `AgentMeter-<version>.dmg` をダウンロードし、DMGを開いて `AgentMeter.app` を `/Applications` にドラッグします。

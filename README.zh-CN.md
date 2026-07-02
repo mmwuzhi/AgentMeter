@@ -46,6 +46,10 @@ make clean
 xattr -dr com.apple.quarantine /Applications/AgentMeter.app
 ```
 
+### 签名与 Keychain 弹窗
+
+`Scripts/bundle.sh` 有 `Apple Development` 证书时用它签名，没有则回退 ad-hoc（`-`，可用 `CODESIGN_IDENTITY` 覆盖）。AgentMeter 会读取 `Claude Code-credentials` 这个 Keychain 项，所以首次读取时 macOS 会弹出 Keychain 授权。用稳定证书签名时，「始终允许」跨重新构建有效；ad-hoc 每次重新构建都换新签名，弹窗会再次出现。（Claude Code 轮换 OAuth token 时也会重新触发弹窗，与签名无关。）这是 Keychain ACL，不是 TCC 权限，所以 `tccutil` 在这里不适用。发布仍然是 ad-hoc——没有付费的 Apple Developer Program 账户。
+
 ## 安装
 
 从 [GitHub Releases](https://github.com/mmwuzhi/AgentMeter/releases/latest) 下载最新的 `AgentMeter-<version>.dmg`，打开 DMG，把 `AgentMeter.app` 拖到 `/Applications`。
