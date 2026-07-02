@@ -23,7 +23,8 @@ struct QuotaRow: View {
             }
             QuotaBar(remainingPercent: window.remainingPercent)
             if let resets = window.resetsAt {
-                Text("resets \(Self.relative(resets))")
+                let verb = window.isOneTimeCredit == true ? "expires" : "resets"
+                Text("\(verb) \(Self.relative(resets))")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }

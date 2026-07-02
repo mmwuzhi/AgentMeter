@@ -42,6 +42,13 @@ offline snapshot in `Resources/embedded-pricing.json`.
 > to use the keychain"); click **Always Allow**. If you decline or are offline, Claude
 > degrades to usage/spend only and Codex is unaffected.
 
+> **Spend-based Claude plans (e.g. Enterprise) don't have 5-hour/weekly windows at
+> all** — they're billed against an org spend limit instead of session-based rate
+> limits. AgentMeter shows whatever one-time included credit the account has (e.g.
+> "Included credit" for a Claude Code + Cowork allowance) and falls back to a plain
+> "no session-based quota windows" note plus usage/spend when there's nothing else
+> to show.
+
 ## Build & run
 
 Requires the Xcode toolchain (Xcode 16+ / Swift 6).

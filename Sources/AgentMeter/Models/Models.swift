@@ -21,6 +21,11 @@ struct QuotaWindow: Identifiable, Codable, Sendable, Equatable {
     let label: String       // human label, e.g. "5-hour", "Weekly"
     let usedPercent: Double  // 0...100
     let resetsAt: Date?      // nil if unknown
+    /// True for one-time allowances that lapse rather than refill (e.g. an
+    /// included credit that expires on a fixed date). Optional so older
+    /// cached `QuotaWindow` JSON without this key still decodes; nil/false
+    /// means `resetsAt` is a recurring reset like the 5-hour/weekly windows.
+    var isOneTimeCredit: Bool? = nil
 
     var remainingPercent: Double { max(0, min(100, 100 - usedPercent)) }
 
