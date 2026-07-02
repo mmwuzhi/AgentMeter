@@ -73,7 +73,10 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
     }
 
     func testParseSnapshotWithNoWindowsAndKnownPlanDoesNotThrow() throws {
-        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(from: ["plan_type": "enterprise"])
+        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
+            from: ["plan_type": "enterprise"],
+            captureDebugResponse: false
+        )
 
         XCTAssertTrue(snapshot.windows.isEmpty)
         XCTAssertEqual(snapshot.source, .oauth)
@@ -106,11 +109,14 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
     }
 
     func testParseSnapshotIgnoresInactiveNamedCreditBuckets() throws {
-        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(from: [
-            "plan_type": "enterprise",
-            "amber_ladder": ["utilization": 0, "limit_dollars": 25000] as [String: Any],
-            "tangelo": NSNull()
-        ])
+        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
+            from: [
+                "plan_type": "enterprise",
+                "amber_ladder": ["utilization": 0, "limit_dollars": 25000] as [String: Any],
+                "tangelo": NSNull()
+            ],
+            captureDebugResponse: false
+        )
 
         XCTAssertTrue(snapshot.windows.isEmpty)
         XCTAssertNotNil(snapshot.note)

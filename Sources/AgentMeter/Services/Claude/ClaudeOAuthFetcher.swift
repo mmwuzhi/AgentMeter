@@ -29,7 +29,10 @@ enum ClaudeOAuthFetcher {
     /// Plans without session-based rate limits (e.g. Enterprise, which is spend-limited
     /// instead) legitimately have no `five_hour`/`seven_day*` keys — that is not a parse
     /// failure, so an empty `windows` result is still returned rather than thrown.
-    static func parseSnapshot(from obj: [String: Any]) throws -> QuotaSnapshot {
+    static func parseSnapshot(
+        from obj: [String: Any],
+        captureDebugResponse: Bool = true
+    ) throws -> QuotaSnapshot {
         guard !obj.isEmpty else { throw URLError(.cannotParseResponse) }
 
         var windows: [QuotaWindow] = []
@@ -59,7 +62,9 @@ enum ClaudeOAuthFetcher {
 
         var note: String?
         if windows.isEmpty {
-            captureRawResponseForDebugging(obj)
+            if captureDebugResponse {
+                captureRawResponseForDebugging(obj)
+            }
             note = "\(plan?.capitalized ?? "This") plan has no session-based quota windows — showing usage/spend below"
         }
 

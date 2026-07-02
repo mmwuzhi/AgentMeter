@@ -235,4 +235,34 @@ final class QuotaNotificationPolicyTests: XCTestCase {
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(state.criticalNotified.isEmpty)
     }
+
+    func testCriticalNotificationBodyUsesExpiresForOneTimeCredit() {
+        let window = QuotaWindow(
+            id: "cinder_cove",
+            label: "Included credit",
+            usedPercent: 95,
+            resetsAt: Date().addingTimeInterval(3600),
+            isOneTimeCredit: true
+        )
+
+        let body = NotificationManager.criticalBody(for: window)
+
+        XCTAssertTrue(body.contains("expires"))
+        XCTAssertFalse(body.contains("resets"))
+    }
+
+    func testRecoveredNotificationBodyUsesExpiresForOneTimeCredit() {
+        let window = QuotaWindow(
+            id: "cinder_cove",
+            label: "Included credit",
+            usedPercent: 5,
+            resetsAt: Date().addingTimeInterval(3600),
+            isOneTimeCredit: true
+        )
+
+        let body = NotificationManager.recoveredBody(for: window)
+
+        XCTAssertTrue(body.contains("expires"))
+        XCTAssertFalse(body.contains("next reset"))
+    }
 }
