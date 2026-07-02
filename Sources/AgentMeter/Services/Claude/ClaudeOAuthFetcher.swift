@@ -37,6 +37,44 @@ enum ClaudeOAuthFetcher {
 
         guard !windows.isEmpty else { throw URLError(.cannotParseResponse) }
         return QuotaSnapshot(provider: .claude, windows: windows, source: .oauth,
-                             planType: obj["plan_type"] as? String, fetchedAt: Date(), note: nil)
+                             planType: planType(in: obj, windows: windows), fetchedAt: Date(), note: nil)
+    }
+
+    static func planType(in obj: [String: Any], windows: [QuotaWindow]) -> String? {
+        let directKeys = ["plan_type", "planType", "plan", "subscription_type", "subscriptionType"]
+        if let explicit = firstString(in: obj, keys: directKeys) {
+            return explicit
+        }
+
+        for key in ["subscription", "account", "organization", "user"] {
+            guard let nested = obj[key] as? [String: Any],
+                  let explicit = firstString(in: nested, keys: directKeys + ["tier"]) else {
+                continue
+            }
+            return explicit
+        }
+
+        return inferredPlanType(from: windows)
+    }
+
+    private static func firstString(in obj: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = obj[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
+        return nil
+    }
+
+    private static func inferredPlanType(from windows: [QuotaWindow]) -> String? {
+        let ids = Set(windows.map(\.id))
+        if ids.contains("seven_day_opus") || ids.contains("seven_day_sonnet") {
+            return "max"
+        }
+        if ids.contains("seven_day") {
+            return "pro"
+        }
+        return nil
     }
 }

@@ -103,8 +103,50 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
     let windows: [QuotaWindow]
     let source: SourceKind
     let planType: String?       // e.g. "free", "pro"
+    let resetCreditsAvailable: Int? // Codex-only reset credits, when exposed
+    let resetCreditsExpiresAt: Date? // Codex-only, nil when the protocol omits expiry
     let fetchedAt: Date
     let note: String?           // user-facing hint when degraded
+
+    init(
+        provider: Provider,
+        windows: [QuotaWindow],
+        source: SourceKind,
+        planType: String?,
+        resetCreditsAvailable: Int? = nil,
+        resetCreditsExpiresAt: Date? = nil,
+        fetchedAt: Date,
+        note: String?
+    ) {
+        self.provider = provider
+        self.windows = windows
+        self.source = source
+        self.planType = planType
+        self.resetCreditsAvailable = resetCreditsAvailable
+        self.resetCreditsExpiresAt = resetCreditsExpiresAt
+        self.fetchedAt = fetchedAt
+        self.note = note
+    }
+
+    var resetCreditsCountText: String? {
+        guard provider == .codex, let resetCreditsAvailable else { return nil }
+        return resetCreditsAvailable == 1
+            ? "1 reset available"
+            : "\(resetCreditsAvailable) resets available"
+    }
+
+    func withResetCreditsExpiresAt(_ expiresAt: Date) -> QuotaSnapshot {
+        QuotaSnapshot(
+            provider: provider,
+            windows: windows,
+            source: source,
+            planType: planType,
+            resetCreditsAvailable: resetCreditsAvailable,
+            resetCreditsExpiresAt: expiresAt,
+            fetchedAt: fetchedAt,
+            note: note
+        )
+    }
 
     static func unavailable(_ provider: Provider, note: String) -> QuotaSnapshot {
         QuotaSnapshot(provider: provider, windows: [], source: .unavailable,
