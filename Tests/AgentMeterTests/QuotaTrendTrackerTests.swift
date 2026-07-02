@@ -251,6 +251,80 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertEqual(runway.percentPerHour, 0)
     }
 
+    func testRunwayDowngradesLongHorizonBurstToWatch() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let reset = now.addingTimeInterval(90 * 24 * 3600) // ~90-day one-time credit
+        let window = QuotaWindow(
+            id: "cinder_cove", label: "Included credit", usedPercent: 3, resetsAt: reset,
+            isOneTimeCredit: true
+        )
+        let observations = [
+            QuotaObservation(
+                provider: .claude,
+                windowID: "cinder_cove",
+                remainingPercent: 98,
+                observedAt: now.addingTimeInterval(-600), // a 10-minute burst
+                resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .claude,
+                windowID: "cinder_cove",
+                remainingPercent: 97,
+                observedAt: now,
+                resetsAt: reset
+            )
+        ]
+
+        let runway = QuotaTrendTracker.runway(
+            provider: .claude,
+            window: window,
+            observations: observations,
+            now: now
+        )
+
+        // Naive linear extrapolation projects depletion ~16h out, which precedes the
+        // 90-day reset and would (pre-fix) read as "would run out" — but 10 minutes of
+        // burst usage isn't enough evidence to trust a 16-hour projection.
+        XCTAssertEqual(runway.status, .watch)
+        XCTAssertNil(runway.estimatedDepletionAt)
+        XCTAssertTrue(runway.message.contains("%/h"))
+    }
+
+    func testRunwaySustainedLongHorizonDrainStillReportsAtRisk() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let reset = now.addingTimeInterval(90 * 24 * 3600)
+        let window = QuotaWindow(
+            id: "cinder_cove", label: "Included credit", usedPercent: 50, resetsAt: reset,
+            isOneTimeCredit: true
+        )
+        let observations = [
+            QuotaObservation(
+                provider: .claude,
+                windowID: "cinder_cove",
+                remainingPercent: 80,
+                observedAt: now.addingTimeInterval(-24 * 3600), // a full day of sustained drain
+                resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .claude,
+                windowID: "cinder_cove",
+                remainingPercent: 50,
+                observedAt: now,
+                resetsAt: reset
+            )
+        ]
+
+        let runway = QuotaTrendTracker.runway(
+            provider: .claude,
+            window: window,
+            observations: observations,
+            now: now
+        )
+
+        XCTAssertEqual(runway.status, .atRisk)
+        XCTAssertNotNil(runway.estimatedDepletionAt)
+    }
+
     func testRecordIgnoresUnavailableQuota() {
         let now = Date(timeIntervalSince1970: 1_000)
         let existing = [

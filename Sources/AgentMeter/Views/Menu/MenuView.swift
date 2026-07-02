@@ -186,7 +186,9 @@ struct ProviderSection: View {
             }
 
             if state.quota.windows.isEmpty {
-                Label(state.quota.note ?? "Live quota unavailable", systemImage: "exclamationmark.triangle")
+                let isDegraded = state.quota.source == .unavailable
+                Label(state.quota.note ?? "Live quota unavailable",
+                      systemImage: isDegraded ? "exclamationmark.triangle" : "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 10) {

@@ -4,6 +4,12 @@ import Foundation
 enum QuotaTrendTracker {
     static let maxObservationAge: TimeInterval = 60 * 60 * 24
     static let maxObservationCount = 200
+    /// A 2-sample instantaneous drain rate is only trusted to extrapolate up to this
+    /// many multiples of the timespan it was actually observed over. A short burst
+    /// (e.g. a few minutes of heavy use) should not be linearly projected for days —
+    /// that produces "would run out" alarms no sustained usage pattern would ever hit,
+    /// especially on long-horizon windows (weekly, or a months-long one-time credit).
+    static let maxExtrapolationMultiplier: Double = 6
 
     static func record(
         existing: [QuotaObservation],
@@ -92,15 +98,23 @@ enum QuotaTrendTracker {
             )
         }
 
-        let depletion = current.observedAt.addingTimeInterval((current.remainingPercent / percentPerHour) * 3600)
+        let hoursToDepletion = current.remainingPercent / percentPerHour
+        let depletion = current.observedAt.addingTimeInterval(hoursToDepletion * 3600)
         let safeRate = safePercentPerHour(window: window, now: now)
-        let status = statusFor(depletion: depletion, reset: window.resetsAt)
+        var status = statusFor(depletion: depletion, reset: window.resetsAt)
+        var reportedDepletion: Date? = depletion
+        if status == .atRisk, hoursToDepletion > elapsedHours * maxExtrapolationMultiplier {
+            // Not enough sustained history to trust a projection this far out — report
+            // the pace without the "would run out" alarm or a specific depletion date.
+            status = .watch
+            reportedDepletion = nil
+        }
         let raw = QuotaRunway(
             provider: provider,
             windowID: window.id,
             status: status,
             percentPerHour: percentPerHour,
-            estimatedDepletionAt: depletion,
+            estimatedDepletionAt: reportedDepletion,
             safePercentPerHour: safeRate,
             message: message(for: status, depletion: depletion, percentPerHour: percentPerHour, now: now)
         )
