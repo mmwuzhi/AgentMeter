@@ -57,6 +57,10 @@ make clean
 The app is ad-hoc signed and runs locally. To move it to another Mac, clear quarantine:
 `xattr -dr com.apple.quarantine /Applications/AgentMeter.app`.
 
+### Signing and the Keychain prompt
+
+`Scripts/bundle.sh` signs with your first `Apple Development` certificate when one is present, and falls back to ad-hoc (`-`) otherwise (override with `CODESIGN_IDENTITY`). AgentMeter reads the `Claude Code-credentials` Keychain item, so macOS prompts for Keychain access on first read. A stable certificate keeps that **Always Allow** grant across rebuilds; ad-hoc builds get a new code signature each rebuild, so the prompt returns. (Claude Code rotating its OAuth token also re-triggers the prompt, regardless of signing.) This is a Keychain ACL, not a TCC permission, so `tccutil` does not apply here. Releases stay ad-hoc — there is no paid Apple Developer Program account.
+
 ## Install
 
 Download the latest `AgentMeter-<version>.dmg` from
