@@ -1,23 +1,40 @@
 import Foundation
 
 /// Reads Codex usage & quota directly from local session rollout logs.
-/// Path: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+/// Paths: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl (live) and
+///        ~/.codex/archived_sessions/rollout-*.jsonl (Codex ≥0.142 moves older
+///        sessions here). Both must be read or today's usage/spend collapses the
+///        moment Codex archives an active session mid-day.
 /// Each `token_count` event embeds `rate_limits` (quota) and `info.total/last_token_usage`.
 enum CodexRolloutReader {
-    static var sessionsDir: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex/sessions", isDirectory: true)
+    /// Roots that may hold rollout logs. `archived_sessions` is a flat directory;
+    /// `sessions` is date-nested. The enumerator walks both recursively.
+    static var sessionRoots: [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [
+            home.appendingPathComponent(".codex/sessions", isDirectory: true),
+            home.appendingPathComponent(".codex/archived_sessions", isDirectory: true),
+        ]
     }
 
     /// All rollout files, newest last (sorted by name, which is timestamp-prefixed).
     static func rolloutFiles() -> [URL] {
-        guard let en = FileManager.default.enumerator(at: sessionsDir,
-                includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
-        var files: [URL] = []
-        for case let url as URL in en where url.lastPathComponent.hasPrefix("rollout-") && url.pathExtension == "jsonl" {
-            files.append(url)
+        rolloutFiles(in: sessionRoots)
+    }
+
+    /// Enumerates rollout logs under the given roots, deduped by filename so a
+    /// session caught mid-archive in both roots — same `rollout-<ts>-<uuid>.jsonl`
+    /// name — is never counted twice. Injectable so tests need not touch $HOME.
+    static func rolloutFiles(in roots: [URL]) -> [URL] {
+        var byName: [String: URL] = [:]
+        for root in roots {
+            guard let en = FileManager.default.enumerator(at: root,
+                    includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
+            for case let url as URL in en where url.lastPathComponent.hasPrefix("rollout-") && url.pathExtension == "jsonl" {
+                byName[url.lastPathComponent] = url
+            }
         }
-        return files.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        return byName.values.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     // MARK: - Quota (latest token_count across newest files)
