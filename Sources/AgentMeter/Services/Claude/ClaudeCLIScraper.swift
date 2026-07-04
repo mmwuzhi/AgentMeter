@@ -17,7 +17,10 @@ enum ClaudeCLIScraper {
         p.currentDirectoryURL = SubprocessWorkingDirectory.url
         let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
         if (try? p.run()) != nil {
-            p.waitUntilExit()
+            guard waitForExit(p, timeout: 1) else {
+                p.terminate()
+                return nil
+            }
             if p.terminationStatus == 0 {
                 let s = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -25,6 +28,15 @@ enum ClaudeCLIScraper {
             }
         }
         return nil
+    }
+
+    private static func waitForExit(_ process: Process, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning {
+            if Date() >= deadline { return false }
+            usleep(20_000)
+        }
+        return true
     }
 
     static var isAvailable: Bool { resolveBinary() != nil }

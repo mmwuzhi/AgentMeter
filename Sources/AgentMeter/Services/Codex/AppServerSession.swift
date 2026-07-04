@@ -38,12 +38,24 @@ final class AppServerSession {
         p.standardError = Pipe()
         do {
             try p.run()
-            p.waitUntilExit()
+            guard waitForExit(p, timeout: 1) else {
+                p.terminate()
+                return nil
+            }
             guard p.terminationStatus == 0 else { return nil }
             let data = out.fileHandleForReading.readDataToEndOfFile()
             let s = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             return (s?.isEmpty == false) ? s : nil
         } catch { return nil }
+    }
+
+    private static func waitForExit(_ process: Process, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning {
+            if Date() >= deadline { return false }
+            usleep(20_000)
+        }
+        return true
     }
 
     func start() throws {
@@ -152,33 +164,82 @@ final class AppServerSession {
     }
 
     private func readResponse(matching id: Int, timeout: TimeInterval) async throws -> [String: Any] {
-        let deadline = Date().addingTimeInterval(timeout)
-        let handle = outPipe.fileHandleForReading
-        while Date() < deadline {
-            // Drain any buffered complete lines first.
-            if let obj = try takeMatchingLine(id: id) { return obj }
-            let chunk = handle.availableData
-            if chunk.isEmpty {
-                try await Task.sleep(nanoseconds: 50_000_000)
-                continue
+        if let line = try takeMatchingLineData(id: id) { return try parseResponseLine(line) }
+        let line: Data = try await withCheckedThrowingContinuation {
+            (cont: CheckedContinuation<Data, Error>) in
+            let handle = outPipe.fileHandleForReading
+            let queue = DispatchQueue(label: "codex.app-server.read")
+            let source = DispatchSource.makeReadSource(fileDescriptor: handle.fileDescriptor, queue: queue)
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            var finished = false
+
+            func succeed(_ data: Data) {
+                guard !finished else { return }
+                finished = true
+                source.cancel()
+                timer.cancel()
+                cont.resume(returning: data)
             }
-            buffer.append(chunk)
-            if let obj = try takeMatchingLine(id: id) { return obj }
+
+            func fail(_ error: Error) {
+                guard !finished else { return }
+                finished = true
+                source.cancel()
+                timer.cancel()
+                cont.resume(throwing: error)
+            }
+
+            source.setEventHandler {
+                let count = Int(source.data)
+                guard count > 0 else {
+                    fail(SessionError.badResponse)
+                    return
+                }
+                let chunk = handle.readData(ofLength: count)
+                guard !chunk.isEmpty else {
+                    fail(SessionError.badResponse)
+                    return
+                }
+                self.buffer.append(chunk)
+                do {
+                    if let line = try self.takeMatchingLineData(id: id) {
+                        succeed(line)
+                    }
+                } catch {
+                    fail(error)
+                }
+            }
+            source.setCancelHandler {}
+            source.resume()
+
+            timer.setEventHandler {
+                self.stop()
+                fail(SessionError.timeout)
+            }
+            timer.schedule(deadline: .now() + timeout)
+            timer.resume()
         }
-        throw SessionError.timeout
+        return try parseResponseLine(line)
     }
 
-    private func takeMatchingLine(id: Int) throws -> [String: Any]? {
+    private func takeMatchingLineData(id: Int) throws -> Data? {
         while let nl = buffer.firstIndex(of: 0x0A) {
             let lineData = buffer.subdata(in: buffer.startIndex..<nl)
             buffer.removeSubrange(buffer.startIndex...nl)
             guard let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] else { continue }
             guard (obj["id"] as? Int) == id else { continue } // skip notifications / other ids
-            if let err = obj["error"] as? [String: Any] {
-                throw SessionError.rpc((err["message"] as? String) ?? "rpc error")
-            }
-            return (obj["result"] as? [String: Any]) ?? [:]
+            return lineData
         }
         return nil
+    }
+
+    private func parseResponseLine(_ lineData: Data) throws -> [String: Any] {
+        guard let obj = try JSONSerialization.jsonObject(with: lineData) as? [String: Any] else {
+            throw SessionError.badResponse
+        }
+        if let err = obj["error"] as? [String: Any] {
+            throw SessionError.rpc((err["message"] as? String) ?? "rpc error")
+        }
+        return (obj["result"] as? [String: Any]) ?? [:]
     }
 }
