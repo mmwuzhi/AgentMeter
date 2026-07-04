@@ -76,18 +76,25 @@ git push origin v1.2.3
 
 也可以在 GitHub Actions 手动运行 **Release** workflow，并输入 `1.2.3`。workflow 会把 `MARKETING_VERSION` 设为 tag 或输入的版本号，校验 app bundle 和 DMG，上传 workflow artifact，并创建或更新带有 DMG 和 `SHA256SUMS` 的 GitHub Release。
 
-发布产物当前是 ad-hoc 签名。Sparkle appcast 生成仍然是单独步骤，因为它需要你的 Sparkle 私钥。
+发布产物当前是 ad-hoc 签名。Sparkle appcast 生成仍然是单独步骤，需要在已有 Sparkle 私钥的机器上运行，或在 CI 中配置 `SPARKLE_PRIVATE_KEY` secret。
 
 ## 启用自动更新（Sparkle）
 
-自动更新代码已经接好，但在配置 feed 之前不会生效：
+自动更新 feed 已配置为 GitHub Releases：
+`https://github.com/mmwuzhi/AgentMeter/releases/latest/download/appcast.xml`。
 
-1. 从 [Sparkle releases page](https://github.com/sparkle-project/Sparkle/releases) 下载 Sparkle 工具。
-2. 运行一次 `./bin/generate_keys`。把输出的 **public** key 填到 `Scripts/Info.plist` 的 `SUPublicEDKey`。
-3. 把 `Scripts/Info.plist` 的 `SUFeedURL` 设为你托管 `appcast.xml` 的地址，例如 GitHub Releases raw URL 或自己的域名。
-4. `make dmg && make appcast`（需要 `generate_appcast` 在 PATH 中）会生成 `dist/appcast.xml`。上传 DMG 和 `appcast.xml` 到你的 feed host。
+发布对应 DMG 后生成 appcast：
 
-配置完成前，**Check for Updates** 会显示一段说明，而不是崩溃。
+```bash
+version=0.4.2
+make dmg
+SPARKLE_VERSION="$version" \
+SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/mmwuzhi/AgentMeter/releases/download/v$version/" \
+make appcast
+gh release upload "v$version" "dist/AgentMeter-$version.dmg" dist/appcast.xml --clobber
+```
+
+`Scripts/appcast.sh` 会优先使用 PATH 里的 Sparkle `generate_appcast`，否则使用 SwiftPM 已下载到 `.build/artifacts/sparkle/Sparkle/bin/` 的工具。设置 `SPARKLE_VERSION` 时，只会读取 `dist/AgentMeter-$SPARKLE_VERSION.dmg`，避免把本地旧 DMG 误写进 feed。
 
 ## 目录结构
 
