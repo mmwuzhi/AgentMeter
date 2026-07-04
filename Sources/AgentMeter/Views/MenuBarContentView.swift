@@ -78,7 +78,7 @@ final class MenuBarContentView: NSView {
 
         // Never vanish: with nothing enabled, still show the gauge as a click target.
         guard !elements.isEmpty else {
-            drawIcon(at: 0, height: height, color: fg)
+            drawIcon(.gauge, at: 0, height: height, color: fg)
             return
         }
 
@@ -102,8 +102,8 @@ final class MenuBarContentView: NSView {
         var x: CGFloat = 0
         for element in elements {
             switch element {
-            case .icon:
-                drawIcon(at: x, height: height, color: fg)
+            case .icon(let icon):
+                drawIcon(icon, at: x, height: height, color: fg)
                 x += Self.iconSize + Self.spacing
             case .segment(let s):
                 let w = Self.columnWidth(s, showCaptions: showCaptions)
@@ -130,14 +130,30 @@ final class MenuBarContentView: NSView {
         }
     }
 
-    private func drawIcon(at x: CGFloat, height: CGFloat, color: NSColor) {
-        let config = NSImage.SymbolConfiguration(pointSize: Self.iconSize, weight: .regular)
-            .applying(.init(paletteColors: [color]))
-        let symbol = NSImage(systemSymbolName: "gauge.with.dots.needle.67percent",
-                             accessibilityDescription: "AgentMeter")?
-            .withSymbolConfiguration(config)
-        symbol?.draw(in: NSRect(x: x, y: (height - Self.iconSize) / 2,
-                                width: Self.iconSize, height: Self.iconSize))
+    private func drawIcon(_ icon: MenuBarIcon, at x: CGFloat, height: CGFloat, color: NSColor) {
+        switch icon {
+        case .gauge:
+            let config = NSImage.SymbolConfiguration(pointSize: Self.iconSize, weight: .regular)
+                .applying(.init(paletteColors: [color]))
+            let symbol = NSImage(systemSymbolName: "gauge.with.dots.needle.67percent",
+                                 accessibilityDescription: "AgentMeter")?
+                .withSymbolConfiguration(config)
+            symbol?.draw(in: NSRect(x: x, y: (height - Self.iconSize) / 2,
+                                    width: Self.iconSize, height: Self.iconSize))
+        case .provider(let provider):
+            let symbolName: String
+            switch provider {
+            case .codex: symbolName = "terminal"
+            case .claude: symbolName = "text.bubble"
+            case .copilot: symbolName = "sparkles"
+            }
+            let config = NSImage.SymbolConfiguration(pointSize: Self.iconSize - 1, weight: .regular)
+                .applying(.init(paletteColors: [color]))
+            let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: provider.displayName)?
+                .withSymbolConfiguration(config)
+            symbol?.draw(in: NSRect(x: x, y: (height - Self.iconSize) / 2,
+                                    width: Self.iconSize, height: Self.iconSize))
+        }
     }
 
     /// Low-quota cue: a tiny dot inside the specific quota column that triggered it.

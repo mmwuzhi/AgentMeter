@@ -31,32 +31,70 @@ private struct MenuBarSettings: View {
     let model: AppViewModel
 
     @AppStorage("menuBarShowCaptions") private var showCaptions = true
-    @StateObject private var coordinator: LayoutEditorCoordinator
+    @StateObject private var slotCoordinator = SlotVisibilityCoordinator()
+    @State private var selectedSlot: MenuBarSlot = .overview
 
     init(model: AppViewModel) {
         self.model = model
-        _coordinator = StateObject(wrappedValue: LayoutEditorCoordinator(model: model))
     }
 
     var body: some View {
         Form {
             Section("Display") {
                 Toggle("Show captions", isOn: $showCaptions)
-                Text("Drag the gauge icon down to Hidden if you don't want it — at least one item always stays visible.")
+                Text("Each visible item becomes its own menu-bar icon with its own popover and fields.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Visible") {
-                LayoutZoneView(zone: .visible, backing: coordinator, signature: "\(showCaptions)")
+            Section("Menu Bar Items") {
+                LayoutZoneView(zone: .visible, backing: slotCoordinator)
                     .frame(height: 46)
-                Text("Drag to reorder · drag a chip down to Hidden to remove it.")
+                Text("Drag to reorder · drag a slot down to Hidden to remove its icon.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Hidden") {
-                LayoutZoneView(zone: .hidden, backing: coordinator, signature: "\(showCaptions)")
+            Section("Hidden Items") {
+                LayoutZoneView(zone: .hidden, backing: slotCoordinator)
                     .frame(height: 46)
+            }
+            Section("Configure Item") {
+                Picker("Item", selection: $selectedSlot) {
+                    ForEach(MenuBarSlot.allCases) { slot in
+                        Text(slot.displayName).tag(slot)
+                    }
+                }
+                .pickerStyle(.segmented)
+                SlotItemSettings(model: model, slot: selectedSlot, showCaptions: showCaptions)
+                    .id(selectedSlot.rawValue)
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+private struct SlotItemSettings: View {
+    let model: AppViewModel
+    let slot: MenuBarSlot
+    let showCaptions: Bool
+    @StateObject private var coordinator: LayoutEditorCoordinator
+
+    init(model: AppViewModel, slot: MenuBarSlot, showCaptions: Bool) {
+        self.model = model
+        self.slot = slot
+        self.showCaptions = showCaptions
+        _coordinator = StateObject(wrappedValue: LayoutEditorCoordinator(model: model, slot: slot))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(slot.displayName) fields")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            LayoutZoneView(zone: .visible, backing: coordinator, signature: "\(showCaptions)")
+                .frame(height: 46)
+            Text("Drag fields to reorder · hide fields that do not belong in this icon.")
+                .font(.caption).foregroundStyle(.secondary)
+            LayoutZoneView(zone: .hidden, backing: coordinator, signature: "\(showCaptions)")
+                .frame(height: 46)
+        }
     }
 }
 
