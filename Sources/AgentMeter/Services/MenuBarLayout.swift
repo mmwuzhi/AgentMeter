@@ -3,40 +3,32 @@ import Foundation
 /// One independent menu-bar item. A slot owns its own status item, popover, and
 /// visible columns, so a Claude-heavy setup can be wide without crowding Codex.
 enum MenuBarSlot: String, Codable, Sendable, CaseIterable, Identifiable {
-    case overview
     case codex
     case claude
     case copilot
-    case activeAgents
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .overview: return "Overview"
         case .codex: return Provider.codex.displayName
         case .claude: return Provider.claude.displayName
         case .copilot: return Provider.copilot.displayName
-        case .activeAgents: return "Agents"
         }
     }
 
-    var provider: Provider? {
+    var provider: Provider {
         switch self {
-        case .overview: return nil
         case .codex: return .codex
         case .claude: return .claude
         case .copilot: return .copilot
-        case .activeAgents: return nil
         }
     }
 
     var menuBarLimit: Int {
         switch self {
-        case .overview: return 6
         case .codex, .claude: return 8
         case .copilot: return 5
-        case .activeAgents: return 4
         }
     }
 }
@@ -64,9 +56,7 @@ enum MenuBarAlertLevel: Equatable {
 }
 
 enum MenuBarIcon: Equatable {
-    case gauge
     case provider(Provider)
-    case agents
 }
 
 /// A resolved item ready to draw.
@@ -119,7 +109,7 @@ enum MenuBarSlots {
         let slots = merged()
             .filter { $0.item.enabled }
             .compactMap { MenuBarSlot(rawValue: $0.item.key) }
-        return slots.isEmpty ? [.overview] : slots
+        return slots.isEmpty ? [.codex, .claude] : slots
     }
 
     private static func defaultConfig() -> [MenuBarSlotItem] {
@@ -132,9 +122,9 @@ enum MenuBarSlots {
 private extension MenuBarSlot {
     var defaultVisible: Bool {
         switch self {
-        case .overview, .copilot:
+        case .copilot:
             return false
-        case .codex, .claude, .activeAgents:
+        case .codex, .claude:
             return true
         }
     }
@@ -147,13 +137,11 @@ enum MenuBarLayout {
     static let configKey = "menuBarItemsConfig"
 
     static func icon(for slot: MenuBarSlot) -> MenuBarIcon {
-        if slot == .activeAgents { return .agents }
-        if let provider = slot.provider { return .provider(provider) }
-        return .gauge
+        .provider(slot.provider)
     }
 
     private static func configKey(for slot: MenuBarSlot) -> String {
-        slot == .overview ? configKey : "\(configKey).\(slot.rawValue)"
+        "\(configKey).\(slot.rawValue)"
     }
 
     private static func provider(_ code: String) -> Provider? {
@@ -170,16 +158,6 @@ enum MenuBarLayout {
         case .codex: return model.codex
         case .claude: return model.claude
         case .copilot: return model.copilot
-        }
-    }
-
-    /// Short provider tag used to disambiguate captions when the overview mixes
-    /// providers (e.g. "cx 5h", "cl wk", "cp prem").
-    private static func tag(_ p: Provider) -> String {
-        switch p {
-        case .codex: return "cx"
-        case .claude: return "cl"
-        case .copilot: return "cp"
         }
     }
 
@@ -203,13 +181,13 @@ enum MenuBarLayout {
 
     // MARK: - Persistence
 
-    static func storedConfig(for slot: MenuBarSlot = .overview) -> [MenuBarItem] {
+    static func storedConfig(for slot: MenuBarSlot) -> [MenuBarItem] {
         guard let data = UserDefaults.standard.data(forKey: configKey(for: slot)),
               let items = try? JSONDecoder().decode([MenuBarItem].self, from: data) else { return [] }
         return items
     }
 
-    static func save(_ items: [MenuBarItem], for slot: MenuBarSlot = .overview) {
+    static func save(_ items: [MenuBarItem], for slot: MenuBarSlot) {
         guard let data = try? JSONEncoder().encode(items) else { return }
         UserDefaults.standard.set(data, forKey: configKey(for: slot))
     }
@@ -217,15 +195,8 @@ enum MenuBarLayout {
     // MARK: - Discovery
 
     /// Every item a slot can currently render, in canonical order, with display names.
-    static func available(_ model: AppViewModel, for slot: MenuBarSlot = .overview) -> [(key: String, name: String)] {
+    static func available(_ model: AppViewModel, for slot: MenuBarSlot) -> [(key: String, name: String)] {
         var out: [(String, String)] = [("icon", "\(slot.displayName) icon")]
-        if slot == .activeAgents {
-            out.append(("a:count", "Agents · active count"))
-            out.append(("a:session", "Agents · current session"))
-            out.append(("a:project", "Agents · current project"))
-            out.append(("a:primary", "Agents · primary agent"))
-            return out
-        }
         for p in providers(for: slot) {
             let s = state(p, model)
             for w in s.quota.windows {
@@ -242,60 +213,56 @@ enum MenuBarLayout {
     }
 
     private static func providers(for slot: MenuBarSlot) -> [Provider] {
-        if let provider = slot.provider { return [provider] }
-        return [.codex, .claude, .copilot]
+        [slot.provider]
     }
 
     /// Default selection used when nothing is configured yet.
     private static func autoDefault(_ model: AppViewModel, for slot: MenuBarSlot) -> [MenuBarItem] {
-        guard slot == .overview else {
-            if slot == .activeAgents {
-                return [
-                    MenuBarItem(key: "icon", enabled: true),
-                    MenuBarItem(key: "a:count", enabled: true),
-                    MenuBarItem(key: "a:session", enabled: true),
-                    MenuBarItem(key: "a:project", enabled: false),
-                    MenuBarItem(key: "a:primary", enabled: false),
-                ]
-            }
-            return providerDefault(model, for: slot)
+        providerDefault(model, for: slot)
+    }
+
+    private static func providerDefault(_ model: AppViewModel, for slot: MenuBarSlot) -> [MenuBarItem] {
+        let provider = slot.provider
+        let state = state(provider, model)
+        let visibleByDefault = defaultVisible(for: slot)
+        var items = [MenuBarItem(key: "icon", enabled: visibleByDefault)]
+        let primaryQuotaID = defaultQuotaWindowID(in: state.quota.windows)
+        for window in state.quota.windows {
+            items.append(MenuBarItem(
+                key: "q:\(provider.rawValue):\(window.id)",
+                enabled: visibleByDefault && window.id == primaryQuotaID
+            ))
         }
-
-        let d = UserDefaults.standard
-        let both = d.object(forKey: "menuBarBothProviders") as? Bool ?? false
-        let showSpend = d.object(forKey: "showSpendInMenuBar") as? Bool ?? false
-        let showPercent = d.object(forKey: "showPercentInMenuBar") as? Bool ?? true
-        let primary = d.string(forKey: "menuBarProvider") ?? "codex"
-        let codes = both ? ["codex", "claude"] : [primary]
-        let showIcon = d.object(forKey: "menuBarShowIcon") as? Bool ?? true
-
-        var items: [MenuBarItem] = [MenuBarItem(key: "icon", enabled: showIcon)]
-        for code in codes {
-            guard let p = provider(code) else { continue }
-            if showPercent {
-                for w in state(p, model).quota.windows {
-                    items.append(MenuBarItem(key: "q:\(code):\(w.id)", enabled: true))
-                }
-            }
-            if showSpend { items.append(MenuBarItem(key: "s:\(code)", enabled: true)) }
+        if provider != .copilot {
+            items.append(MenuBarItem(key: "u:\(provider.rawValue):localDay", enabled: false))
+            items.append(MenuBarItem(key: "u:\(provider.rawValue):7d", enabled: false))
+            items.append(MenuBarItem(key: "u:\(provider.rawValue):30d", enabled: false))
+            items.append(MenuBarItem(key: "s:\(provider.rawValue)", enabled: false))
         }
         return items
     }
 
-    private static func providerDefault(_ model: AppViewModel, for slot: MenuBarSlot) -> [MenuBarItem] {
-        guard let provider = slot.provider else { return [] }
-        let state = state(provider, model)
-        var items = [MenuBarItem(key: "icon", enabled: true)]
-        for window in state.quota.windows {
-            items.append(MenuBarItem(key: "q:\(provider.rawValue):\(window.id)", enabled: true))
+    private static func defaultVisible(for slot: MenuBarSlot) -> Bool {
+        if let legacy = MenuBarSlots.storedConfig().first(where: { $0.key == slot.rawValue }) {
+            return legacy.enabled
         }
-        if provider != .copilot {
-            items.append(MenuBarItem(key: "u:\(provider.rawValue):localDay", enabled: true))
-            items.append(MenuBarItem(key: "u:\(provider.rawValue):7d", enabled: true))
-            items.append(MenuBarItem(key: "u:\(provider.rawValue):30d", enabled: true))
-            items.append(MenuBarItem(key: "s:\(provider.rawValue)", enabled: false))
+        return slot.defaultVisible
+    }
+
+    private static func defaultQuotaWindowID(in windows: [QuotaWindow]) -> String? {
+        if let fiveHour = windows.first(where: { $0.id == "five_hour" || $0.label == "5-hour" }) {
+            return fiveHour.id
         }
-        return items
+        return windows.min { lhs, rhs in
+            windowRank(lhs) < windowRank(rhs)
+        }?.id
+    }
+
+    private static func windowRank(_ window: QuotaWindow) -> Int {
+        let label = window.label.lowercased()
+        if label.contains("hour") || label.hasSuffix("h") { return 0 }
+        if label.contains("day") || label.hasSuffix("d") { return 1 }
+        return 2
     }
 
     /// The effective config to render/customize from: saved config (or default),
@@ -303,17 +270,14 @@ enum MenuBarLayout {
     private static func baseConfig(_ model: AppViewModel, for slot: MenuBarSlot) -> [MenuBarItem] {
         var base = storedConfig(for: slot).isEmpty ? autoDefault(model, for: slot) : storedConfig(for: slot)
         if !base.contains(where: { $0.key == "icon" }) {
-            let showIcon = slot == .overview
-                ? (UserDefaults.standard.object(forKey: "menuBarShowIcon") as? Bool ?? true)
-                : true
-            base.insert(MenuBarItem(key: "icon", enabled: showIcon), at: 0)
+            base.insert(MenuBarItem(key: "icon", enabled: true), at: 0)
         }
         return base
     }
 
     /// Config merged with what's currently available: stored items kept in order
     /// (dropping ones no longer present), then newly-seen items appended (off).
-    static func merged(_ model: AppViewModel, for slot: MenuBarSlot = .overview) -> [(item: MenuBarItem, name: String)] {
+    static func merged(_ model: AppViewModel, for slot: MenuBarSlot) -> [(item: MenuBarItem, name: String)] {
         let names = Dictionary(available(model, for: slot).map { ($0.key, $0.name) }, uniquingKeysWith: { a, _ in a })
         let base = baseConfig(model, for: slot)
 
@@ -334,9 +298,6 @@ enum MenuBarLayout {
 
     private static func resolve(_ key: String, _ model: AppViewModel)
         -> (segment: MenuBarSegment, provider: Provider)? {
-        if let segment = resolveAgent(key, model) {
-            return (segment, .codex)
-        }
         let parts = key.split(separator: ":").map(String.init)
         guard parts.count >= 2, let p = provider(parts[1]) else { return nil }
         let s = state(p, model)
@@ -363,53 +324,14 @@ enum MenuBarLayout {
         }
     }
 
-    private static func resolveAgent(_ key: String, _ model: AppViewModel) -> MenuBarSegment? {
-        switch key {
-        case "a:count":
-            return MenuBarSegment(
-                label: "agt",
-                value: "\(model.activeAgents.count)",
-                remaining: nil,
-                alertLevel: .none
-            )
-        case "a:primary":
-            let value = model.activeAgents.first.map { tag($0.provider) } ?? "none"
-            return MenuBarSegment(label: "run", value: value, remaining: nil, alertLevel: .none)
-        case "a:session":
-            let value = model.activeAgents.first?.displaySession ?? "none"
-            return MenuBarSegment(label: "ses", value: value, remaining: nil, alertLevel: .none)
-        case "a:project":
-            let value = model.activeAgents.first?.session?.displayProject
-                ?? model.activeAgents.first?.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
-                ?? "none"
-            return MenuBarSegment(label: "proj", value: value, remaining: nil, alertLevel: .none)
-        default:
-            return nil
-        }
-    }
-
     /// A single item's current caption + value for the settings preview chips.
-    static func preview(_ key: String, _ model: AppViewModel, slot: MenuBarSlot = .overview) -> MenuBarSegment? {
-        if let segment = resolveAgent(key, model) {
-            return segment
-        }
-        guard let (seg, p) = resolve(key, model) else { return nil }
-        if slot.provider != nil {
-            return seg
-        }
-        return MenuBarSegment(
-            label: "\(tag(p)) \(seg.label)",
-            value: seg.value,
-            remaining: seg.remaining,
-            alertLevel: seg.alertLevel
-        )
+    static func preview(_ key: String, _ model: AppViewModel, slot: MenuBarSlot) -> MenuBarSegment? {
+        resolve(key, model)?.segment
     }
 
     /// Enabled elements in order, resolved against the model.
-    static func activeElements(_ model: AppViewModel, slot: MenuBarSlot = .overview, limit: Int? = nil) -> [MenuBarElement] {
+    static func activeElements(_ model: AppViewModel, slot: MenuBarSlot, limit: Int? = nil) -> [MenuBarElement] {
         let enabled = baseConfig(model, for: slot).filter(\.enabled)
-        let resolved = enabled.filter { $0.key != "icon" }.compactMap { resolve($0.key, model) }
-        let mixed = slot == .overview && Set(resolved.map(\.provider)).count > 1
         let maxItems = limit ?? slot.menuBarLimit
 
         var out: [MenuBarElement] = []
@@ -419,20 +341,23 @@ enum MenuBarLayout {
                 continue
             }
             guard let r = resolve(item.key, model) else { continue }
-            if mixed {
-                out.append(.segment(MenuBarSegment(label: "\(tag(r.provider)) \(r.segment.label)",
-                                                   value: r.segment.value,
-                                                   remaining: r.segment.remaining,
-                                                   alertLevel: r.segment.alertLevel)))
-            } else {
-                out.append(.segment(r.segment))
-            }
+            out.append(.segment(r.segment))
         }
         return Array(out.prefix(maxItems))
     }
 
+    static func visibleSlots(_ model: AppViewModel) -> [MenuBarSlot] {
+        MenuBarSlot.allCases.filter { !activeElements(model, slot: $0).isEmpty }
+    }
+
+    static func canHideSlot(_ model: AppViewModel, slot: MenuBarSlot) -> Bool {
+        MenuBarSlot.allCases.contains { candidate in
+            candidate != slot && !activeElements(model, slot: candidate).isEmpty
+        }
+    }
+
     /// The value columns only, for the alert level and accessibility text.
-    static func activeSegments(_ model: AppViewModel, slot: MenuBarSlot = .overview, limit: Int? = nil) -> [MenuBarSegment] {
+    static func activeSegments(_ model: AppViewModel, slot: MenuBarSlot, limit: Int? = nil) -> [MenuBarSegment] {
         activeElements(model, slot: slot, limit: limit).compactMap {
             if case .segment(let s) = $0 { return s }
             return nil

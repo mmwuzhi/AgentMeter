@@ -31,8 +31,7 @@ private struct MenuBarSettings: View {
     let model: AppViewModel
 
     @AppStorage("menuBarShowCaptions") private var showCaptions = true
-    @StateObject private var slotCoordinator = SlotVisibilityCoordinator()
-    @State private var selectedSlot: MenuBarSlot = .overview
+    @State private var selectedSlot: MenuBarSlot = .codex
 
     init(model: AppViewModel) {
         self.model = model
@@ -42,21 +41,11 @@ private struct MenuBarSettings: View {
         Form {
             Section("Display") {
                 Toggle("Show captions", isOn: $showCaptions)
-                Text("Each visible item becomes its own menu-bar icon with its own popover and fields.")
+                Text("Each visible provider becomes its own menu-bar icon with its own popover and fields.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Menu Bar Items") {
-                LayoutZoneView(zone: .visible, backing: slotCoordinator)
-                    .frame(height: 46)
-                Text("Drag to reorder · drag a slot down to Hidden to remove its icon.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Hidden Items") {
-                LayoutZoneView(zone: .hidden, backing: slotCoordinator)
-                    .frame(height: 46)
-            }
-            Section("Configure Item") {
-                Picker("Item", selection: $selectedSlot) {
+            Section("Provider Fields") {
+                Picker("Provider", selection: $selectedSlot) {
                     ForEach(MenuBarSlot.allCases) { slot in
                         Text(slot.displayName).tag(slot)
                     }
@@ -90,7 +79,7 @@ private struct SlotItemSettings: View {
                 .foregroundStyle(.secondary)
             LayoutZoneView(zone: .visible, backing: coordinator, signature: "\(showCaptions)")
                 .frame(height: 46)
-            Text("Drag fields to reorder · hide fields that do not belong in this icon.")
+            Text("Drag fields to reorder. Empty visible fields hides that provider icon.")
                 .font(.caption).foregroundStyle(.secondary)
             LayoutZoneView(zone: .hidden, backing: coordinator, signature: "\(showCaptions)")
                 .frame(height: 46)
@@ -140,9 +129,6 @@ private struct AlertSettings: View {
 private struct GeneralSettings: View {
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("refreshIntervalSeconds") private var refreshIntervalSeconds = 60.0
-    @AppStorage("popoverOrder") private var popoverOrderRaw = ""
-    @AppStorage("popoverHiddenProviders") private var popoverHiddenRaw = ""
-    @StateObject private var popoverCoordinator = PopoverOrderCoordinator()
 
     var body: some View {
         Form {
@@ -155,18 +141,6 @@ private struct GeneralSettings: View {
                     Text("2 minutes").tag(120.0)
                     Text("5 minutes").tag(300.0)
                 }
-            }
-            Section("Popover order") {
-                LayoutZoneView(zone: .visible, backing: popoverCoordinator,
-                               signature: "\(popoverOrderRaw)|\(popoverHiddenRaw)")
-                    .frame(height: 46)
-                Text("Drag to reorder · drag a provider down to Hidden to remove its panel.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Hidden popover panels") {
-                LayoutZoneView(zone: .hidden, backing: popoverCoordinator,
-                               signature: "\(popoverOrderRaw)|\(popoverHiddenRaw)")
-                    .frame(height: 46)
             }
             Section("Software Update") {
                 LabeledContent("Version", value: Self.appVersion)
