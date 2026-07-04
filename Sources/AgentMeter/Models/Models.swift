@@ -209,9 +209,20 @@ struct ActiveAgentSession: Codable, Sendable, Equatable {
     let branch: String?
     let lastUpdatedAt: Date?
     let source: String
+    var tokenCount: Int? = nil
+    var estimatedCostUSD: Double? = nil
+    var logPath: String? = nil
 
     var shortID: String {
         String(id.prefix(8))
+    }
+
+    var usageText: String? {
+        guard let tokenCount else { return nil }
+        if let estimatedCostUSD {
+            return "\(TokenFormat.short(tokenCount)) · $\(String(format: "%.2f", estimatedCostUSD))"
+        }
+        return TokenFormat.short(tokenCount)
     }
 
     var displayProject: String {
