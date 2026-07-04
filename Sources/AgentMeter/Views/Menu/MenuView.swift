@@ -2,53 +2,36 @@ import SwiftUI
 
 /// Root content of the menubar popover.
 enum MenuViewScope: Equatable {
-    case overview
     case provider(Provider)
-    case activeAgents
 
     init(slot: MenuBarSlot) {
-        if slot == .activeAgents {
-            self = .activeAgents
-        } else if let provider = slot.provider {
-            self = .provider(provider)
-        } else {
-            self = .overview
-        }
+        self = .provider(slot.provider)
     }
 }
 
 struct MenuView: View {
     @Bindable var model: AppViewModel
-    var scope: MenuViewScope = .overview
+    var scope: MenuViewScope
     var onRefresh: () -> Void
     var onQuit: () -> Void
-
-    @AppStorage("popoverOrder") private var popoverOrderRaw = ""
-    @AppStorage("popoverHiddenProviders") private var popoverHiddenRaw = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    if scope == .activeAgents {
-                        ActiveAgentsSection(agents: model.activeAgents)
-                    } else {
-                        ForEach(visibleProviders, id: \.self) { p in
-                            ProviderSection(
-                                state: PopoverOrder.state(p, model),
-                                tint: PopoverOrder.tint(p),
-                                runway: { provider, window in
-                                    model.runway(for: provider, window: window)
-                                }
-                            )
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(visibleProviders, id: \.self) { p in
+                    ProviderSection(
+                        state: PopoverOrder.state(p, model),
+                        activeAgents: model.activeAgents.filter { $0.provider == p },
+                        tint: PopoverOrder.tint(p),
+                        runway: { provider, window in
+                            model.runway(for: provider, window: window)
                         }
-                    }
+                    )
                 }
-                .padding(12)
             }
-            .frame(maxHeight: 480)
+            .padding(12)
             Divider()
             footer
         }
@@ -56,18 +39,15 @@ struct MenuView: View {
     }
 
     private var visibleProviders: [Provider] {
-        if case .provider(let provider) = scope {
+        switch scope {
+        case .provider(let provider):
             return [provider]
-        }
-        return PopoverOrder.resolved(from: popoverOrderRaw, hiddenRaw: popoverHiddenRaw).filter { provider in
-            let state = PopoverOrder.state(provider, model)
-            return state.hasPopoverContent || state.isLoadingPlaceholder || PopoverOrder.hasManualVisibilityConfiguration
         }
     }
 
     private var header: some View {
         HStack {
-            Image(systemName: "gauge.with.dots.needle.67percent")
+            Image(systemName: headerIconName)
                 .foregroundStyle(.secondary)
             Text(title).font(.headline)
             Spacer()
@@ -102,27 +82,30 @@ struct MenuView: View {
 
     private var title: String {
         switch scope {
-        case .overview: return "AgentMeter"
         case .provider(let provider): return provider.displayName
-        case .activeAgents: return "Agents"
+        }
+    }
+
+    private var headerIconName: String {
+        switch scope {
+        case .provider(.codex): return "terminal"
+        case .provider(.claude): return "text.bubble"
+        case .provider(.copilot): return "sparkles"
         }
     }
 
     private var spendSummary: String {
         switch scope {
-        case .overview:
-            return String(format: "Total spend  $%.2f", model.totalSpendUSD)
         case .provider(let provider):
             let state = PopoverOrder.state(provider, model)
             return String(format: "Spend  $%.2f", state.usage.totalCostUSD)
-        case .activeAgents:
-            return "\(model.activeAgents.count) active"
         }
     }
 }
 
 struct ActiveAgentsSection: View {
     let agents: [ActiveAgent]
+    var title = "Active Sessions"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -130,7 +113,7 @@ struct ActiveAgentsSection: View {
                 Image(systemName: "dot.radiowaves.left.and.right")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Active Agents").font(.subheadline.weight(.semibold))
+                Text(title).font(.caption.weight(.semibold))
                 Spacer()
                 Text("\(agents.count)")
                     .font(.caption2.weight(.medium))
@@ -196,81 +179,23 @@ private struct ActiveAgentRow: View {
                 }
             }
             Spacer(minLength: 8)
-            Text("#\(agent.pid)")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.tertiary)
+            VStack(alignment: .trailing, spacing: 2) {
+                if let usageText = agent.session?.usageText {
+                    Text(usageText)
+                        .font(.caption2.monospacedDigit().weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                Text("#\(agent.pid)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 }
 
-/// The order (and tint) of provider panels in the popover. Visible providers are
-/// persisted as a comma-joined list under `popoverOrder`; hidden providers live
-/// under `popoverHiddenProviders`. It seeds itself from the legacy `codexFirst`
-/// toggle, starts Copilot hidden by default, and backfills newly-added providers
-/// unless the user hid them.
+/// Provider helpers for popover rendering.
 @MainActor
 enum PopoverOrder {
-    static let key = "popoverOrder"
-    static let hiddenKey = "popoverHiddenProviders"
-    static let all: [Provider] = [.codex, .claude, .copilot]
-    private static let defaultVisible: [Provider] = [.codex, .claude]
-    private static let defaultHidden: [Provider] = [.copilot]
-
-    static var hasManualVisibilityConfiguration: Bool {
-        UserDefaults.standard.object(forKey: hiddenKey) != nil
-    }
-
-    static func resolved(from raw: String, hiddenRaw: String? = nil) -> [Provider] {
-        visible(from: raw, hidden: hidden(from: hiddenRaw, visibleRaw: raw))
-    }
-
-    static func visible() -> [Provider] {
-        let raw = UserDefaults.standard.string(forKey: key) ?? ""
-        return visible(from: raw, hidden: hidden(from: UserDefaults.standard.string(forKey: hiddenKey), visibleRaw: raw))
-    }
-
-    static func hidden() -> [Provider] {
-        hidden(from: UserDefaults.standard.string(forKey: hiddenKey),
-               visibleRaw: UserDefaults.standard.string(forKey: key) ?? "")
-    }
-
-    private static func hidden(from raw: String?, visibleRaw: String) -> [Provider] {
-        if hasManualVisibilityConfiguration { return unique(raw ?? "") }
-        guard UserDefaults.standard.object(forKey: key) != nil else { return defaultHidden }
-        let savedVisible = Set(unique(visibleRaw))
-        return defaultHidden.filter { !savedVisible.contains($0) }
-    }
-
-    private static func visible(from raw: String, hidden: [Provider]) -> [Provider] {
-        let hiddenSet = Set(hidden)
-        var order = unique(raw)
-        if order.isEmpty {
-            let codexFirst = UserDefaults.standard.object(forKey: "codexFirst") as? Bool ?? true
-            order = codexFirst ? defaultVisible : Array(defaultVisible.reversed())
-        }
-        for p in all where !order.contains(p) && !hiddenSet.contains(p) { order.append(p) }
-        return order.filter { all.contains($0) && !hiddenSet.contains($0) }
-    }
-
-    private static func unique(_ raw: String) -> [Provider] {
-        var seen = Set<Provider>()
-        return raw.split(separator: ",")
-            .compactMap { Provider(rawValue: String($0)) }
-            .filter { seen.insert($0).inserted && all.contains($0) }
-    }
-
-    static func save(_ order: [Provider]) {
-        UserDefaults.standard.set(order.map(\.rawValue).joined(separator: ","), forKey: key)
-    }
-
-    static func save(visible: [Provider], hidden: [Provider]) {
-        let visible = visible.filter(all.contains)
-        let visibleSet = Set(visible)
-        let hidden = hidden.filter { all.contains($0) && !visibleSet.contains($0) }
-        UserDefaults.standard.set(visible.map(\.rawValue).joined(separator: ","), forKey: key)
-        UserDefaults.standard.set(hidden.map(\.rawValue).joined(separator: ","), forKey: hiddenKey)
-    }
-
     static func state(_ p: Provider, _ model: AppViewModel) -> ProviderState {
         switch p {
         case .codex: return model.codex
@@ -291,6 +216,7 @@ enum PopoverOrder {
 /// One provider's grouped panel: title, quota windows, spend, collapsible activity.
 struct ProviderSection: View {
     let state: ProviderState
+    let activeAgents: [ActiveAgent]
     var tint: Color
     var runway: (Provider, QuotaWindow) -> QuotaRunway
     @State private var showHeatmap = false
@@ -334,6 +260,9 @@ struct ProviderSection: View {
             if !state.usage.buckets.isEmpty {
                 SpendSummary(usage: state.usage)
                 activitySection
+            }
+            if !activeAgents.isEmpty {
+                ActiveAgentsSection(agents: activeAgents)
             }
         }
         .padding(12)
@@ -391,15 +320,5 @@ struct ProviderSection: View {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return "\(text) · nearest expiry \(formatter.string(from: expiresAt))"
-    }
-}
-
-private extension ProviderState {
-    var hasPopoverContent: Bool {
-        !quota.windows.isEmpty || !usage.buckets.isEmpty
-    }
-
-    var isLoadingPlaceholder: Bool {
-        quota.source == .unavailable && quota.note == "Loading…" && usage.buckets.isEmpty
     }
 }

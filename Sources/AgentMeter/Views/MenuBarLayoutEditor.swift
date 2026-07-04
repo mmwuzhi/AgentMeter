@@ -3,9 +3,7 @@ import SwiftUI
 
 // An Ice-style two-zone layout editor: native AppKit drag-and-drop with animated
 // live reordering (SwiftUI's `.draggable`/`.dropDestination` is choppy for reorder).
-// Modeled on Ice's LayoutBarContainer / LayoutBarItemView. Generic over what the
-// chips represent via `LayoutEditorBacking`, so it drives both the menu-bar item
-// arrangement and the popover provider-panel arrangement.
+// Modeled on Ice's LayoutBarContainer / LayoutBarItemView.
 
 extension NSPasteboard.PasteboardType {
     static let agentMeterChip = Self("co.softbrain.AgentMeter.layout-chip")
@@ -327,7 +325,7 @@ final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
     weak var hiddenContainer: ChipContainerView?
     var isDragging = false
 
-    init(model: AppViewModel, slot: MenuBarSlot = .overview) {
+    init(model: AppViewModel, slot: MenuBarSlot = .codex) {
         self.model = model
         self.slot = slot
         load()
@@ -374,7 +372,7 @@ final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
         guard let visibleContainer, let hiddenContainer else { return }
         let vis = visibleContainer.arrangedViews.map(\.key)
         let hid = hiddenContainer.arrangedViews.map(\.key)
-        guard !vis.isEmpty else { reload(); return }   // never let the menu bar go empty
+        guard !vis.isEmpty || MenuBarLayout.canHideSlot(model, slot: slot) else { reload(); return }
         visibleKeys = vis
         hiddenKeys = hid
         let items = vis.map { MenuBarItem(key: $0, enabled: true) }
@@ -384,150 +382,6 @@ final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
 
     func reload() {
         load()
-        visibleContainer?.reconfigure(force: true)
-        hiddenContainer?.reconfigure(force: true)
-    }
-}
-
-// MARK: - Menu-bar slot backing
-
-/// Backs which independent status items appear in the menu bar.
-@MainActor
-final class SlotVisibilityCoordinator: ObservableObject, LayoutEditorBacking {
-    private(set) var names: [String: String] = [:]
-    private var visibleKeys: [String] = []
-    private var hiddenKeys: [String] = []
-
-    weak var visibleContainer: ChipContainerView?
-    weak var hiddenContainer: ChipContainerView?
-    var isDragging = false
-
-    init() {
-        load()
-    }
-
-    private func load() {
-        let merged = MenuBarSlots.merged()
-        names = Dictionary(merged.map { ($0.item.key, $0.name) }, uniquingKeysWith: { a, _ in a })
-        visibleKeys = merged.filter { $0.item.enabled }.map(\.item.key)
-        hiddenKeys = merged.filter { !$0.item.enabled }.map(\.item.key)
-    }
-
-    func keys(for zone: ChipContainerView.Zone) -> [String] {
-        zone == .visible ? visibleKeys : hiddenKeys
-    }
-
-    func displayName(for key: String) -> String { names[key] ?? key }
-
-    func emptyText(for zone: ChipContainerView.Zone) -> String {
-        zone == .visible ? "Drag slots here to show them." : "Everything is shown."
-    }
-
-    func makeContent(for key: String) -> NSView {
-        let slot = MenuBarSlot(rawValue: key) ?? .overview
-        if let provider = slot.provider {
-            return ProviderChipContentView(title: provider.displayName,
-                                           dotColor: NSColor(PopoverOrder.tint(provider)))
-        }
-        return ProviderChipContentView(title: slot.displayName,
-                                       dotColor: NSColor.secondaryLabelColor)
-    }
-
-    func register(_ container: ChipContainerView, zone: ChipContainerView.Zone) {
-        if zone == .visible { visibleContainer = container } else { hiddenContainer = container }
-    }
-
-    func commit() {
-        guard let visibleContainer, let hiddenContainer else { return }
-        let vis = visibleContainer.arrangedViews.map(\.key)
-        let hid = hiddenContainer.arrangedViews.map(\.key)
-        guard !vis.isEmpty else { reload(); return }
-        visibleKeys = vis
-        hiddenKeys = hid
-        let items = vis.map { MenuBarSlotItem(key: $0, enabled: true) }
-            + hid.map { MenuBarSlotItem(key: $0, enabled: false) }
-        MenuBarSlots.save(items)
-    }
-
-    func reload() {
-        load()
-        visibleContainer?.reconfigure(force: true)
-        hiddenContainer?.reconfigure(force: true)
-    }
-}
-
-// MARK: - Popover provider-panel backing
-
-/// A simple white "● Name" chip for a provider.
-private final class ProviderChipContentView: NSView {
-    private let title: String
-    private let dotColor: NSColor
-
-    init(title: String, dotColor: NSColor) {
-        self.title = title
-        self.dotColor = dotColor
-        let textW = (title as NSString).size(withAttributes: [.font: Self.font]).width
-        super.init(frame: CGRect(x: 0, y: 0, width: 7 + 6 + ceil(textW), height: 18))
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }   // events reach the chip
-
-    private static let font = NSFont.systemFont(ofSize: 12, weight: .medium)
-
-    override func draw(_ dirtyRect: NSRect) {
-        let dotSize: CGFloat = 7
-        let dotRect = NSRect(x: 0, y: (bounds.height - dotSize) / 2, width: dotSize, height: dotSize)
-        dotColor.setFill()
-        NSBezierPath(ovalIn: dotRect).fill()
-        let attr: [NSAttributedString.Key: Any] = [.font: Self.font, .foregroundColor: NSColor.white]
-        let size = (title as NSString).size(withAttributes: attr)
-        (title as NSString).draw(at: NSPoint(x: dotSize + 6, y: (bounds.height - size.height) / 2), withAttributes: attr)
-    }
-}
-
-/// Backs the popover provider-panel arrangement via `PopoverOrder` (which providers
-/// show, in what order). Reuses the same drag editor as the menu bar.
-@MainActor
-final class PopoverOrderCoordinator: ObservableObject, LayoutEditorBacking {
-    weak var visibleContainer: ChipContainerView?
-    weak var hiddenContainer: ChipContainerView?
-    var isDragging = false
-
-    func keys(for zone: ChipContainerView.Zone) -> [String] {
-        let providers = zone == .visible ? PopoverOrder.visible() : PopoverOrder.hidden()
-        return providers.map(\.rawValue)
-    }
-
-    func displayName(for key: String) -> String {
-        Provider(rawValue: key)?.displayName ?? key
-    }
-
-    func emptyText(for zone: ChipContainerView.Zone) -> String {
-        zone == .visible ? "Drag a provider here to show it." : "Drag a provider here to hide it."
-    }
-
-    func makeContent(for key: String) -> NSView {
-        let p = Provider(rawValue: key)
-        return ProviderChipContentView(title: p?.displayName ?? key,
-                                       dotColor: NSColor(PopoverOrder.tint(p ?? .codex)))
-    }
-
-    func register(_ container: ChipContainerView, zone: ChipContainerView.Zone) {
-        if zone == .visible { visibleContainer = container } else { hiddenContainer = container }
-    }
-
-    func commit() {
-        guard let visibleContainer, let hiddenContainer else { return }
-        let vis = visibleContainer.arrangedViews.map(\.key).compactMap(Provider.init(rawValue:))
-        let hid = hiddenContainer.arrangedViews.map(\.key).compactMap(Provider.init(rawValue:))
-        guard !vis.isEmpty else { reload(); return }   // keep at least one panel
-        PopoverOrder.save(visible: vis, hidden: hid)   // fires UserDefaults change → popover updates
-    }
-
-    func reload() {
         visibleContainer?.reconfigure(force: true)
         hiddenContainer?.reconfigure(force: true)
     }

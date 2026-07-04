@@ -33,7 +33,7 @@ final class StatusItemController {
     }
 
     private func reconcileSlots() {
-        let visible = MenuBarSlots.visibleSlots()
+        let visible = MenuBarLayout.visibleSlots(model)
         guard visible != slotOrder else { return }
 
         for controller in slotControllers.values {
@@ -130,7 +130,7 @@ private final class StatusItemSlotController: NSObject {
         button.image = NSImage()
         button.imagePosition = .imageOnly
         contentView.passesClicksThrough = true
-        contentView.autoresizingMask = [.width, .height]
+        contentView.autoresizingMask = [.height]
         button.addSubview(contentView)
     }
 
@@ -154,11 +154,17 @@ private final class StatusItemSlotController: NSObject {
         button.setAccessibilityLabel(summary)
 
         let width = MenuBarContentView.width(elements: elements, showCaptions: showCaptions)
-        if abs(width - lastLength) > 0.5 {
-            lastLength = width
-            statusItem.length = width
+        let statusLength = MenuBarContentView.statusLength(forVisualWidth: width)
+        if abs(statusLength - lastLength) > 0.5 {
+            lastLength = statusLength
+            statusItem.length = statusLength
         }
-        contentView.frame = button.bounds
+        contentView.frame = NSRect(
+            x: -MenuBarContentView.statusItemOverhang,
+            y: 0,
+            width: width,
+            height: button.bounds.height
+        )
         contentView.apply(elements: elements, showCaptions: showCaptions)
     }
 
