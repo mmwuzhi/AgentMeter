@@ -1,44 +1,131 @@
 import AppKit
 import SwiftUI
 
-/// Owns the NSStatusItem and the popover that hosts the SwiftUI MenuView.
+/// Owns the visible set of independent NSStatusItems. Each slot behaves like an
+/// iStat menu: its own menu-bar fields, its own popover, shared app data.
 @MainActor
-final class StatusItemController: NSObject, NSPopoverDelegate {
-    private let statusItem: NSStatusItem
-    private let popover = NSPopover()
+final class StatusItemController {
     private let model: AppViewModel
     private let coordinator: RefreshCoordinator
-    private let contentView = MenuBarContentView()
-    private var lastLength: CGFloat = -1
+    private var slotControllers: [MenuBarSlot: StatusItemSlotController] = [:]
+    private var slotOrder: [MenuBarSlot] = []
 
     init(model: AppViewModel, coordinator: RefreshCoordinator) {
         self.model = model
         self.coordinator = coordinator
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        super.init()
-
-        configureButton()
-        configurePopover()
+        reconcileSlots()
         observeModel()
 
-        // Menu-bar title also depends on UserDefaults (which items, captions).
         NotificationCenter.default.addObserver(
             self, selector: #selector(defaultsChanged),
             name: UserDefaults.didChangeNotification, object: nil)
     }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     @objc private func defaultsChanged() {
-        Task { @MainActor in self.updateTitle() }
+        Task { @MainActor in
+            self.reconcileSlots()
+            self.updateAll()
+        }
+    }
+
+    private func reconcileSlots() {
+        let visible = MenuBarSlots.visibleSlots()
+        guard visible != slotOrder else { return }
+
+        for controller in slotControllers.values {
+            controller.remove()
+        }
+        slotControllers.removeAll()
+        slotOrder = visible
+
+        for slot in visible {
+            slotControllers[slot] = StatusItemSlotController(
+                slot: slot,
+                model: model,
+                coordinator: coordinator,
+                closeOthers: { [weak self] activeSlot in
+                    self?.closePopovers(except: activeSlot)
+                }
+            )
+        }
+        updateAll()
+    }
+
+    /// Refresh the menubar text when the model changes.
+    private func observeModel() {
+        withObservationTracking {
+            _ = model.codex
+            _ = model.claude
+            _ = model.copilot
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.observeModel()
+            }
+        }
+        updateAll()
+    }
+
+    private func updateAll() {
+        for slot in slotOrder {
+            slotControllers[slot]?.updateTitle()
+        }
+    }
+
+    private func closePopovers(except activeSlot: MenuBarSlot) {
+        for (slot, controller) in slotControllers where slot != activeSlot {
+            controller.closePopover()
+        }
+    }
+}
+
+@MainActor
+private final class StatusItemSlotController: NSObject {
+    private let slot: MenuBarSlot
+    private let statusItem: NSStatusItem
+    private let popover = NSPopover()
+    private let model: AppViewModel
+    private let coordinator: RefreshCoordinator
+    private let closeOthers: (MenuBarSlot) -> Void
+    private let contentView = MenuBarContentView()
+    private var lastLength: CGFloat = -1
+
+    init(
+        slot: MenuBarSlot,
+        model: AppViewModel,
+        coordinator: RefreshCoordinator,
+        closeOthers: @escaping (MenuBarSlot) -> Void
+    ) {
+        self.slot = slot
+        self.model = model
+        self.coordinator = coordinator
+        self.closeOthers = closeOthers
+        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        super.init()
+
+        configureButton()
+        configurePopover()
+        updateTitle()
+    }
+
+    func remove() {
+        closePopover()
+        NSStatusBar.system.removeStatusItem(statusItem)
+    }
+
+    func closePopover() {
+        if popover.isShown {
+            popover.performClose(nil)
+        }
     }
 
     private func configureButton() {
         guard let button = statusItem.button else { return }
         button.action = #selector(togglePopover)
         button.target = self
-        // Stats-style live rendering: host an NSView that draws the menu-bar content
-        // in its draw(_:), instead of rasterizing to a template image (which thins
-        // out small/light text). The empty image makes the button reserve a frame;
-        // the subview ignores hit-testing so clicks still reach the button's action.
         button.image = NSImage()
         button.imagePosition = .imageOnly
         contentView.passesClicksThrough = true
@@ -48,40 +135,23 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func configurePopover() {
         popover.behavior = .transient
-        popover.delegate = self
         let root = MenuView(
             model: model,
+            scope: MenuViewScope(slot: slot),
             onRefresh: { [weak self] in self?.coordinator.refresh() },
             onQuit: { NSApp.terminate(nil) }
         )
         popover.contentViewController = NSHostingController(rootView: root)
     }
 
-    /// Refresh the menubar title text when the model changes.
-    private func observeModel() {
-        withObservationTracking {
-            // Touch everything the menu bar can show: all providers' quota and
-            // usage (spend), so spend-only and mixed-provider modes refresh too.
-            _ = model.codex
-            _ = model.claude
-            _ = model.copilot
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                self?.observeModel()
-            }
-        }
-        updateTitle()
-    }
-
-    private func updateTitle() {
+    func updateTitle() {
         guard let button = statusItem.button else { return }
-        let elements = MenuBarLayout.activeElements(model)
+        let elements = MenuBarLayout.activeElements(model, slot: slot)
         let showCaptions = UserDefaults.standard.object(forKey: "menuBarShowCaptions") as? Bool ?? true
         let summary = accessibilitySummary()
         button.toolTip = summary
         button.setAccessibilityLabel(summary)
 
-        // Size the status item to the content, then let the view draw it live.
         let width = MenuBarContentView.width(elements: elements, showCaptions: showCaptions)
         if abs(width - lastLength) > 0.5 {
             lastLength = width
@@ -91,17 +161,17 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         contentView.apply(elements: elements, showCaptions: showCaptions)
     }
 
-    /// Spoken/hover summary for VoiceOver and the tooltip — the shown columns.
     private func accessibilitySummary() -> String {
-        let rows = MenuBarLayout.activeSegments(model)
-        guard !rows.isEmpty else { return "AgentMeter — no items shown" }
-        return "AgentMeter — " + rows.map { "\($0.label) \($0.value)" }.joined(separator: ", ")
+        let rows = MenuBarLayout.activeSegments(model, slot: slot)
+        guard !rows.isEmpty else { return "AgentMeter \(slot.displayName) — no items shown" }
+        return "AgentMeter \(slot.displayName) — " + rows.map { "\($0.label) \($0.value)" }.joined(separator: ", ")
     }
 
     @objc private func togglePopover() {
         if popover.isShown {
             popover.performClose(nil)
         } else if let button = statusItem.button {
+            closeOthers(slot)
             coordinator.refresh()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()

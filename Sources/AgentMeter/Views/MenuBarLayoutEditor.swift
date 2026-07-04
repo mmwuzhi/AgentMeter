@@ -314,10 +314,11 @@ struct LayoutZoneView: NSViewRepresentable {
 
 // MARK: - Menu-bar item backing
 
-/// Backs the menu-bar item arrangement (icon + quota/spend columns) via `MenuBarLayout`.
+/// Backs the menu-bar item arrangement (icon + quota/usage/spend columns) via `MenuBarLayout`.
 @MainActor
 final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
     let model: AppViewModel
+    let slot: MenuBarSlot
     private(set) var names: [String: String] = [:]
     private var visibleKeys: [String] = []
     private var hiddenKeys: [String] = []
@@ -326,13 +327,14 @@ final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
     weak var hiddenContainer: ChipContainerView?
     var isDragging = false
 
-    init(model: AppViewModel) {
+    init(model: AppViewModel, slot: MenuBarSlot = .overview) {
         self.model = model
+        self.slot = slot
         load()
     }
 
     private func load() {
-        let merged = MenuBarLayout.merged(model)
+        let merged = MenuBarLayout.merged(model, for: slot)
         names = Dictionary(merged.map { ($0.item.key, $0.name) }, uniquingKeysWith: { a, _ in a })
         visibleKeys = merged.filter { $0.item.enabled }.map(\.item.key)
         hiddenKeys = merged.filter { !$0.item.enabled }.map(\.item.key)
@@ -351,8 +353,8 @@ final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
     func makeContent(for key: String) -> NSView {
         let showCaptions = UserDefaults.standard.object(forKey: "menuBarShowCaptions") as? Bool ?? true
         let element: MenuBarElement = {
-            if key == "icon" { return .icon }
-            if let seg = MenuBarLayout.preview(key, model) { return .segment(seg) }
+            if key == "icon" { return .icon(MenuBarLayout.icon(for: slot)) }
+            if let seg = MenuBarLayout.preview(key, model, slot: slot) { return .segment(seg) }
             return .segment(MenuBarSegment(label: names[key] ?? key, value: "—", remaining: nil, alertLevel: .none))
         }()
         let v = MenuBarContentView()
@@ -377,7 +379,74 @@ final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
         hiddenKeys = hid
         let items = vis.map { MenuBarItem(key: $0, enabled: true) }
             + hid.map { MenuBarItem(key: $0, enabled: false) }
-        MenuBarLayout.save(items)   // fires UserDefaults change → menu bar re-renders
+        MenuBarLayout.save(items, for: slot)   // fires UserDefaults change → menu bar re-renders
+    }
+
+    func reload() {
+        load()
+        visibleContainer?.reconfigure(force: true)
+        hiddenContainer?.reconfigure(force: true)
+    }
+}
+
+// MARK: - Menu-bar slot backing
+
+/// Backs which independent status items appear in the menu bar.
+@MainActor
+final class SlotVisibilityCoordinator: ObservableObject, LayoutEditorBacking {
+    private(set) var names: [String: String] = [:]
+    private var visibleKeys: [String] = []
+    private var hiddenKeys: [String] = []
+
+    weak var visibleContainer: ChipContainerView?
+    weak var hiddenContainer: ChipContainerView?
+    var isDragging = false
+
+    init() {
+        load()
+    }
+
+    private func load() {
+        let merged = MenuBarSlots.merged()
+        names = Dictionary(merged.map { ($0.item.key, $0.name) }, uniquingKeysWith: { a, _ in a })
+        visibleKeys = merged.filter { $0.item.enabled }.map(\.item.key)
+        hiddenKeys = merged.filter { !$0.item.enabled }.map(\.item.key)
+    }
+
+    func keys(for zone: ChipContainerView.Zone) -> [String] {
+        zone == .visible ? visibleKeys : hiddenKeys
+    }
+
+    func displayName(for key: String) -> String { names[key] ?? key }
+
+    func emptyText(for zone: ChipContainerView.Zone) -> String {
+        zone == .visible ? "Drag slots here to show them." : "Everything is shown."
+    }
+
+    func makeContent(for key: String) -> NSView {
+        let slot = MenuBarSlot(rawValue: key) ?? .overview
+        if let provider = slot.provider {
+            return ProviderChipContentView(title: provider.displayName,
+                                           dotColor: NSColor(PopoverOrder.tint(provider)))
+        }
+        return ProviderChipContentView(title: slot.displayName,
+                                       dotColor: NSColor.secondaryLabelColor)
+    }
+
+    func register(_ container: ChipContainerView, zone: ChipContainerView.Zone) {
+        if zone == .visible { visibleContainer = container } else { hiddenContainer = container }
+    }
+
+    func commit() {
+        guard let visibleContainer, let hiddenContainer else { return }
+        let vis = visibleContainer.arrangedViews.map(\.key)
+        let hid = hiddenContainer.arrangedViews.map(\.key)
+        guard !vis.isEmpty else { reload(); return }
+        visibleKeys = vis
+        hiddenKeys = hid
+        let items = vis.map { MenuBarSlotItem(key: $0, enabled: true) }
+            + hid.map { MenuBarSlotItem(key: $0, enabled: false) }
+        MenuBarSlots.save(items)
     }
 
     func reload() {

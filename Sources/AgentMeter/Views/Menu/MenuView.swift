@@ -1,8 +1,22 @@
 import SwiftUI
 
 /// Root content of the menubar popover.
+enum MenuViewScope: Equatable {
+    case overview
+    case provider(Provider)
+
+    init(slot: MenuBarSlot) {
+        if let provider = slot.provider {
+            self = .provider(provider)
+        } else {
+            self = .overview
+        }
+    }
+}
+
 struct MenuView: View {
     @Bindable var model: AppViewModel
+    var scope: MenuViewScope = .overview
     var onRefresh: () -> Void
     var onQuit: () -> Void
 
@@ -35,7 +49,10 @@ struct MenuView: View {
     }
 
     private var visibleProviders: [Provider] {
-        PopoverOrder.resolved(from: popoverOrderRaw, hiddenRaw: popoverHiddenRaw).filter { provider in
+        if case .provider(let provider) = scope {
+            return [provider]
+        }
+        return PopoverOrder.resolved(from: popoverOrderRaw, hiddenRaw: popoverHiddenRaw).filter { provider in
             let state = PopoverOrder.state(provider, model)
             return state.hasPopoverContent || state.isLoadingPlaceholder || PopoverOrder.hasManualVisibilityConfiguration
         }
@@ -45,7 +62,7 @@ struct MenuView: View {
         HStack {
             Image(systemName: "gauge.with.dots.needle.67percent")
                 .foregroundStyle(.secondary)
-            Text("AgentMeter").font(.headline)
+            Text(title).font(.headline)
             Spacer()
             if let last = model.lastRefresh {
                 Text(last, format: .dateTime.hour().minute())
@@ -66,7 +83,7 @@ struct MenuView: View {
 
     private var footer: some View {
         HStack(spacing: 4) {
-            Text(String(format: "Total spend  $%.2f", model.totalSpendUSD))
+            Text(spendSummary)
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
             SettingsLink { Text("Settings").font(.caption) }.buttonStyle(.borderless)
@@ -74,6 +91,23 @@ struct MenuView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    private var title: String {
+        switch scope {
+        case .overview: return "AgentMeter"
+        case .provider(let provider): return provider.displayName
+        }
+    }
+
+    private var spendSummary: String {
+        switch scope {
+        case .overview:
+            return String(format: "Total spend  $%.2f", model.totalSpendUSD)
+        case .provider(let provider):
+            let state = PopoverOrder.state(provider, model)
+            return String(format: "Spend  $%.2f", state.usage.totalCostUSD)
+        }
     }
 }
 
