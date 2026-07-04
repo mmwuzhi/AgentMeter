@@ -124,7 +124,18 @@ enum MenuBarSlots {
 
     private static func defaultConfig() -> [MenuBarSlotItem] {
         MenuBarSlot.allCases.map { slot in
-            MenuBarSlotItem(key: slot.rawValue, enabled: slot == .overview)
+            MenuBarSlotItem(key: slot.rawValue, enabled: slot.defaultVisible)
+        }
+    }
+}
+
+private extension MenuBarSlot {
+    var defaultVisible: Bool {
+        switch self {
+        case .overview, .copilot:
+            return false
+        case .codex, .claude, .activeAgents:
+            return true
         }
     }
 }
