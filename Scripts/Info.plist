@@ -25,9 +25,9 @@
     <key>NSHumanReadableCopyright</key>
     <string>Personal tool.</string>
     <key>SUFeedURL</key>
-    <string>https://REPLACE-ME/appcast.xml</string>
+    <string>https://github.com/mmwuzhi/AgentMeter/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
-    <string>REPLACE-WITH-SPARKLE-PUBLIC-ED-KEY</string>
+    <string>gqRMHXb01NMIo4Nu3uxkKmt/WO0aYMb5RPjCty8TKYw=</string>
     <key>SUScheduledCheckInterval</key>
     <integer>3600</integer>
     <key>SUEnableAutomaticChecks</key>
