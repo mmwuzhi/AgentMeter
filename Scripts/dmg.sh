@@ -8,7 +8,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 APP="$ROOT/dist/AgentMeter.app"
-VERSION="${MARKETING_VERSION:-1.0.2}"
+VERSION="${MARKETING_VERSION:-0.4.2}"
 DMG="$ROOT/dist/AgentMeter-$VERSION.dmg"
 
 [ -d "$APP" ] || { echo "Build the app first: make app"; exit 1; }

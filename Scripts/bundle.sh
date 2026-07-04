@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 CONFIG="${CONFIG:-release}"
-MARKETING_VERSION="${MARKETING_VERSION:-1.0.2}"
+MARKETING_VERSION="${MARKETING_VERSION:-0.4.2}"
 BUILD_VERSION="${BUILD_VERSION:-$(date +%Y%m%d%H%M)}"
 APP="$ROOT/dist/AgentMeter.app"
 

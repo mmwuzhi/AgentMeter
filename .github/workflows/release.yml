@@ -98,6 +98,22 @@ jobs:
           hdiutil imageinfo "$dmg" >/dev/null
           shasum -a 256 "$dmg" | tee dist/SHA256SUMS
 
+      - name: Generate Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "SPARKLE_PRIVATE_KEY is not configured; skipping appcast generation."
+            exit 0
+          fi
+
+          SPARKLE_VERSION="${{ steps.version.outputs.version }}" \
+          SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.version.outputs.tag }}/" \
+          make appcast
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -118,6 +134,11 @@ jobs:
           set -euo pipefail
 
           dmg="dist/AgentMeter-${VERSION}.dmg"
+          assets=("$dmg" dist/SHA256SUMS)
+          if [[ -f dist/appcast.xml ]]; then
+            assets+=(dist/appcast.xml)
+          fi
+
           {
             echo "Automated AgentMeter build for ${TAG}."
             echo
@@ -133,10 +154,10 @@ jobs:
           fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$dmg" dist/SHA256SUMS --clobber
+            gh release upload "$TAG" "${assets[@]}" --clobber
             gh release edit "$TAG" "${flags[@]}"
           else
-            gh release create "$TAG" "$dmg" dist/SHA256SUMS \
+            gh release create "$TAG" "${assets[@]}" \
               --target "$GITHUB_SHA" \
               "${flags[@]}"
           fi
