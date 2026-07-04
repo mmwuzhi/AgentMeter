@@ -16,6 +16,7 @@ final class AppViewModel {
     var lastRefresh: Date?
     var quotaObservations: [QuotaObservation] = []
     var codexResetCreditState = CodexResetCreditState()
+    var activeAgents: [ActiveAgent] = []
 
     init() {
         // Show the last values we saw immediately; the first refresh replaces them.

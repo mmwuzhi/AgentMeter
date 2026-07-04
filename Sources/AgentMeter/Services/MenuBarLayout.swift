@@ -7,6 +7,7 @@ enum MenuBarSlot: String, Codable, Sendable, CaseIterable, Identifiable {
     case codex
     case claude
     case copilot
+    case activeAgents
 
     var id: String { rawValue }
 
@@ -16,6 +17,7 @@ enum MenuBarSlot: String, Codable, Sendable, CaseIterable, Identifiable {
         case .codex: return Provider.codex.displayName
         case .claude: return Provider.claude.displayName
         case .copilot: return Provider.copilot.displayName
+        case .activeAgents: return "Agents"
         }
     }
 
@@ -25,6 +27,7 @@ enum MenuBarSlot: String, Codable, Sendable, CaseIterable, Identifiable {
         case .codex: return .codex
         case .claude: return .claude
         case .copilot: return .copilot
+        case .activeAgents: return nil
         }
     }
 
@@ -33,6 +36,7 @@ enum MenuBarSlot: String, Codable, Sendable, CaseIterable, Identifiable {
         case .overview: return 6
         case .codex, .claude: return 8
         case .copilot: return 5
+        case .activeAgents: return 3
         }
     }
 }
@@ -62,6 +66,7 @@ enum MenuBarAlertLevel: Equatable {
 enum MenuBarIcon: Equatable {
     case gauge
     case provider(Provider)
+    case agents
 }
 
 /// A resolved item ready to draw.
@@ -131,6 +136,7 @@ enum MenuBarLayout {
     static let configKey = "menuBarItemsConfig"
 
     static func icon(for slot: MenuBarSlot) -> MenuBarIcon {
+        if slot == .activeAgents { return .agents }
         if let provider = slot.provider { return .provider(provider) }
         return .gauge
     }
@@ -202,6 +208,11 @@ enum MenuBarLayout {
     /// Every item a slot can currently render, in canonical order, with display names.
     static func available(_ model: AppViewModel, for slot: MenuBarSlot = .overview) -> [(key: String, name: String)] {
         var out: [(String, String)] = [("icon", "\(slot.displayName) icon")]
+        if slot == .activeAgents {
+            out.append(("a:count", "Agents · active count"))
+            out.append(("a:primary", "Agents · primary agent"))
+            return out
+        }
         for p in providers(for: slot) {
             let s = state(p, model)
             for w in s.quota.windows {
@@ -225,6 +236,13 @@ enum MenuBarLayout {
     /// Default selection used when nothing is configured yet.
     private static func autoDefault(_ model: AppViewModel, for slot: MenuBarSlot) -> [MenuBarItem] {
         guard slot == .overview else {
+            if slot == .activeAgents {
+                return [
+                    MenuBarItem(key: "icon", enabled: true),
+                    MenuBarItem(key: "a:count", enabled: true),
+                    MenuBarItem(key: "a:primary", enabled: false),
+                ]
+            }
             return providerDefault(model, for: slot)
         }
 
@@ -301,6 +319,9 @@ enum MenuBarLayout {
 
     private static func resolve(_ key: String, _ model: AppViewModel)
         -> (segment: MenuBarSegment, provider: Provider)? {
+        if let segment = resolveAgent(key, model) {
+            return (segment, .codex)
+        }
         let parts = key.split(separator: ":").map(String.init)
         guard parts.count >= 2, let p = provider(parts[1]) else { return nil }
         let s = state(p, model)
@@ -327,8 +348,28 @@ enum MenuBarLayout {
         }
     }
 
+    private static func resolveAgent(_ key: String, _ model: AppViewModel) -> MenuBarSegment? {
+        switch key {
+        case "a:count":
+            return MenuBarSegment(
+                label: "agt",
+                value: "\(model.activeAgents.count)",
+                remaining: nil,
+                alertLevel: .none
+            )
+        case "a:primary":
+            let value = model.activeAgents.first.map { tag($0.provider) } ?? "none"
+            return MenuBarSegment(label: "run", value: value, remaining: nil, alertLevel: .none)
+        default:
+            return nil
+        }
+    }
+
     /// A single item's current caption + value for the settings preview chips.
     static func preview(_ key: String, _ model: AppViewModel, slot: MenuBarSlot = .overview) -> MenuBarSegment? {
+        if let segment = resolveAgent(key, model) {
+            return segment
+        }
         guard let (seg, p) = resolve(key, model) else { return nil }
         if slot.provider != nil {
             return seg

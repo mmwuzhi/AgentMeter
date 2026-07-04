@@ -61,6 +61,7 @@ final class StatusItemController {
             _ = model.codex
             _ = model.claude
             _ = model.copilot
+            _ = model.activeAgents
         } onChange: { [weak self] in
             Task { @MainActor in
                 self?.observeModel()

@@ -4,9 +4,12 @@ import SwiftUI
 enum MenuViewScope: Equatable {
     case overview
     case provider(Provider)
+    case activeAgents
 
     init(slot: MenuBarSlot) {
-        if let provider = slot.provider {
+        if slot == .activeAgents {
+            self = .activeAgents
+        } else if let provider = slot.provider {
             self = .provider(provider)
         } else {
             self = .overview
@@ -29,14 +32,18 @@ struct MenuView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    ForEach(visibleProviders, id: \.self) { p in
-                        ProviderSection(
-                            state: PopoverOrder.state(p, model),
-                            tint: PopoverOrder.tint(p),
-                            runway: { provider, window in
-                                model.runway(for: provider, window: window)
-                            }
-                        )
+                    if scope == .activeAgents {
+                        ActiveAgentsSection(agents: model.activeAgents)
+                    } else {
+                        ForEach(visibleProviders, id: \.self) { p in
+                            ProviderSection(
+                                state: PopoverOrder.state(p, model),
+                                tint: PopoverOrder.tint(p),
+                                runway: { provider, window in
+                                    model.runway(for: provider, window: window)
+                                }
+                            )
+                        }
                     }
                 }
                 .padding(12)
@@ -97,6 +104,7 @@ struct MenuView: View {
         switch scope {
         case .overview: return "AgentMeter"
         case .provider(let provider): return provider.displayName
+        case .activeAgents: return "Agents"
         }
     }
 
@@ -107,6 +115,71 @@ struct MenuView: View {
         case .provider(let provider):
             let state = PopoverOrder.state(provider, model)
             return String(format: "Spend  $%.2f", state.usage.totalCostUSD)
+        case .activeAgents:
+            return "\(model.activeAgents.count) active"
+        }
+    }
+}
+
+struct ActiveAgentsSection: View {
+    let agents: [ActiveAgent]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Active Agents").font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(agents.count)")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.tertiary)
+            }
+
+            if agents.isEmpty {
+                Label("No local Codex or Claude sessions running", systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(agents) { agent in
+                        ActiveAgentRow(agent: agent)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.04)))
+    }
+}
+
+private struct ActiveAgentRow: View {
+    let agent: ActiveAgent
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle()
+                .fill(PopoverOrder.tint(agent.provider))
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(agent.provider.displayName)
+                        .font(.caption.weight(.semibold))
+                    Text(agent.elapsedText)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                Text(agent.displayCommand)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            Text("#\(agent.pid)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.tertiary)
         }
     }
 }

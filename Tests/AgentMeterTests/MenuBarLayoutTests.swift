@@ -7,6 +7,7 @@ final class MenuBarLayoutTests: XCTestCase {
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: "menuBarSlotsConfig")
         UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.claude")
+        UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.activeAgents")
         super.tearDown()
     }
 
@@ -39,6 +40,22 @@ final class MenuBarLayoutTests: XCTestCase {
 
         XCTAssertEqual(segments.map(\.label), ["5h", "7d", "day", "7d", "30d"])
         XCTAssertEqual(segments.map(\.value), ["100%", "39%", "16.3M", "314.4M", "998.7M"])
+    }
+
+    func testActiveAgentsSlotShowsCount() {
+        UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.activeAgents")
+        let model = AppViewModel()
+        model.activeAgents = [
+            ActiveAgent(provider: .claude, pid: 1, parentPID: 0, command: "claude --resume",
+                        elapsedSeconds: 60, observedAt: Date()),
+            ActiveAgent(provider: .codex, pid: 2, parentPID: 0, command: "codex",
+                        elapsedSeconds: 30, observedAt: Date()),
+        ]
+
+        let segments = MenuBarLayout.activeSegments(model, slot: .activeAgents)
+
+        XCTAssertEqual(segments.map(\.label), ["agt"])
+        XCTAssertEqual(segments.map(\.value), ["2"])
     }
 
     private func claudeState() -> ProviderState {

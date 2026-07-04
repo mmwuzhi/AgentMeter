@@ -79,7 +79,8 @@ final class RefreshCoordinator {
             async let codexState = codex.fetch()
             async let claudeState = claude.fetch()
             async let copilotState = copilot.fetch()
-            let (c, cl, cp) = await (codexState, claudeState, copilotState)
+            async let activeAgents = ActiveAgentService.fetch()
+            let (c, cl, cp, agents) = await (codexState, claudeState, copilotState, activeAgents)
             let now = Date()
             var nextCodex = c.preservingLiveQuota(from: previousCodexQuota, at: now)
             viewModel.codexResetCreditState = CodexResetCreditTracker.reconcile(
@@ -94,6 +95,7 @@ final class RefreshCoordinator {
             viewModel.codex = nextCodex
             viewModel.claude = cl.preservingLiveQuota(from: previousClaudeQuota, at: now)
             viewModel.copilot = cp.preservingLiveQuota(from: previousCopilotQuota, at: now)
+            viewModel.activeAgents = agents
             viewModel.quotaObservations = QuotaTrendTracker.record(
                 existing: viewModel.quotaObservations,
                 states: [c, cl, cp],
