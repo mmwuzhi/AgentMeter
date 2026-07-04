@@ -36,7 +36,7 @@ enum MenuBarSlot: String, Codable, Sendable, CaseIterable, Identifiable {
         case .overview: return 6
         case .codex, .claude: return 8
         case .copilot: return 5
-        case .activeAgents: return 3
+        case .activeAgents: return 4
         }
     }
 }
@@ -210,6 +210,8 @@ enum MenuBarLayout {
         var out: [(String, String)] = [("icon", "\(slot.displayName) icon")]
         if slot == .activeAgents {
             out.append(("a:count", "Agents · active count"))
+            out.append(("a:session", "Agents · current session"))
+            out.append(("a:project", "Agents · current project"))
             out.append(("a:primary", "Agents · primary agent"))
             return out
         }
@@ -240,6 +242,8 @@ enum MenuBarLayout {
                 return [
                     MenuBarItem(key: "icon", enabled: true),
                     MenuBarItem(key: "a:count", enabled: true),
+                    MenuBarItem(key: "a:session", enabled: true),
+                    MenuBarItem(key: "a:project", enabled: false),
                     MenuBarItem(key: "a:primary", enabled: false),
                 ]
             }
@@ -360,6 +364,14 @@ enum MenuBarLayout {
         case "a:primary":
             let value = model.activeAgents.first.map { tag($0.provider) } ?? "none"
             return MenuBarSegment(label: "run", value: value, remaining: nil, alertLevel: .none)
+        case "a:session":
+            let value = model.activeAgents.first?.displaySession ?? "none"
+            return MenuBarSegment(label: "ses", value: value, remaining: nil, alertLevel: .none)
+        case "a:project":
+            let value = model.activeAgents.first?.session?.displayProject
+                ?? model.activeAgents.first?.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
+                ?? "none"
+            return MenuBarSegment(label: "proj", value: value, remaining: nil, alertLevel: .none)
         default:
             return nil
         }

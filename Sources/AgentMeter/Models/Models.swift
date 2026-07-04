@@ -201,6 +201,28 @@ struct ProviderState: Codable, Sendable, Equatable {
     var usage: UsageReport
 }
 
+/// Local identity for the transcript/log file backing a running agent.
+struct ActiveAgentSession: Codable, Sendable, Equatable {
+    let id: String
+    let projectPath: String?
+    let projectName: String?
+    let branch: String?
+    let lastUpdatedAt: Date?
+    let source: String
+
+    var shortID: String {
+        String(id.prefix(8))
+    }
+
+    var displayProject: String {
+        if let projectName, !projectName.isEmpty { return projectName }
+        if let projectPath, !projectPath.isEmpty {
+            return URL(fileURLWithPath: projectPath).lastPathComponent
+        }
+        return source
+    }
+}
+
 /// One locally running interactive agent process.
 struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     let provider: Provider
@@ -209,6 +231,8 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     let command: String
     let elapsedSeconds: TimeInterval
     let observedAt: Date
+    var cwd: String? = nil
+    var session: ActiveAgentSession? = nil
 
     var id: String { "\(provider.rawValue):\(pid)" }
 
@@ -224,5 +248,9 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
         let pieces = command.split(separator: " ", maxSplits: 2).map(String.init)
         guard pieces.count > 1 else { return provider.displayName }
         return pieces.dropFirst().joined(separator: " ")
+    }
+
+    var displaySession: String {
+        session?.shortID ?? "unknown"
     }
 }

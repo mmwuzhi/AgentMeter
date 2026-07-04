@@ -47,15 +47,23 @@ final class MenuBarLayoutTests: XCTestCase {
         let model = AppViewModel()
         model.activeAgents = [
             ActiveAgent(provider: .claude, pid: 1, parentPID: 0, command: "claude --resume",
-                        elapsedSeconds: 60, observedAt: Date()),
+                        elapsedSeconds: 60, observedAt: Date(),
+                        session: ActiveAgentSession(
+                            id: "abcdef12-3456",
+                            projectPath: "/Users/me/project",
+                            projectName: "project",
+                            branch: "main",
+                            lastUpdatedAt: Date(),
+                            source: "test"
+                        )),
             ActiveAgent(provider: .codex, pid: 2, parentPID: 0, command: "codex",
                         elapsedSeconds: 30, observedAt: Date()),
         ]
 
         let segments = MenuBarLayout.activeSegments(model, slot: .activeAgents)
 
-        XCTAssertEqual(segments.map(\.label), ["agt"])
-        XCTAssertEqual(segments.map(\.value), ["2"])
+        XCTAssertEqual(segments.map(\.label), ["agt", "ses"])
+        XCTAssertEqual(segments.map(\.value), ["2", "abcdef12"])
     }
 
     private func claudeState() -> ProviderState {
