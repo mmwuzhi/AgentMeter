@@ -11,10 +11,10 @@ final class MenuBarLayoutTests: XCTestCase {
         super.tearDown()
     }
 
-    func testDefaultVisibleSlotIsOverviewOnly() {
+    func testDefaultVisibleSlotsAreIndependentAgents() {
         UserDefaults.standard.removeObject(forKey: "menuBarSlotsConfig")
 
-        XCTAssertEqual(MenuBarSlots.visibleSlots(), [.overview])
+        XCTAssertEqual(MenuBarSlots.visibleSlots(), [.codex, .claude, .activeAgents])
     }
 
     func testProviderSlotDefaultIncludesProviderUsageFields() {
