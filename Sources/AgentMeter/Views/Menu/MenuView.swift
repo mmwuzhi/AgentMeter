@@ -169,12 +169,31 @@ private struct ActiveAgentRow: View {
                     Text(agent.elapsedText)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
+                    if let session = agent.session {
+                        Text(session.shortID)
+                            .font(.caption2.monospacedDigit().weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                Text(agent.displayCommand)
+                if let session = agent.session {
+                    HStack(spacing: 4) {
+                        Text(session.displayProject)
+                        if let branch = session.branch, branch != "HEAD" {
+                            Text(branch)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                } else {
+                    Text(agent.displayCommand)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             Spacer(minLength: 8)
             Text("#\(agent.pid)")
