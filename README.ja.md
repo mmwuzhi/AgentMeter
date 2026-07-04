@@ -77,18 +77,25 @@ git push origin v1.2.3
 
 または、GitHub Actionsから**Release** workflowを手動実行し、`1.2.3` を入力します。workflowは `MARKETING_VERSION` をtagまたは入力されたバージョンに設定し、app bundleとDMGを検証し、workflow artifactをアップロードし、DMGと `SHA256SUMS` を含むGitHub Releaseを作成または更新します。
 
-リリース成果物は現在ad-hoc署名です。Sparkle appcastの生成はSparkleの秘密鍵が必要なため、別手順のままです。
+リリース成果物は現在ad-hoc署名です。Sparkle appcastの生成はSparkleの秘密鍵があるマシンで実行するか、CIで `SPARKLE_PRIVATE_KEY` secretを設定して実行します。
 
 ## 自動更新を有効にする（Sparkle）
 
-自動更新のコードは組み込まれていますが、feedを設定するまでは有効になりません。
+自動更新feedはGitHub Releasesに設定されています：
+`https://github.com/mmwuzhi/AgentMeter/releases/latest/download/appcast.xml`。
 
-1. [Sparkle releases page](https://github.com/sparkle-project/Sparkle/releases)からSparkleのツールをダウンロードします。
-2. `./bin/generate_keys` を1回実行します。出力された**public** keyを `Scripts/Info.plist` の `SUPublicEDKey` に設定します。
-3. `Scripts/Info.plist` の `SUFeedURL` に、`appcast.xml` をホストするURLを設定します。GitHub Releases raw URLや自分のドメインなどが使えます。
-4. `make dmg && make appcast` を実行します（`generate_appcast` がPATHに必要です）。`dist/appcast.xml` が生成されます。DMGと `appcast.xml` をfeed hostにアップロードしてください。
+対応するDMGをビルドしたあと、appcastを生成します：
 
-設定が終わるまでは、**Check for Updates**は短い説明を表示し、クラッシュしません。
+```bash
+version=0.4.2
+make dmg
+SPARKLE_VERSION="$version" \
+SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/mmwuzhi/AgentMeter/releases/download/v$version/" \
+make appcast
+gh release upload "v$version" "dist/AgentMeter-$version.dmg" dist/appcast.xml --clobber
+```
+
+`Scripts/appcast.sh` はPATH上のSparkle `generate_appcast` を使い、なければSwiftPMが `.build/artifacts/sparkle/Sparkle/bin/` にダウンロードしたツールを使います。`SPARKLE_VERSION` を設定すると `dist/AgentMeter-$SPARKLE_VERSION.dmg` だけを読み込むため、古いローカルDMGをfeedに混ぜる事故を避けられます。
 
 ## レイアウト
 

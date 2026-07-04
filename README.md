@@ -97,21 +97,29 @@ verifies the app bundle and DMG, uploads the DMG as a workflow artifact, and
 creates or updates a GitHub Release with the DMG plus `SHA256SUMS`.
 
 The release artifact is ad-hoc signed. Sparkle appcast generation is still a
-separate step because it requires your private Sparkle signing key.
+separate step on a machine that has the Sparkle private signing key, or in CI
+with `SPARKLE_PRIVATE_KEY` configured as a secret.
 
 ## Enabling auto-update (Sparkle)
 
-Auto-update is wired in code but inert until you configure a feed:
+Auto-update is configured to read the feed from GitHub Releases:
+`https://github.com/mmwuzhi/AgentMeter/releases/latest/download/appcast.xml`.
 
-1. Download Sparkle's tools from the [releases page](https://github.com/sparkle-project/Sparkle/releases).
-2. Run `./bin/generate_keys` once. Paste the **public** key into `Scripts/Info.plist` →
-   `SUPublicEDKey`.
-3. Set `SUFeedURL` in `Scripts/Info.plist` to where you'll host `appcast.xml`
-   (e.g. a GitHub Releases raw URL).
-4. `make dmg && make appcast` (needs `generate_appcast` on PATH) produces
-   `dist/appcast.xml`. Upload the DMG + `appcast.xml` to your feed host.
+Generate an appcast for a release after building the matching DMG:
 
-Until configured, **Check for Updates** shows a short explainer instead of crashing.
+```bash
+version=0.4.2
+make dmg
+SPARKLE_VERSION="$version" \
+SPARKLE_DOWNLOAD_URL_PREFIX="https://github.com/mmwuzhi/AgentMeter/releases/download/v$version/" \
+make appcast
+gh release upload "v$version" "dist/AgentMeter-$version.dmg" dist/appcast.xml --clobber
+```
+
+`Scripts/appcast.sh` uses Sparkle's `generate_appcast` from PATH, or the
+SwiftPM-downloaded tool under `.build/artifacts/sparkle/Sparkle/bin/`. If
+`SPARKLE_VERSION` is set, only `dist/AgentMeter-$SPARKLE_VERSION.dmg` is used,
+which avoids accidentally including old local DMGs in the feed.
 
 ## Layout
 
