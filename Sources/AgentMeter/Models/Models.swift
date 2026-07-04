@@ -200,3 +200,29 @@ struct ProviderState: Codable, Sendable, Equatable {
     var quota: QuotaSnapshot
     var usage: UsageReport
 }
+
+/// One locally running interactive agent process.
+struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
+    let provider: Provider
+    let pid: Int
+    let parentPID: Int
+    let command: String
+    let elapsedSeconds: TimeInterval
+    let observedAt: Date
+
+    var id: String { "\(provider.rawValue):\(pid)" }
+
+    var elapsedText: String {
+        let seconds = max(0, Int(elapsedSeconds))
+        if seconds >= 86_400 { return "\(seconds / 86_400)d" }
+        if seconds >= 3_600 { return "\(seconds / 3_600)h" }
+        if seconds >= 60 { return "\(seconds / 60)m" }
+        return "\(seconds)s"
+    }
+
+    var displayCommand: String {
+        let pieces = command.split(separator: " ", maxSplits: 2).map(String.init)
+        guard pieces.count > 1 else { return provider.displayName }
+        return pieces.dropFirst().joined(separator: " ")
+    }
+}

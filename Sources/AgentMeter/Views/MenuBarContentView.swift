@@ -153,6 +153,14 @@ final class MenuBarContentView: NSView {
                 .withSymbolConfiguration(config)
             symbol?.draw(in: NSRect(x: x, y: (height - Self.iconSize) / 2,
                                     width: Self.iconSize, height: Self.iconSize))
+        case .agents:
+            let config = NSImage.SymbolConfiguration(pointSize: Self.iconSize - 1, weight: .regular)
+                .applying(.init(paletteColors: [color]))
+            let symbol = NSImage(systemSymbolName: "dot.radiowaves.left.and.right",
+                                 accessibilityDescription: "Active Agents")?
+                .withSymbolConfiguration(config)
+            symbol?.draw(in: NSRect(x: x, y: (height - Self.iconSize) / 2,
+                                    width: Self.iconSize, height: Self.iconSize))
         }
     }
 
