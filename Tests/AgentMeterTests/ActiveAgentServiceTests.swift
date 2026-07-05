@@ -134,6 +134,22 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertTrue(agents.allSatisfy { $0.session == nil })
     }
 
+    func testCWDMapParsesBatchLsofFieldOutput() {
+        let output = """
+        p10004
+        fcwd
+        n/Users/me/project-a
+        p10005
+        fcwd
+        n/Users/me/project-b
+        """
+
+        let cwdByPID = ActiveAgentService.cwdMap(fromLsofOutput: output)
+
+        XCTAssertEqual(cwdByPID[10004], "/Users/me/project-a")
+        XCTAssertEqual(cwdByPID[10005], "/Users/me/project-b")
+    }
+
     func testRunProcessTimesOut() {
         let start = Date()
 
