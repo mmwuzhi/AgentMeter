@@ -11,12 +11,27 @@ enum ActiveAgentService {
     }
 
     static func parsePSOutput(_ output: String, observedAt: Date) -> [ActiveAgent] {
-        parsePSOutput(
-            output,
+        let rows = processRows(from: output)
+        let cwdByPID = cwdMap(for: agentPIDs(in: rows))
+        return parseProcessRows(
+            rows,
             observedAt: observedAt,
-            cwdLookup: cwd(for:),
+            cwdLookup: { cwdByPID[$0] },
             sessionLookup: currentSession(provider:cwd:startedAt:observedAt:)
         )
+    }
+
+    private static func processRows(from output: String) -> [ProcessRow] {
+        output.split(separator: "\n")
+            .compactMap { line -> ProcessRow? in ProcessRow(line: String(line)) }
+    }
+
+    private static func agentPIDs(in rows: [ProcessRow]) -> [Int] {
+        rows.compactMap { row -> Int? in
+            guard provider(for: row.command) != nil,
+                  !isHelperCommand(row.command) else { return nil }
+            return row.pid
+        }
     }
 
     static func parsePSOutput(
@@ -25,8 +40,20 @@ enum ActiveAgentService {
         cwdLookup: (Int) -> String?,
         sessionLookup: (Provider, String?, Date, Date) -> ActiveAgentSession?
     ) -> [ActiveAgent] {
-        let rows: [ProcessRow] = output.split(separator: "\n")
-            .compactMap { line -> ProcessRow? in ProcessRow(line: String(line)) }
+        parseProcessRows(
+            processRows(from: output),
+            observedAt: observedAt,
+            cwdLookup: cwdLookup,
+            sessionLookup: sessionLookup
+        )
+    }
+
+    private static func parseProcessRows(
+        _ rows: [ProcessRow],
+        observedAt: Date,
+        cwdLookup: (Int) -> String?,
+        sessionLookup: (Provider, String?, Date, Date) -> ActiveAgentSession?
+    ) -> [ActiveAgent] {
         let candidates: [AgentCandidate] = rows
             .compactMap { row -> AgentCandidate? in
                 guard let provider = provider(for: row.command),
@@ -131,17 +158,29 @@ enum ActiveAgentService {
         return false
     }
 
-    private static func cwd(for pid: Int) -> String? {
+    private static func cwdMap(for pids: [Int]) -> [Int: String] {
+        let uniquePIDs = Array(Set(pids)).sorted()
+        guard !uniquePIDs.isEmpty else { return [:] }
         let output = runProcess(
             executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
-            arguments: ["-a", "-p", "\(pid)", "-d", "cwd", "-Fn"],
+            arguments: ["-a", "-p", uniquePIDs.map(String.init).joined(separator: ","), "-d", "cwd", "-Fpn"],
             timeout: 1
         )
-        guard !output.isEmpty else { return nil }
-        return output
-            .split(separator: "\n")
-            .first(where: { $0.hasPrefix("n") })
-            .map { String($0.dropFirst()) }
+        guard !output.isEmpty else { return [:] }
+        return cwdMap(fromLsofOutput: output)
+    }
+
+    static func cwdMap(fromLsofOutput output: String) -> [Int: String] {
+        var currentPID: Int?
+        var cwdByPID: [Int: String] = [:]
+        for line in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            if line.hasPrefix("p") {
+                currentPID = Int(line.dropFirst())
+            } else if line.hasPrefix("n"), let currentPID {
+                cwdByPID[currentPID] = String(line.dropFirst())
+            }
+        }
+        return cwdByPID
     }
 
     static func runProcess(executable: URL, arguments: [String], timeout: TimeInterval) -> String {
