@@ -25,14 +25,14 @@ private enum SpendWindows {
                             tokens: recent.reduce(0) { $0 + $1.totalTokens })
     }
 
-    static func allTime(_ usage: UsageReport) -> WindowTotals {
+    static func tracked(_ usage: UsageReport) -> WindowTotals {
         WindowTotals(cost: usage.totalCostUSD, tokens: usage.totalTokens)
     }
 }
 
 /// Collapsed headline: token usage for local day / 7-day / 30-day, as evenly-spread
 /// right-aligned columns whose right edge lines up with the quota bars above.
-/// The full $/token breakdown (incl. all-time) lives in SpendBreakdownGrid.
+/// The full $/token breakdown lives in SpendBreakdownGrid.
 struct SpendSummary: View {
     let usage: UsageReport
 
@@ -42,7 +42,7 @@ struct SpendSummary: View {
             cell("7-day", TokenFormat.short(SpendWindows.lastDays(7, usage).tokens))
             cell("30-day", TokenFormat.short(SpendWindows.lastDays(30, usage).tokens))
         }
-        .help("Usage is read from local logs and the day resets at local midnight.")
+        .help("Usage is read from recent local logs and the day resets at local midnight.")
     }
 
     private func cell(_ label: String, _ value: String) -> some View {
@@ -58,7 +58,7 @@ struct SpendSummary: View {
     }
 }
 
-/// Expanded breakdown: $/token across local day / 7-day / 30-day / all-time. Equal-width
+/// Expanded breakdown: $/token across local day / 7-day / 30-day. Equal-width
 /// right-aligned columns spanning the full width, so numbers share one right edge.
 struct SpendBreakdownGrid: View {
     let usage: UsageReport
@@ -71,7 +71,6 @@ struct SpendBreakdownGrid: View {
             ("local day", SpendWindows.today(usage)),
             ("7-day", SpendWindows.lastDays(7, usage)),
             ("30-day", SpendWindows.lastDays(30, usage)),
-            ("all-time", SpendWindows.allTime(usage)),
         ]
 
         VStack(alignment: .leading, spacing: 4) {
@@ -105,7 +104,7 @@ struct SpendBreakdownGrid: View {
     }
 }
 
-/// All-time spend split by model (top few). Shown in the expanded activity area so
+/// Recent spend split by model (top few). Shown in the expanded activity area so
 /// you can see which model is actually driving cost.
 struct ModelBreakdown: View {
     let usage: UsageReport
@@ -115,7 +114,7 @@ struct ModelBreakdown: View {
         let models = Array(usage.byModel.prefix(limit))
         if !models.isEmpty {
             VStack(alignment: .leading, spacing: 3) {
-                Text("By model · all-time")
+                Text("By model · 30-day")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 ForEach(models) { m in

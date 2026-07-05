@@ -4,8 +4,17 @@ import Foundation
 /// there's no spend/usage history — only the monthly quota (e.g. premium requests),
 /// read via the GitHub CLI.
 struct CopilotService: Sendable {
-    func fetch() async -> ProviderState {
-        ProviderState(provider: .copilot, quota: await fetchQuota(), usage: .empty(.copilot))
+    func fetch(
+        refreshQuota: Bool = true,
+        previous: ProviderState? = nil
+    ) async -> ProviderState {
+        let quota: QuotaSnapshot
+        if refreshQuota {
+            quota = await fetchQuota()
+        } else {
+            quota = previous?.quota ?? .unavailable(.copilot, note: "Install the GitHub CLI (gh) and run `gh auth login` to show Copilot quota")
+        }
+        return ProviderState(provider: .copilot, quota: quota, usage: previous?.usage ?? .empty(.copilot))
     }
 
     private func fetchQuota() async -> QuotaSnapshot {

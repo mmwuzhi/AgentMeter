@@ -105,6 +105,44 @@ final class MenuBarLayoutTests: XCTestCase {
         XCTAssertEqual(segments.map(\.value), ["100%", "39%", "16.3M", "314.4M", "998.7M"])
     }
 
+    func testActiveRefreshKindsDefaultToQuotaOnly() {
+        let model = configuredModel()
+
+        let kinds = MenuBarLayout.activeRefreshKinds(model)
+
+        XCTAssertEqual(kinds[.codex], [.quota])
+        XCTAssertEqual(kinds[.claude], [.quota])
+        XCTAssertNil(kinds[.copilot])
+    }
+
+    func testActiveRefreshKindsTreatUsageAndSpendAsUsage() {
+        let model = configuredModel()
+        MenuBarLayout.save([
+            MenuBarItem(key: "icon", enabled: true),
+            MenuBarItem(key: "q:claude:five_hour", enabled: false),
+            MenuBarItem(key: "u:claude:7d", enabled: true),
+            MenuBarItem(key: "s:claude", enabled: true),
+        ], for: .claude)
+
+        let kinds = MenuBarLayout.activeRefreshKinds(model)
+
+        XCTAssertEqual(kinds[.claude], [.usage])
+    }
+
+    func testActiveRefreshKindsIgnoreDisabledFields() {
+        let model = configuredModel()
+        MenuBarLayout.save([
+            MenuBarItem(key: "icon", enabled: true),
+            MenuBarItem(key: "q:claude:five_hour", enabled: false),
+            MenuBarItem(key: "u:claude:7d", enabled: false),
+        ], for: .claude)
+
+        let kinds = MenuBarLayout.activeRefreshKinds(model)
+
+        XCTAssertEqual(kinds[.codex], [.quota])
+        XCTAssertNil(kinds[.claude])
+    }
+
     func testMenuBarWidthDoesNotAddTrailingAir() {
         let segment = MenuBarSegment(label: "5h", value: "69%", remaining: 69, alertLevel: .none)
         let width = MenuBarContentView.width(

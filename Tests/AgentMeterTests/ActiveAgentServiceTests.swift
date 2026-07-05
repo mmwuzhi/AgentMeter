@@ -192,6 +192,24 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertGreaterThan(summary?.estimatedCostUSD ?? 0, 0)
     }
 
+    func testSessionUsageSummaryCacheInvalidatesWhenLogChanges() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let file = try makeTempFile(contents: """
+        {"timestamp":"2026-07-05T00:00:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}}}
+        """)
+
+        let first = await ActiveAgentService.sessionUsageSummary(provider: .codex, url: file)
+        try """
+        {"timestamp":"2026-07-05T00:00:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}}}
+        {"timestamp":"2026-07-05T00:01:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":10}}}}
+        """.data(using: .utf8)?.write(to: file)
+
+        let second = await ActiveAgentService.sessionUsageSummary(provider: .codex, url: file)
+
+        XCTAssertEqual(first?.tokenCount, 15)
+        XCTAssertEqual(second?.tokenCount, 45)
+    }
+
     private func makeTempFile(contents: String) throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("AgentMeterTests-\(UUID().uuidString)", isDirectory: true)
