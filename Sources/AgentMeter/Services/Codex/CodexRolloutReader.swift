@@ -7,6 +7,18 @@ import Foundation
 ///        moment Codex archives an active session mid-day.
 /// Each `token_count` event embeds `rate_limits` (quota) and `info.total/last_token_usage`.
 enum CodexRolloutReader {
+    /// Background usage is shown as local day / 7-day / 30-day. Avoid scanning
+    /// archived historical rollouts on every refresh; full-history accounting
+    /// belongs in a persisted index or explicit on-demand action.
+    private static let usageHistoryDays = 31
+
+    private struct FileUsageSummary: Sendable {
+        var byDay: [Date: TokenCounts] = [:]
+        var models: [Date: String] = [:]
+    }
+
+    private static let usageCache = LogFileParseCache<FileUsageSummary>()
+
     /// Roots that may hold rollout logs. `archived_sessions` is a flat directory;
     /// `sessions` is date-nested. The enumerator walks both recursively.
     static var sessionRoots: [URL] {
@@ -48,14 +60,13 @@ enum CodexRolloutReader {
     }
 
     private static func quota(fromFile url: URL) -> QuotaSnapshot? {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         var last: [String: Any]?
-        for line in content.split(separator: "\n") {
+        try? JSONLLineReader.forEachLine(in: url) { line in
             guard let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let payload = obj["payload"] as? [String: Any],
                   payload["type"] as? String == "token_count",
-                  payload["rate_limits"] is [String: Any] else { continue }
+                  payload["rate_limits"] is [String: Any] else { return }
             last = payload
         }
         guard let payload = last, let rl = payload["rate_limits"] as? [String: Any] else { return nil }
@@ -92,35 +103,35 @@ enum CodexRolloutReader {
     // MARK: - Usage (per-day token deltas across all files)
 
     static func usageReport() async -> UsageReport {
+        let cutoff = Calendar.current.date(
+            byAdding: .day,
+            value: -usageHistoryDays,
+            to: Calendar.current.startOfDay(for: Date())
+        ) ?? Date.distantPast
+        return await usageReport(files: recentRolloutFiles(rolloutFiles(), modifiedSince: cutoff))
+    }
+
+    static func usageReport(files: [URL]) async -> UsageReport {
         var byDay: [Date: TokenCounts] = [:]
         var models: [Date: String] = [:]
-        let cal = Calendar.current
 
-        for url in rolloutFiles() {
-            guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            var sessionModel = "gpt-5-codex"
-            for line in content.split(separator: "\n") {
-                guard let data = line.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                // Capture model when it appears (turn_context / session_meta).
-                if let payload = obj["payload"] as? [String: Any], let m = payload["model"] as? String {
-                    sessionModel = m
-                }
-                guard let payload = obj["payload"] as? [String: Any],
-                      payload["type"] as? String == "token_count",
-                      let info = payload["info"] as? [String: Any],
-                      let last = info["last_token_usage"] as? [String: Any] else { continue }
-                let ts = (obj["timestamp"] as? String).flatMap(Self.parseISO) ?? Date()
-                let day = cal.startOfDay(for: ts)
+        let fingerprints = files.compactMap { url -> (URL, LogFileFingerprint)? in
+            guard let fingerprint = LogFileFingerprint.current(for: url) else { return nil }
+            return (url, fingerprint)
+        }
+        await usageCache.prune(keeping: fingerprints.map(\.1))
+
+        for (url, fingerprint) in fingerprints {
+            let summary = await cachedUsageSummary(in: url, fingerprint: fingerprint)
+            for (day, counts) in summary.byDay {
                 var c = byDay[day] ?? TokenCounts()
-                let input = (last["input_tokens"] as? Int) ?? 0
-                let cached = (last["cached_input_tokens"] as? Int) ?? 0
-                let output = (last["output_tokens"] as? Int) ?? 0
-                c.input += max(0, input - cached)
-                c.cacheRead += cached
-                c.output += output
+                c.input += counts.input
+                c.cacheRead += counts.cacheRead
+                c.output += counts.output
                 byDay[day] = c
-                models[day] = sessionModel
+                if let model = summary.models[day] {
+                    models[day] = model
+                }
             }
         }
 
@@ -148,6 +159,61 @@ enum CodexRolloutReader {
             .sorted { $0.costUSD > $1.costUSD }
         return UsageReport(provider: .codex, buckets: buckets, totalCostUSD: totalCost,
                            totalTokens: totalTokens, byModel: byModel)
+    }
+
+    static func recentRolloutFiles(_ files: [URL], modifiedSince cutoff: Date) -> [URL] {
+        files.filter { url in
+            guard let modifiedAt = modificationDate(for: url) else { return false }
+            return modifiedAt >= cutoff
+        }
+    }
+
+    private static func modificationDate(for url: URL) -> Date? {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+    }
+
+    private static func cachedUsageSummary(
+        in url: URL,
+        fingerprint: LogFileFingerprint
+    ) async -> FileUsageSummary {
+        if let cached = await usageCache.value(for: fingerprint) { return cached }
+        let summary = parseUsageSummary(in: url)
+        await usageCache.store(summary, for: fingerprint)
+        return summary
+    }
+
+    private static func parseUsageSummary(in url: URL) -> FileUsageSummary {
+        let cal = Calendar.current
+        var summary = FileUsageSummary()
+        var sessionModel = "gpt-5-codex"
+        try? JSONLLineReader.forEachLine(in: url) { line in
+            guard let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            // Capture model when it appears (turn_context / session_meta).
+            if let payload = obj["payload"] as? [String: Any], let m = payload["model"] as? String {
+                sessionModel = m
+            }
+            guard let payload = obj["payload"] as? [String: Any],
+                  payload["type"] as? String == "token_count",
+                  let info = payload["info"] as? [String: Any],
+                  let last = info["last_token_usage"] as? [String: Any] else { return }
+            let input = (last["input_tokens"] as? Int) ?? 0
+            let cached = (last["cached_input_tokens"] as? Int) ?? 0
+            let output = (last["output_tokens"] as? Int) ?? 0
+            var counts = TokenCounts()
+            counts.input = max(0, input - cached)
+            counts.cacheRead = cached
+            counts.output = output
+            let ts = (obj["timestamp"] as? String).flatMap(Self.parseISO) ?? Date()
+            let day = cal.startOfDay(for: ts)
+            var existing = summary.byDay[day] ?? TokenCounts()
+            existing.input += counts.input
+            existing.cacheRead += counts.cacheRead
+            existing.output += counts.output
+            summary.byDay[day] = existing
+            summary.models[day] = sessionModel
+        }
+        return summary
     }
 
     static func parseISO(_ s: String) -> Date? {

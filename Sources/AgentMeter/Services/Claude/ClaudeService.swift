@@ -3,10 +3,31 @@ import Foundation
 /// Orchestrates Claude data: local usage/spend from JSONL, and a 3-tier quota
 /// strategy oauth → cli → spend-only (mirrors steipete's app order).
 struct ClaudeService: Sendable {
-    func fetch() async -> ProviderState {
-        async let quotaTask = fetchQuota()
-        async let usageTask = ClaudeJSONLScanner.usageReport()
-        let (quota, usage) = await (quotaTask, usageTask)
+    func fetch(
+        refreshQuota: Bool = true,
+        refreshUsage: Bool = true,
+        previous: ProviderState? = nil
+    ) async -> ProviderState {
+        if refreshQuota && refreshUsage {
+            async let quotaTask = fetchQuota()
+            async let usageTask = ClaudeJSONLScanner.usageReport()
+            let (quota, usage) = await (quotaTask, usageTask)
+            return ProviderState(provider: .claude, quota: quota, usage: usage)
+        }
+
+        let quota: QuotaSnapshot
+        if refreshQuota {
+            quota = await fetchQuota()
+        } else {
+            quota = previous?.quota ?? .unavailable(.claude, note: "Live quota unavailable — showing usage only")
+        }
+
+        let usage: UsageReport
+        if refreshUsage {
+            usage = await ClaudeJSONLScanner.usageReport()
+        } else {
+            usage = previous?.usage ?? .empty(.claude)
+        }
         return ProviderState(provider: .claude, quota: quota, usage: usage)
     }
 

@@ -1,6 +1,8 @@
 import Foundation
 
 enum ActiveAgentService {
+    private static let sessionUsageCache = LogFileParseCache<SessionUsageSummary>()
+
     static func fetch() async -> [ActiveAgent] {
         await Task.detached {
             let agents = parsePSOutput(runPS().output, observedAt: Date())
@@ -299,6 +301,22 @@ enum ActiveAgentService {
     }
 
     static func sessionUsageSummary(provider: Provider, url: URL) async -> SessionUsageSummary? {
+        guard let fingerprint = LogFileFingerprint.current(for: url) else {
+            return await uncachedSessionUsageSummary(provider: provider, url: url)
+        }
+        if let cached = await sessionUsageCache.value(for: fingerprint) {
+            return cached
+        }
+        guard let summary = await uncachedSessionUsageSummary(provider: provider, url: url) else { return nil }
+        await sessionUsageCache.store(summary, for: fingerprint)
+        return summary
+    }
+
+    static func clearSessionUsageCacheForTests() async {
+        await sessionUsageCache.clear()
+    }
+
+    private static func uncachedSessionUsageSummary(provider: Provider, url: URL) async -> SessionUsageSummary? {
         let totalsByModel: [String: TokenCounts]
         switch provider {
         case .claude:
@@ -321,22 +339,21 @@ enum ActiveAgentService {
     }
 
     private static func claudeSessionTokenCounts(from url: URL) -> [String: TokenCounts] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
         var seen = Set<String>()
         var totals: [String: TokenCounts] = [:]
-        for line in content.split(separator: "\n") {
+        try? JSONLLineReader.forEachLine(in: url) { line in
             guard line.contains("\"usage\""),
-                  let object = jsonObject(from: String(line)),
+                  let object = jsonObject(from: line),
                   let message = object["message"] as? [String: Any],
-                  let usage = message["usage"] as? [String: Any] else { continue }
+                  let usage = message["usage"] as? [String: Any] else { return }
             let model = (message["model"] as? String) ?? "default"
-            if model == "<synthetic>" { continue }
+            if model == "<synthetic>" { return }
 
             let messageID = (message["id"] as? String) ?? ""
             let requestID = (object["requestId"] as? String) ?? ""
             let dedup = messageID + "|" + requestID
             if !messageID.isEmpty {
-                guard seen.insert(dedup).inserted else { continue }
+                guard seen.insert(dedup).inserted else { return }
             }
 
             var counts = TokenCounts()
@@ -355,18 +372,17 @@ enum ActiveAgentService {
     }
 
     private static func codexSessionTokenCounts(from url: URL) -> [String: TokenCounts] {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
         var model = "gpt-5-codex"
         var totals: [String: TokenCounts] = [:]
-        for line in content.split(separator: "\n") {
-            guard let object = jsonObject(from: String(line)),
-                  let payload = object["payload"] as? [String: Any] else { continue }
+        try? JSONLLineReader.forEachLine(in: url) { line in
+            guard let object = jsonObject(from: line),
+                  let payload = object["payload"] as? [String: Any] else { return }
             if let nextModel = payload["model"] as? String {
                 model = nextModel
             }
             guard payload["type"] as? String == "token_count",
                   let info = payload["info"] as? [String: Any],
-                  let last = info["last_token_usage"] as? [String: Any] else { continue }
+                  let last = info["last_token_usage"] as? [String: Any] else { return }
             let input = (last["input_tokens"] as? Int) ?? 0
             let cached = (last["cached_input_tokens"] as? Int) ?? 0
             let output = (last["output_tokens"] as? Int) ?? 0

@@ -57,4 +57,40 @@ final class CodexRolloutReaderTests: XCTestCase {
         XCTAssertTrue(names.contains("sessions"))
         XCTAssertTrue(names.contains("archived_sessions"))
     }
+
+    func testUsageReportParsesInjectedRolloutFiles() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory.appendingPathComponent("codex-rollout-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+        let payload = [
+            #"{"timestamp":"2026-07-05T01:02:03Z","payload":{"model":"gpt-5-codex"}}"#,
+            #"{"timestamp":"2026-07-05T01:03:03Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30}}}}"#
+        ].joined(separator: "\n")
+        try payload.write(to: url, atomically: true, encoding: .utf8)
+
+        let report = await CodexRolloutReader.usageReport(files: [url])
+
+        XCTAssertEqual(report.totalTokens, 150)
+        XCTAssertEqual(report.buckets.first?.inputTokens, 100)
+        XCTAssertEqual(report.buckets.first?.cacheRead, 20)
+        XCTAssertEqual(report.buckets.first?.outputTokens, 30)
+    }
+
+    func testRecentRolloutFilesFiltersOldFilesByModificationDate() throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent("codex-recent-\(UUID().uuidString)")
+        try fm.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        let old = base.appendingPathComponent("old.jsonl")
+        let recent = base.appendingPathComponent("recent.jsonl")
+        try "{}".write(to: old, atomically: true, encoding: .utf8)
+        try "{}".write(to: recent, atomically: true, encoding: .utf8)
+
+        let cutoff = Date(timeIntervalSince1970: 2_000)
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_000)], ofItemAtPath: old.path)
+        try fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: 3_000)], ofItemAtPath: recent.path)
+
+        XCTAssertEqual(CodexRolloutReader.recentRolloutFiles([old, recent], modifiedSince: cutoff), [recent])
+    }
 }

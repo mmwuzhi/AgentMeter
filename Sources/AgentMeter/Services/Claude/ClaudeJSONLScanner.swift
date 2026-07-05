@@ -4,6 +4,24 @@ import Foundation
 /// Globs `<config>/projects/**/*.jsonl`, dedups by `message.id`, sums usage,
 /// computes cost from PricingService. Fully local — no network.
 enum ClaudeJSONLScanner {
+    /// Keep the always-on menu bar refresh cheap. The UI presents local day,
+    /// 7-day, and 30-day windows, so background refreshes only need logs that
+    /// could affect those windows. A full historical index should be a separate,
+    /// persisted/on-demand feature rather than work done every minute.
+    private static let usageHistoryDays = 31
+
+    private struct FileUsageSummary: Sendable {
+        var byDayModel: [String: DayModelUsage] = [:]
+    }
+
+    private struct DayModelUsage: Sendable {
+        let day: Date
+        let model: String
+        var counts: TokenCounts
+    }
+
+    private static let usageCache = LogFileParseCache<FileUsageSummary>()
+
     /// Resolve config dirs: $CLAUDE_CONFIG_DIR (comma list), XDG, ~/.claude.
     static func configDirs() -> [URL] {
         let fm = FileManager.default
@@ -53,56 +71,36 @@ enum ClaudeJSONLScanner {
     }
 
     static func usageReport() async -> UsageReport {
-        let cal = Calendar.current
-        var seen = Set<String>()
+        let cutoff = Calendar.current.date(
+            byAdding: .day,
+            value: -usageHistoryDays,
+            to: Calendar.current.startOfDay(for: Date())
+        ) ?? Date.distantPast
+        return await usageReport(files: recentLogFiles(jsonlFiles(), modifiedSince: cutoff))
+    }
+
+    static func usageReport(files: [URL]) async -> UsageReport {
         // (day, model) -> counts, so cost uses the right model price.
         var byDayModel: [String: (day: Date, model: String, counts: TokenCounts)] = [:]
 
-        for url in jsonlFiles() {
-            guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            for line in content.split(separator: "\n") {
-                guard line.contains("\"usage\""),
-                      let data = line.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let message = obj["message"] as? [String: Any],
-                      let usage = message["usage"] as? [String: Any] else { continue }
+        let fingerprints = files.compactMap { url -> (URL, LogFileFingerprint)? in
+            guard let fingerprint = LogFileFingerprint.current(for: url) else { return nil }
+            return (url, fingerprint)
+        }
+        await usageCache.prune(keeping: fingerprints.map(\.1))
 
-                let model = (message["model"] as? String) ?? "default"
-                if model == "<synthetic>" { continue }
-
-                // Dedup by message.id (+ requestId), matching ccusage.
-                let mid = (message["id"] as? String) ?? ""
-                let rid = (obj["requestId"] as? String) ?? ""
-                let dedup = mid + "|" + rid
-                if !mid.isEmpty {
-                    if seen.contains(dedup) { continue }
-                    seen.insert(dedup)
-                }
-
-                let ts = (obj["timestamp"] as? String).flatMap(CodexRolloutReader.parseISO) ?? Date()
-                let day = cal.startOfDay(for: ts)
-
-                var c = TokenCounts()
-                c.input = (usage["input_tokens"] as? Int) ?? 0
-                c.output = (usage["output_tokens"] as? Int) ?? 0
-                c.cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
-                if let cc = usage["cache_creation"] as? [String: Any] {
-                    c.cacheWrite5m = (cc["ephemeral_5m_input_tokens"] as? Int) ?? 0
-                    c.cacheWrite1h = (cc["ephemeral_1h_input_tokens"] as? Int) ?? 0
-                } else {
-                    c.cacheWrite5m = (usage["cache_creation_input_tokens"] as? Int) ?? 0
-                }
-
-                let key = "\(day.timeIntervalSince1970)|\(model)"
+        for (url, fingerprint) in fingerprints {
+            let summary = await cachedUsageSummary(in: url, fingerprint: fingerprint)
+            for (key, usage) in summary.byDayModel {
                 if var existing = byDayModel[key] {
-                    existing.counts.input += c.input
-                    existing.counts.output += c.output
-                    existing.counts.cacheRead += c.cacheRead
-                    existing.counts.cacheWrite5m += c.cacheWrite5m
-                    existing.counts.cacheWrite1h += c.cacheWrite1h
+                    existing.counts.input += usage.counts.input
+                    existing.counts.output += usage.counts.output
+                    existing.counts.cacheRead += usage.counts.cacheRead
+                    existing.counts.cacheWrite5m += usage.counts.cacheWrite5m
+                    existing.counts.cacheWrite1h += usage.counts.cacheWrite1h
                     byDayModel[key] = existing
                 } else {
-                    byDayModel[key] = (day, model, c)
+                    byDayModel[key] = (usage.day, usage.model, usage.counts)
                 }
             }
         }
@@ -141,5 +139,75 @@ enum ClaudeJSONLScanner {
             .sorted { $0.costUSD > $1.costUSD }
         return UsageReport(provider: .claude, buckets: buckets, totalCostUSD: totalCost,
                            totalTokens: totalTokens, byModel: byModel)
+    }
+
+    static func recentLogFiles(_ files: [URL], modifiedSince cutoff: Date) -> [URL] {
+        files.filter { url in
+            guard let modifiedAt = modificationDate(for: url) else { return false }
+            return modifiedAt >= cutoff
+        }
+    }
+
+    private static func modificationDate(for url: URL) -> Date? {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+    }
+
+    private static func cachedUsageSummary(
+        in url: URL,
+        fingerprint: LogFileFingerprint
+    ) async -> FileUsageSummary {
+        if let cached = await usageCache.value(for: fingerprint) { return cached }
+        let summary = parseUsageSummary(in: url)
+        await usageCache.store(summary, for: fingerprint)
+        return summary
+    }
+
+    private static func parseUsageSummary(in url: URL) -> FileUsageSummary {
+        let cal = Calendar.current
+        var seen = Set<String>()
+        var summary = FileUsageSummary()
+        try? JSONLLineReader.forEachLine(in: url) { line in
+            guard line.contains("\"usage\""),
+                  let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let message = obj["message"] as? [String: Any],
+                  let usage = message["usage"] as? [String: Any] else { return }
+
+            let model = (message["model"] as? String) ?? "default"
+            if model == "<synthetic>" { return }
+
+            let mid = (message["id"] as? String) ?? ""
+            let rid = (obj["requestId"] as? String) ?? ""
+            let dedupKey = mid + "|" + rid
+            if !mid.isEmpty {
+                guard seen.insert(dedupKey).inserted else { return }
+            }
+
+            var counts = TokenCounts()
+            counts.input = (usage["input_tokens"] as? Int) ?? 0
+            counts.output = (usage["output_tokens"] as? Int) ?? 0
+            counts.cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
+            if let cc = usage["cache_creation"] as? [String: Any] {
+                counts.cacheWrite5m = (cc["ephemeral_5m_input_tokens"] as? Int) ?? 0
+                counts.cacheWrite1h = (cc["ephemeral_1h_input_tokens"] as? Int) ?? 0
+            } else {
+                counts.cacheWrite5m = (usage["cache_creation_input_tokens"] as? Int) ?? 0
+            }
+
+            let ts = (obj["timestamp"] as? String).flatMap(CodexRolloutReader.parseISO) ?? Date()
+            let day = cal.startOfDay(for: ts)
+            let key = "\(day.timeIntervalSince1970)|\(model)"
+            if var existing = summary.byDayModel[key] {
+                existing.counts.input += counts.input
+                existing.counts.output += counts.output
+                existing.counts.cacheRead += counts.cacheRead
+                existing.counts.cacheWrite5m += counts.cacheWrite5m
+                existing.counts.cacheWrite1h += counts.cacheWrite1h
+                summary.byDayModel[key] = existing
+            } else {
+                summary.byDayModel[key] = DayModelUsage(day: day, model: model, counts: counts)
+            }
+        }
+        return summary
     }
 }

@@ -61,7 +61,6 @@ final class StatusItemController {
             _ = model.codex
             _ = model.claude
             _ = model.copilot
-            _ = model.activeAgents
         } onChange: { [weak self] in
             Task { @MainActor in
                 self?.observeModel()
@@ -136,10 +135,11 @@ private final class StatusItemSlotController: NSObject {
 
     private func configurePopover() {
         popover.behavior = .transient
+        popover.delegate = self
         let root = MenuView(
             model: model,
             scope: MenuViewScope(slot: slot),
-            onRefresh: { [weak self] in self?.coordinator.refresh() },
+            onRefresh: { [weak self] in self?.coordinator.refresh(forceAll: true) },
             onQuit: { NSApp.terminate(nil) }
         )
         popover.contentViewController = NSHostingController(rootView: root)
@@ -179,9 +179,16 @@ private final class StatusItemSlotController: NSObject {
             popover.performClose(nil)
         } else if let button = statusItem.button {
             closeOthers(slot)
-            coordinator.refresh()
+            coordinator.setActiveAgentsVisible(true)
+            coordinator.refresh(forceVisibleQuota: true, forceActiveAgents: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+}
+
+extension StatusItemSlotController: NSPopoverDelegate {
+    func popoverDidClose(_ notification: Notification) {
+        coordinator.setActiveAgentsVisible(false)
     }
 }

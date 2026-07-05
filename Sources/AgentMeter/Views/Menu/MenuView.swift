@@ -98,7 +98,7 @@ struct MenuView: View {
         switch scope {
         case .provider(let provider):
             let state = PopoverOrder.state(provider, model)
-            return String(format: "Spend  $%.2f", state.usage.totalCostUSD)
+            return String(format: "30-day spend  $%.2f", state.usage.totalCostUSD)
         }
     }
 }

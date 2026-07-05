@@ -6,12 +6,17 @@ import Foundation
 final class AppServerSession {
     enum SessionError: Error { case binaryNotFound, timeout, badResponse, rpc(String) }
 
+    private let binaryURL: URL?
     private let process = Process()
     private let inPipe = Pipe()
     private let outPipe = Pipe()
     private var buffer = Data()
     private var nextID = 0
     private let lock = NSLock()
+
+    init(binaryURL: URL? = nil) {
+        self.binaryURL = binaryURL
+    }
 
     /// Candidate locations for the codex binary.
     static func resolveBinary() -> URL? {
@@ -59,7 +64,7 @@ final class AppServerSession {
     }
 
     func start() throws {
-        guard let bin = Self.resolveBinary() else { throw SessionError.binaryNotFound }
+        guard let bin = binaryURL ?? Self.resolveBinary() else { throw SessionError.binaryNotFound }
         process.executableURL = bin
         process.arguments = ["app-server", "--listen", "stdio://"]
         process.currentDirectoryURL = SubprocessWorkingDirectory.url

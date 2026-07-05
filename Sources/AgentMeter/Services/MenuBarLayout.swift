@@ -73,6 +73,13 @@ enum MenuBarElement: Equatable {
     case segment(MenuBarSegment)
 }
 
+/// Data categories that deserve foreground refresh cadence because the user has
+/// placed them directly in the menu bar.
+enum MenuBarRefreshKind: Hashable, Sendable {
+    case quota
+    case usage
+}
+
 /// Source of truth for which independent status items are visible.
 @MainActor
 enum MenuBarSlots {
@@ -360,6 +367,33 @@ enum MenuBarLayout {
     static func activeSegments(_ model: AppViewModel, slot: MenuBarSlot, limit: Int? = nil) -> [MenuBarSegment] {
         activeElements(model, slot: slot, limit: limit).compactMap {
             if case .segment(let s) = $0 { return s }
+            return nil
+        }
+    }
+
+    /// Providers/data types that should refresh at the foreground cadence. Quota
+    /// and usage/spend are tracked separately so a quota-only menu bar does not
+    /// force local log scans on every refresh tick.
+    static func activeRefreshKinds(_ model: AppViewModel) -> [Provider: Set<MenuBarRefreshKind>] {
+        var out: [Provider: Set<MenuBarRefreshKind>] = [:]
+        for slot in visibleSlots(model) {
+            for item in baseConfig(model, for: slot) where item.enabled {
+                guard let resolved = refreshKind(for: item.key) else { continue }
+                out[resolved.provider, default: []].insert(resolved.kind)
+            }
+        }
+        return out
+    }
+
+    private static func refreshKind(for key: String) -> (provider: Provider, kind: MenuBarRefreshKind)? {
+        let parts = key.split(separator: ":").map(String.init)
+        guard parts.count >= 2, let p = provider(parts[1]) else { return nil }
+        switch parts.first {
+        case "q":
+            return (p, .quota)
+        case "u", "s":
+            return (p, .usage)
+        default:
             return nil
         }
     }

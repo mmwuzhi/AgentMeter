@@ -102,4 +102,133 @@ final class ProviderStateQuotaTests: XCTestCase {
 
         XCTAssertEqual(result.quota, freshQuota)
     }
+
+    func testCodexRolloutFallbackKeepsPreviousUsableAppServerQuota() {
+        let now = Date()
+        let previousQuota = QuotaSnapshot(
+            provider: .codex,
+            windows: [
+                QuotaWindow(
+                    id: "five_hour",
+                    label: "5-hour",
+                    usedPercent: 12,
+                    resetsAt: now.addingTimeInterval(600)
+                )
+            ],
+            source: .appServer,
+            planType: "pro",
+            fetchedAt: now.addingTimeInterval(-30),
+            note: nil
+        )
+        let rolloutQuota = QuotaSnapshot(
+            provider: .codex,
+            windows: [
+                QuotaWindow(
+                    id: "five_hour",
+                    label: "5-hour",
+                    usedPercent: 45,
+                    resetsAt: now.addingTimeInterval(600)
+                )
+            ],
+            source: .rolloutFile,
+            planType: "pro",
+            fetchedAt: now,
+            note: nil
+        )
+        let state = ProviderState(
+            provider: .codex,
+            quota: rolloutQuota,
+            usage: .empty(.codex)
+        )
+
+        let result = state.preservingLiveQuota(from: previousQuota, at: now)
+
+        XCTAssertEqual(result.quota, previousQuota)
+    }
+
+    func testCodexRolloutFallbackReplacesExpiredAppServerQuota() {
+        let now = Date()
+        let previousQuota = QuotaSnapshot(
+            provider: .codex,
+            windows: [
+                QuotaWindow(
+                    id: "five_hour",
+                    label: "5-hour",
+                    usedPercent: 12,
+                    resetsAt: now.addingTimeInterval(-60)
+                )
+            ],
+            source: .appServer,
+            planType: "pro",
+            fetchedAt: now.addingTimeInterval(-3600),
+            note: nil
+        )
+        let rolloutQuota = QuotaSnapshot(
+            provider: .codex,
+            windows: [
+                QuotaWindow(
+                    id: "five_hour",
+                    label: "5-hour",
+                    usedPercent: 45,
+                    resetsAt: now.addingTimeInterval(600)
+                )
+            ],
+            source: .rolloutFile,
+            planType: "pro",
+            fetchedAt: now,
+            note: nil
+        )
+        let state = ProviderState(
+            provider: .codex,
+            quota: rolloutQuota,
+            usage: .empty(.codex)
+        )
+
+        let result = state.preservingLiveQuota(from: previousQuota, at: now)
+
+        XCTAssertEqual(result.quota, rolloutQuota)
+    }
+
+    func testCodexAppServerQuotaReplacesPreviousRolloutQuota() {
+        let now = Date()
+        let previousQuota = QuotaSnapshot(
+            provider: .codex,
+            windows: [
+                QuotaWindow(
+                    id: "five_hour",
+                    label: "5-hour",
+                    usedPercent: 45,
+                    resetsAt: now.addingTimeInterval(600)
+                )
+            ],
+            source: .rolloutFile,
+            planType: "pro",
+            fetchedAt: now.addingTimeInterval(-30),
+            note: nil
+        )
+        let appServerQuota = QuotaSnapshot(
+            provider: .codex,
+            windows: [
+                QuotaWindow(
+                    id: "five_hour",
+                    label: "5-hour",
+                    usedPercent: 12,
+                    resetsAt: now.addingTimeInterval(600)
+                )
+            ],
+            source: .appServer,
+            planType: "pro",
+            fetchedAt: now,
+            note: nil
+        )
+        let state = ProviderState(
+            provider: .codex,
+            quota: appServerQuota,
+            usage: .empty(.codex)
+        )
+
+        let result = state.preservingLiveQuota(from: previousQuota, at: now)
+
+        XCTAssertEqual(result.quota, appServerQuota)
+    }
 }
