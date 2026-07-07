@@ -17,6 +17,9 @@ final class AppViewModel {
     var quotaObservations: [QuotaObservation] = []
     var codexResetCreditState = CodexResetCreditState()
     var activeAgents: [ActiveAgent] = []
+    /// Not persisted (like `activeAgents`) — a stale "outage" shown from a launch
+    /// days ago would be misleading, so this starts empty and fills in on first refresh.
+    var providerStatus: [Provider: ProviderStatusResult] = [:]
 
     init() {
         // Show the last values we saw immediately; the first refresh replaces them.

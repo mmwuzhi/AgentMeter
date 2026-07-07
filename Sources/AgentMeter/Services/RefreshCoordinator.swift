@@ -14,6 +14,10 @@ final class RefreshCoordinator {
     /// separately (and much lower) than quota so this undocumented endpoint isn't hit
     /// every refresh tick.
     private let resetCreditsMinimumRefreshInterval: TimeInterval = 20 * 60
+    /// Provider incidents don't need near-real-time freshness, and this is three
+    /// more outbound requests per tick if left unthrottled — deliberately generous
+    /// so it doesn't erode the resource savings from the Codex HTTPS quota path.
+    private let providerStatusMinimumRefreshInterval: TimeInterval = 30 * 60
     private var timer: Timer?
     private var wakeObservers: [NSObjectProtocol] = []
     private var defaultsObserver: NSObjectProtocol?
@@ -22,6 +26,7 @@ final class RefreshCoordinator {
     private var lastUsageRefresh: [Provider: Date] = [:]
     private var lastActiveAgentsRefresh: Date?
     private var lastResetCreditsRefresh: Date?
+    private var lastProviderStatusRefresh: Date?
     private var activeAgentsVisibleCount = 0
 
     init(viewModel: AppViewModel) {
@@ -108,8 +113,14 @@ final class RefreshCoordinator {
             async let copilotState = fetchCopilot(plan: plan, previous: previousCopilot)
             async let activeAgents = fetchActiveAgents(plan: plan, previous: previousActiveAgents)
             async let realResetCredits = fetchCodexResetCredits(plan: plan)
-            let (c, cl, cp, agents, resetCredits) = await (codexState, claudeState, copilotState, activeAgents, realResetCredits)
+            async let statusResult = fetchProviderStatus(plan: plan)
+            let (c, cl, cp, agents, resetCredits, status) = await (
+                codexState, claudeState, copilotState, activeAgents, realResetCredits, statusResult
+            )
             let now = Date()
+            if let status {
+                viewModel.providerStatus = Self.mergeProviderStatus(viewModel.providerStatus, with: status)
+            }
             var nextCodex = c
             if plan.refreshQuota.contains(.codex) {
                 nextCodex = c.preservingLiveQuota(from: previousCodexQuota, at: now)
@@ -205,7 +216,8 @@ final class RefreshCoordinator {
                 refreshQuota: Set(Provider.allCases),
                 refreshUsage: [.codex, .claude],
                 refreshActiveAgents: true,
-                refreshResetCredits: true
+                refreshResetCredits: true,
+                refreshProviderStatus: true
             )
         }
 
@@ -240,11 +252,17 @@ final class RefreshCoordinator {
         let resetCredits = quota.contains(.codex) && (
             lastResetCreditsRefresh.map { now.timeIntervalSince($0) >= resetCreditsMinimumRefreshInterval } ?? true
         )
+        // Only worth asking when some quota refresh is due this cycle anyway — same
+        // "don't fetch for a panel that isn't refreshing" rule as reset credits.
+        let providerStatus = !quota.isEmpty && (
+            lastProviderStatusRefresh.map { now.timeIntervalSince($0) >= providerStatusMinimumRefreshInterval } ?? true
+        )
         return ProviderRefreshPlan(
             refreshQuota: quota,
             refreshUsage: usage,
             refreshActiveAgents: activeAgents,
-            refreshResetCredits: resetCredits
+            refreshResetCredits: resetCredits,
+            refreshProviderStatus: providerStatus
         )
     }
 
@@ -283,6 +301,9 @@ final class RefreshCoordinator {
         if plan.refreshResetCredits {
             lastResetCreditsRefresh = date
         }
+        if plan.refreshProviderStatus {
+            lastProviderStatusRefresh = date
+        }
     }
 
     private func fetchCodex(plan: ProviderRefreshPlan, previous: ProviderState) async -> ProviderState {
@@ -319,6 +340,29 @@ final class RefreshCoordinator {
         guard plan.refreshResetCredits else { return nil }
         return try? await CodexResetCreditFetcher.fetch()
     }
+
+    /// Best-effort: nil when this cycle isn't due, in which case the caller leaves
+    /// `viewModel.providerStatus` untouched rather than clearing it.
+    private func fetchProviderStatus(plan: ProviderRefreshPlan) async -> [Provider: ProviderStatusResult]? {
+        guard plan.refreshProviderStatus else { return nil }
+        return await ProviderStatusService.fetchAll()
+    }
+
+    /// Merges this cycle's results into the existing map instead of replacing it
+    /// wholesale — one provider's transient poll failure (a single timeout or
+    /// non-200) must not erase the other two providers' just-fetched results, nor
+    /// regress a provider that failed this cycle back to "unknown" when its last
+    /// known status is still the best information available.
+    nonisolated static func mergeProviderStatus(
+        _ existing: [Provider: ProviderStatusResult],
+        with update: [Provider: ProviderStatusResult]
+    ) -> [Provider: ProviderStatusResult] {
+        var result = existing
+        for (provider, value) in update {
+            result[provider] = value
+        }
+        return result
+    }
 }
 
 struct ProviderRefreshPlan: Sendable {
@@ -326,6 +370,7 @@ struct ProviderRefreshPlan: Sendable {
     let refreshUsage: Set<Provider>
     let refreshActiveAgents: Bool
     let refreshResetCredits: Bool
+    let refreshProviderStatus: Bool
 }
 
 enum ActiveAgentRefreshPolicy {
