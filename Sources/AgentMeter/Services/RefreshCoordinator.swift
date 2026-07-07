@@ -10,6 +10,10 @@ final class RefreshCoordinator {
     private let copilot = CopilotService()
     private let backgroundMinimumRefreshInterval: TimeInterval = 15 * 60
     private let backgroundMinimumActiveAgentsRefreshInterval: TimeInterval = 5 * 60
+    /// Reset credits are granted/expire on the order of days, not minutes — throttled
+    /// separately (and much lower) than quota so this undocumented endpoint isn't hit
+    /// every refresh tick.
+    private let resetCreditsMinimumRefreshInterval: TimeInterval = 20 * 60
     private var timer: Timer?
     private var wakeObservers: [NSObjectProtocol] = []
     private var defaultsObserver: NSObjectProtocol?
@@ -17,6 +21,7 @@ final class RefreshCoordinator {
     private var lastQuotaRefresh: [Provider: Date] = [:]
     private var lastUsageRefresh: [Provider: Date] = [:]
     private var lastActiveAgentsRefresh: Date?
+    private var lastResetCreditsRefresh: Date?
     private var activeAgentsVisibleCount = 0
 
     init(viewModel: AppViewModel) {
@@ -102,16 +107,26 @@ final class RefreshCoordinator {
             async let claudeState = fetchClaude(plan: plan, previous: previousClaude)
             async let copilotState = fetchCopilot(plan: plan, previous: previousCopilot)
             async let activeAgents = fetchActiveAgents(plan: plan, previous: previousActiveAgents)
-            let (c, cl, cp, agents) = await (codexState, claudeState, copilotState, activeAgents)
+            async let realResetCredits = fetchCodexResetCredits(plan: plan)
+            let (c, cl, cp, agents, resetCredits) = await (codexState, claudeState, copilotState, activeAgents, realResetCredits)
             let now = Date()
             var nextCodex = c
             if plan.refreshQuota.contains(.codex) {
                 nextCodex = c.preservingLiveQuota(from: previousCodexQuota, at: now)
-                viewModel.codexResetCreditState = CodexResetCreditTracker.reconcile(
-                    existing: viewModel.codexResetCreditState,
-                    quota: nextCodex.quota,
-                    at: now
-                )
+                if let resetCredits {
+                    // Real per-credit grant/expiry from ChatGPT's backend always wins
+                    // over local inference.
+                    viewModel.codexResetCreditState = CodexResetCreditState(
+                        lastObservedCount: resetCredits.count,
+                        credits: resetCredits
+                    )
+                } else {
+                    viewModel.codexResetCreditState = CodexResetCreditTracker.reconcile(
+                        existing: viewModel.codexResetCreditState,
+                        quota: nextCodex.quota,
+                        at: now
+                    )
+                }
                 if nextCodex.quota.resetCreditsExpiresAt == nil,
                    let nearestExpiry = viewModel.codexResetCreditState.nearestExpiry {
                     nextCodex.quota = nextCodex.quota.withResetCreditsExpiresAt(nearestExpiry)
@@ -189,7 +204,8 @@ final class RefreshCoordinator {
             return ProviderRefreshPlan(
                 refreshQuota: Set(Provider.allCases),
                 refreshUsage: [.codex, .claude],
-                refreshActiveAgents: true
+                refreshActiveAgents: true,
+                refreshResetCredits: true
             )
         }
 
@@ -219,10 +235,16 @@ final class RefreshCoordinator {
             backgroundMinimumRefreshInterval: backgroundMinimumActiveAgentsRefreshInterval,
             now: now
         )
+        // Only worth asking when Codex quota is already due this cycle — no point
+        // hitting a second endpoint for a panel that isn't being refreshed anyway.
+        let resetCredits = quota.contains(.codex) && (
+            lastResetCreditsRefresh.map { now.timeIntervalSince($0) >= resetCreditsMinimumRefreshInterval } ?? true
+        )
         return ProviderRefreshPlan(
             refreshQuota: quota,
             refreshUsage: usage,
-            refreshActiveAgents: activeAgents
+            refreshActiveAgents: activeAgents,
+            refreshResetCredits: resetCredits
         )
     }
 
@@ -244,6 +266,8 @@ final class RefreshCoordinator {
             }
         }
         lastActiveAgentsRefresh = date
+        // Deliberately not seeded: leaving it nil makes the very first refresh (right
+        // after launch) treat reset credits as due, same as a never-yet-fetched provider.
     }
 
     private func markRefresh(plan: ProviderRefreshPlan, at date: Date) {
@@ -255,6 +279,9 @@ final class RefreshCoordinator {
         }
         if plan.refreshActiveAgents {
             lastActiveAgentsRefresh = date
+        }
+        if plan.refreshResetCredits {
+            lastResetCreditsRefresh = date
         }
     }
 
@@ -285,12 +312,20 @@ final class RefreshCoordinator {
         guard plan.refreshActiveAgents else { return previous }
         return await ActiveAgentService.fetch()
     }
+
+    /// Best-effort: nil on any failure (no login, 401, unparsable body, offline) so
+    /// the caller falls back to `CodexResetCreditTracker`'s local-inference reconcile.
+    private func fetchCodexResetCredits(plan: ProviderRefreshPlan) async -> [CodexResetCreditExpiry]? {
+        guard plan.refreshResetCredits else { return nil }
+        return try? await CodexResetCreditFetcher.fetch()
+    }
 }
 
 struct ProviderRefreshPlan: Sendable {
     let refreshQuota: Set<Provider>
     let refreshUsage: Set<Provider>
     let refreshActiveAgents: Bool
+    let refreshResetCredits: Bool
 }
 
 enum ActiveAgentRefreshPolicy {

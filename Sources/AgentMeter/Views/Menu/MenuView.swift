@@ -25,6 +25,7 @@ struct MenuView: View {
                         state: PopoverOrder.state(p, model),
                         activeAgents: model.activeAgents.filter { $0.provider == p },
                         tint: PopoverOrder.tint(p),
+                        codexResetCredits: p == .codex ? model.codexResetCreditState.credits : [],
                         runway: { provider, window in
                             model.runway(for: provider, window: window)
                         }
@@ -218,6 +219,9 @@ struct ProviderSection: View {
     let state: ProviderState
     let activeAgents: [ActiveAgent]
     var tint: Color
+    /// Codex-only real (or locally inferred, when the live fetch is unavailable)
+    /// reset-credit expiry dates; empty for other providers.
+    var codexResetCredits: [CodexResetCreditExpiry] = []
     var runway: (Provider, QuotaWindow) -> QuotaRunway
     @State private var showHeatmap = false
 
@@ -248,11 +252,7 @@ struct ProviderSection: View {
                         QuotaRow(window: w, runway: runway(state.provider, w))
                     }
                 }
-                if let resetCreditsSummary {
-                    Text(resetCreditsSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                resetCreditsSection
             }
 
             // Copilot is flat-rate (no token spend), so skip the spend block for
@@ -313,12 +313,21 @@ struct ProviderSection: View {
         }
     }
 
-    private var resetCreditsSummary: String? {
-        guard let text = state.quota.resetCreditsCountText else { return nil }
-        guard let expiresAt = state.quota.resetCreditsExpiresAt else { return text }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return "\(text) · nearest expiry \(formatter.string(from: expiresAt))"
+    /// One line per available reset credit, e.g. "4 resets available" followed by
+    /// "in 5d 10h · in 11d 9h · in 20d 9h · in 25d 5h" — mirrors the individual
+    /// countdowns ChatGPT's own usage panel shows, instead of only the nearest one.
+    @ViewBuilder
+    private var resetCreditsSection: some View {
+        let credits = codexResetCredits.sorted { $0.expiresAt < $1.expiresAt }
+        if !credits.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(credits.count == 1 ? "1 reset available" : "\(credits.count) resets available")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(credits.map { QuotaRow.relative($0.expiresAt, prefixed: false) }.joined(separator: " · "))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
     }
 }

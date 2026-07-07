@@ -22,7 +22,9 @@ struct CodexResetCreditExpiry: Codable, Sendable, Equatable, Identifiable {
 
 enum CodexResetCreditTracker {
     static let inferredLifetime: TimeInterval = 30 * 24 * 60 * 60
-    private static let maxStoredCredits = 20
+    /// Shared with `CodexResetCreditFetcher` so the live-fetch path is bounded the
+    /// same as this local-inference fallback.
+    static let maxStoredCredits = 20
 
     static func reconcile(
         existing: CodexResetCreditState,
