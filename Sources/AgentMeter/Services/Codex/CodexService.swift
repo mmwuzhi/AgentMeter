@@ -34,7 +34,11 @@ struct CodexService: Sendable {
     }
 
     private func fetchQuota() async -> QuotaSnapshot {
-        // Primary: app-server (live). Network-free local subprocess.
+        // Primary: direct HTTPS to ChatGPT's backend. Replaces a subprocess spawn +
+        // JSON-RPC handshake with a single GET on every refresh tick.
+        if let snap = try? await CodexOAuthUsageFetcher.fetch() { return snap }
+        // Fallback: app-server subprocess — still needed for setups without a
+        // ChatGPT OAuth session (e.g. API-key-only Codex installs).
         if let appServerBinaryURL {
             let session = AppServerSession(binaryURL: appServerBinaryURL)
             if let snap = try? await session.fetchQuota() { return snap }

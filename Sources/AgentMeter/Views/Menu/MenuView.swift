@@ -26,6 +26,7 @@ struct MenuView: View {
                         activeAgents: model.activeAgents.filter { $0.provider == p },
                         tint: PopoverOrder.tint(p),
                         codexResetCredits: p == .codex ? model.codexResetCreditState.credits : [],
+                        providerStatus: model.providerStatus[p],
                         runway: { provider, window in
                             model.runway(for: provider, window: window)
                         }
@@ -222,6 +223,8 @@ struct ProviderSection: View {
     /// Codex-only real (or locally inferred, when the live fetch is unavailable)
     /// reset-credit expiry dates; empty for other providers.
     var codexResetCredits: [CodexResetCreditExpiry] = []
+    /// This provider's public status-page reading, when the last poll succeeded.
+    var providerStatus: ProviderStatusResult? = nil
     var runway: (Provider, QuotaWindow) -> QuotaRunway
     @State private var showHeatmap = false
 
@@ -243,8 +246,7 @@ struct ProviderSection: View {
 
             if state.quota.windows.isEmpty {
                 let isDegraded = state.quota.source == .unavailable
-                Label(state.quota.note ?? "Live quota unavailable",
-                      systemImage: isDegraded ? "exclamationmark.triangle" : "info.circle")
+                Label(unavailableNote, systemImage: isDegraded ? "exclamationmark.triangle" : "info.circle")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 10) {
@@ -253,6 +255,10 @@ struct ProviderSection: View {
                     }
                 }
                 resetCreditsSection
+                if let statusBanner {
+                    Label(statusBanner, systemImage: "bolt.horizontal.circle")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
             }
 
             // Copilot is flat-rate (no token spend), so skip the spend block for
@@ -329,5 +335,26 @@ struct ProviderSection: View {
                     .foregroundStyle(.tertiary)
             }
         }
+    }
+
+    /// Shown alongside working quota data as a heads-up — e.g. quota looks fine
+    /// right now, but the provider itself has a known incident. Separate from
+    /// `unavailableNote` so the two never say the same thing twice.
+    private var statusBanner: String? {
+        guard let providerStatus, providerStatus.level != .operational else { return nil }
+        return providerStatus.description ?? "\(state.provider.displayName) is reporting issues"
+    }
+
+    /// When quota is genuinely unavailable and the provider's own status page
+    /// confirms an active incident, swap the generic "Live quota unavailable"
+    /// text for the real reason instead of leaving the user to guess whether
+    /// it's their own setup or an outage.
+    private var unavailableNote: String {
+        guard state.quota.source == .unavailable,
+              let providerStatus, providerStatus.level != .operational,
+              let description = providerStatus.description else {
+            return state.quota.note ?? "Live quota unavailable"
+        }
+        return "\(state.provider.displayName): \(description)"
     }
 }
