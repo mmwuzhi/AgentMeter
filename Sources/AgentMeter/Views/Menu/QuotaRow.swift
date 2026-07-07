@@ -36,14 +36,15 @@ struct QuotaRow: View {
         }
     }
 
-    nonisolated static func relative(_ date: Date) -> String {
+    nonisolated static func relative(_ date: Date, prefixed: Bool = true) -> String {
         let interval = date.timeIntervalSinceNow
         if interval <= 0 { return "now" }
         let f = DateComponentsFormatter()
         f.allowedUnits = [.day, .hour, .minute]
         f.maximumUnitCount = 2
         f.unitsStyle = .abbreviated
-        return "in " + (f.string(from: interval) ?? "?")
+        let duration = f.string(from: interval) ?? "?"
+        return prefixed ? "in \(duration)" : duration
     }
 
 }
