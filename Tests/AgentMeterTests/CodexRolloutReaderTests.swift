@@ -62,9 +62,12 @@ final class CodexRolloutReaderTests: XCTestCase {
         let fm = FileManager.default
         let url = fm.temporaryDirectory.appendingPathComponent("codex-rollout-\(UUID().uuidString).jsonl")
         defer { try? fm.removeItem(at: url) }
+        // Dynamic timestamp: totals apply a rolling 30-day cutoff, so a fixed
+        // date here would silently age out of the window and start failing.
+        let ts = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3_600))
         let payload = [
-            #"{"timestamp":"2026-07-05T01:02:03Z","payload":{"model":"gpt-5-codex"}}"#,
-            #"{"timestamp":"2026-07-05T01:03:03Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30}}}}"#
+            #"{"timestamp":"\#(ts)","payload":{"model":"gpt-5-codex"}}"#,
+            #"{"timestamp":"\#(ts)","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30}}}}"#
         ].joined(separator: "\n")
         try payload.write(to: url, atomically: true, encoding: .utf8)
 
@@ -74,6 +77,37 @@ final class CodexRolloutReaderTests: XCTestCase {
         XCTAssertEqual(report.buckets.first?.inputTokens, 100)
         XCTAssertEqual(report.buckets.first?.cacheRead, 20)
         XCTAssertEqual(report.buckets.first?.outputTokens, 30)
+    }
+
+    /// Regression: totalTokens/totalCostUSD/byModel are surfaced as "30-day"
+    /// totals, but used to sum every day the file scan picked up, disagreeing
+    /// with SpendWindows.lastDays(30). Days beyond the rolling cutoff must
+    /// still appear in buckets (heatmap) while staying out of the totals.
+    func testTotalsApplyRollingThirtyDayCutoffWhileBucketsKeepAllDays() async throws {
+        let fm = FileManager.default
+        let oldURL = fm.temporaryDirectory.appendingPathComponent("codex-rollout-old-\(UUID().uuidString).jsonl")
+        let recentURL = fm.temporaryDirectory.appendingPathComponent("codex-rollout-new-\(UUID().uuidString).jsonl")
+        defer {
+            try? fm.removeItem(at: oldURL)
+            try? fm.removeItem(at: recentURL)
+        }
+        let iso = ISO8601DateFormatter()
+        let old = iso.string(from: Date().addingTimeInterval(-40 * 86_400))
+        let recent = iso.string(from: Date().addingTimeInterval(-86_400))
+        try [
+            #"{"timestamp":"\#(old)","payload":{"model":"gpt-5-codex"}}"#,
+            #"{"timestamp":"\#(old)","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":0}}}}"#
+        ].joined(separator: "\n").write(to: oldURL, atomically: true, encoding: .utf8)
+        try [
+            #"{"timestamp":"\#(recent)","payload":{"model":"gpt-5-codex"}}"#,
+            #"{"timestamp":"\#(recent)","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30}}}}"#
+        ].joined(separator: "\n").write(to: recentURL, atomically: true, encoding: .utf8)
+
+        let report = await CodexRolloutReader.usageReport(files: [oldURL, recentURL])
+
+        XCTAssertEqual(report.buckets.count, 2, "old days must stay in buckets for the heatmap")
+        XCTAssertEqual(report.totalTokens, 150, "totals must only count the rolling 30-day window")
+        XCTAssertEqual(report.byModel.first?.tokens, 150, "per-model totals must apply the same cutoff")
     }
 
     func testRecentRolloutFilesFiltersOldFilesByModificationDate() throws {

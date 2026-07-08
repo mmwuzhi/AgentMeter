@@ -106,13 +106,20 @@ enum ClaudeJSONLScanner {
         }
 
         // Roll up per-day (summing across models, cost computed per model) and
-        // per-model (all-time, for the spend breakdown).
+        // per-model (for the spend breakdown, "30-day" labeled).
+        // totalCostUSD/totalTokens/byModel feed the "30-day" totals (ModelBreakdown,
+        // MenuView's footer), so they must use the same rolling 30-day cutoff as
+        // SpendWindows.lastDays(30) — not every day the 31-day file scan happened
+        // to pick up — or the two "30-day" figures disagree.
+        let thirtyDayCutoff = Calendar.current.date(
+            byAdding: .day, value: -30, to: Calendar.current.startOfDay(for: Date())
+        ) ?? Date.distantPast
+
         var bucketByDay: [Date: UsageBucket] = [:]
         var modelTotals: [String: (tokens: Int, cost: Double)] = [:]
         var totalCost = 0.0
         for (_, entry) in byDayModel {
             let cost = await PricingService.shared.cost(model: entry.model, counts: entry.counts)
-            totalCost += cost
             var b = bucketByDay[entry.day] ?? UsageBucket(day: entry.day, inputTokens: 0, outputTokens: 0,
                         cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, costUSD: 0)
             b = UsageBucket(day: entry.day,
@@ -124,6 +131,8 @@ enum ClaudeJSONLScanner {
                             costUSD: b.costUSD + cost)
             bucketByDay[entry.day] = b
 
+            guard entry.day >= thirtyDayCutoff else { continue }
+            totalCost += cost
             let entryTokens = entry.counts.input + entry.counts.output
                 + entry.counts.cacheWrite5m + entry.counts.cacheWrite1h + entry.counts.cacheRead
             var mt = modelTotals[entry.model] ?? (0, 0)
@@ -133,7 +142,9 @@ enum ClaudeJSONLScanner {
         }
 
         let buckets = bucketByDay.values.sorted { $0.day < $1.day }
-        let totalTokens = buckets.reduce(0) { $0 + $1.totalTokens }
+        let totalTokens = buckets
+            .filter { $0.day >= thirtyDayCutoff }
+            .reduce(0) { $0 + $1.totalTokens }
         let byModel = modelTotals
             .map { ModelSpend(model: $0.key, tokens: $0.value.tokens, costUSD: $0.value.cost) }
             .sorted { $0.costUSD > $1.costUSD }
