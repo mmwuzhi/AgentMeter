@@ -185,9 +185,9 @@ struct ModelSpend: Identifiable, Codable, Sendable, Equatable {
 struct UsageReport: Codable, Sendable, Equatable {
     let provider: Provider
     let buckets: [UsageBucket]          // sorted ascending by day
-    let totalCostUSD: Double
-    let totalTokens: Int
-    var byModel: [ModelSpend] = []      // all-time, sorted by cost descending
+    let totalCostUSD: Double            // rolling last 30 days, matches SpendWindows.lastDays(30)
+    let totalTokens: Int                // rolling last 30 days, matches SpendWindows.lastDays(30)
+    var byModel: [ModelSpend] = []      // rolling last 30 days, sorted by cost descending
 
     static func empty(_ provider: Provider) -> UsageReport {
         UsageReport(provider: provider, buckets: [], totalCostUSD: 0, totalTokens: 0)
