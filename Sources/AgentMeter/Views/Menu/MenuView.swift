@@ -339,10 +339,13 @@ struct ProviderSection: View {
 
     /// Shown alongside working quota data as a heads-up — e.g. quota looks fine
     /// right now, but the provider itself has a known incident. Separate from
-    /// `unavailableNote` so the two never say the same thing twice.
+    /// `unavailableNote` so the two never say the same thing twice. Uses the
+    /// component-filtered reading, not the page-wide one: an incident touching
+    /// only unrelated components (FedRAMP, Sora, …) shouldn't put a permanent
+    /// warning under a perfectly healthy quota panel.
     private var statusBanner: String? {
-        guard let providerStatus, providerStatus.level != .operational else { return nil }
-        return providerStatus.description ?? "\(state.provider.displayName) is reporting issues"
+        guard let providerStatus, providerStatus.componentLevel != .operational else { return nil }
+        return providerStatus.componentDescription ?? "\(state.provider.displayName) is reporting issues"
     }
 
     /// When quota is genuinely unavailable and the provider's own status page
