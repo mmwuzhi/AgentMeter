@@ -110,6 +110,38 @@ final class CodexRolloutReaderTests: XCTestCase {
         XCTAssertEqual(report.byModel.first?.tokens, 150, "per-model totals must apply the same cutoff")
     }
 
+    /// Incremental resume must be additive and carry the session model: a
+    /// token_count appended after the cached head (with no fresh model line) must
+    /// add to the prior total and stay attributed to the head's model, not the
+    /// default — otherwise a spurious second model bucket appears.
+    func testIncrementalAppendIsAdditiveAndCarriesModel() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory.appendingPathComponent("codex-incr-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+        let ts = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3_600))
+        // Deliberately not the default "gpt-5-codex", so a lost model shows up.
+        let head = [
+            #"{"timestamp":"\#(ts)","payload":{"model":"gpt-5.1-codex-max"}}"#,
+            #"{"timestamp":"\#(ts)","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30}}}}"#
+        ].joined(separator: "\n") + "\n"
+        try head.write(to: url, atomically: true, encoding: .utf8)
+
+        let first = await CodexRolloutReader.usageReport(files: [url])
+        XCTAssertEqual(first.totalTokens, 150)
+        XCTAssertEqual(first.byModel.first?.model, "gpt-5.1-codex-max")
+
+        let tail = #"{"timestamp":"\#(ts)","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}}}"# + "\n"
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(tail.utf8))
+        try handle.close()
+
+        let second = await CodexRolloutReader.usageReport(files: [url])
+        XCTAssertEqual(second.totalTokens, 165, "appended token_count must add to the prior total")
+        XCTAssertEqual(second.byModel.count, 1, "carried model means no spurious default-model bucket")
+        XCTAssertEqual(second.byModel.first?.model, "gpt-5.1-codex-max")
+    }
+
     func testRecentRolloutFilesFiltersOldFilesByModificationDate() throws {
         let fm = FileManager.default
         let base = fm.temporaryDirectory.appendingPathComponent("codex-recent-\(UUID().uuidString)")

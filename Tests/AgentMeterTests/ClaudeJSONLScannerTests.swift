@@ -50,6 +50,48 @@ final class ClaudeJSONLScannerTests: XCTestCase {
         XCTAssertEqual(report.byModel.first?.tokens, 30, "per-model totals must apply the same cutoff")
     }
 
+    /// Incremental resume must carry the per-file dedup set: a duplicate message
+    /// that lands in the appended tail (after the cached head) must not recount.
+    func testIncrementalAppendPreservesDedupAcrossResume() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory.appendingPathComponent("claude-incr-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+        let ts = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3_600))
+        let line = #"{"timestamp":"\#(ts)","requestId":"req-1","message":{"id":"msg-1","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":20}}}"#
+        try (line + "\n").write(to: url, atomically: true, encoding: .utf8)
+
+        let first = await ClaudeJSONLScanner.usageReport(files: [url])
+        XCTAssertEqual(first.totalTokens, 30)
+
+        try appendLine(line, to: url)
+        let second = await ClaudeJSONLScanner.usageReport(files: [url])
+        XCTAssertEqual(second.totalTokens, 30, "duplicate message.id across the resume boundary must stay deduped")
+    }
+
+    /// The flip side: a genuinely new record in the appended tail must be counted,
+    /// proving the resume actually parses the tail rather than returning the cache.
+    func testIncrementalAppendCountsNewRecords() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory.appendingPathComponent("claude-incr2-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+        let ts = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3_600))
+        let head = #"{"timestamp":"\#(ts)","requestId":"req-1","message":{"id":"msg-1","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":20}}}"#
+        try (head + "\n").write(to: url, atomically: true, encoding: .utf8)
+        _ = await ClaudeJSONLScanner.usageReport(files: [url])
+
+        let tail = #"{"timestamp":"\#(ts)","requestId":"req-2","message":{"id":"msg-2","model":"claude-sonnet-4-20250514","usage":{"input_tokens":5,"output_tokens":5}}}"#
+        try appendLine(tail, to: url)
+        let second = await ClaudeJSONLScanner.usageReport(files: [url])
+        XCTAssertEqual(second.totalTokens, 40, "the appended record must add to the prior total")
+    }
+
+    private func appendLine(_ line: String, to url: URL) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((line + "\n").utf8))
+        try handle.close()
+    }
+
     func testRecentLogFilesFiltersOldFilesByModificationDate() throws {
         let fm = FileManager.default
         let base = fm.temporaryDirectory.appendingPathComponent("claude-recent-\(UUID().uuidString)")

@@ -12,9 +12,20 @@ enum CodexRolloutReader {
     /// belongs in a persisted index or explicit on-demand action.
     private static let usageHistoryDays = 31
 
+    private struct DayModelUsage: Sendable {
+        let day: Date
+        let model: String
+        var counts: TokenCounts
+    }
+
     private struct FileUsageSummary: Sendable {
-        var byDay: [Date: TokenCounts] = [:]
-        var models: [Date: String] = [:]
+        // (day, model) -> counts, so a day that mixed models prices each correctly
+        // instead of last-writer-wins on a single per-day model.
+        var byDayModel: [String: DayModelUsage] = [:]
+        /// Last model seen while parsing, carried across incremental resumes so a
+        /// tail with token_count lines but no fresh model line still attributes to
+        /// the session's model rather than the default.
+        var lastModel: String = "gpt-5-codex"
     }
 
     private static let usageCache = LogFileParseCache<FileUsageSummary>()
@@ -62,7 +73,10 @@ enum CodexRolloutReader {
     private static func quota(fromFile url: URL) -> QuotaSnapshot? {
         var last: [String: Any]?
         try? JSONLLineReader.forEachLine(in: url) { line in
-            guard let data = line.data(using: .utf8),
+            // Rollout logs are mostly non-quota lines; skip the JSON parse unless
+            // the line could carry a token_count event.
+            guard line.contains("token_count"),
+                  let data = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let payload = obj["payload"] as? [String: Any],
                   payload["type"] as? String == "token_count",
@@ -112,8 +126,8 @@ enum CodexRolloutReader {
     }
 
     static func usageReport(files: [URL]) async -> UsageReport {
-        var byDay: [Date: TokenCounts] = [:]
-        var models: [Date: String] = [:]
+        // (day, model) -> counts across all files, so cost uses each model's price.
+        var byDayModel: [String: (day: Date, model: String, counts: TokenCounts)] = [:]
 
         let fingerprints = files.compactMap { url -> (URL, LogFileFingerprint)? in
             guard let fingerprint = LogFileFingerprint.current(for: url) else { return nil }
@@ -123,14 +137,14 @@ enum CodexRolloutReader {
 
         for (url, fingerprint) in fingerprints {
             let summary = await cachedUsageSummary(in: url, fingerprint: fingerprint)
-            for (day, counts) in summary.byDay {
-                var c = byDay[day] ?? TokenCounts()
-                c.input += counts.input
-                c.cacheRead += counts.cacheRead
-                c.output += counts.output
-                byDay[day] = c
-                if let model = summary.models[day] {
-                    models[day] = model
+            for (key, usage) in summary.byDayModel {
+                if var existing = byDayModel[key] {
+                    existing.counts.input += usage.counts.input
+                    existing.counts.cacheRead += usage.counts.cacheRead
+                    existing.counts.output += usage.counts.output
+                    byDayModel[key] = existing
+                } else {
+                    byDayModel[key] = (usage.day, usage.model, usage.counts)
                 }
             }
         }
@@ -143,26 +157,34 @@ enum CodexRolloutReader {
             byAdding: .day, value: -30, to: Calendar.current.startOfDay(for: Date())
         ) ?? Date.distantPast
 
-        var buckets: [UsageBucket] = []
+        var bucketByDay: [Date: UsageBucket] = [:]
         var modelTotals: [String: (tokens: Int, cost: Double)] = [:]
         var totalCost = 0.0
-        var totalTokens = 0
-        for (day, c) in byDay {
-            let model = models[day] ?? "gpt-5-codex"
-            let cost = await PricingService.shared.cost(model: model, counts: c)
-            let bucket = UsageBucket(day: day, inputTokens: c.input, outputTokens: c.output,
-                                     cacheWrite5m: c.cacheWrite5m, cacheWrite1h: c.cacheWrite1h,
-                                     cacheRead: c.cacheRead, costUSD: cost)
-            buckets.append(bucket)
-            guard day >= thirtyDayCutoff else { continue }
+        for (_, entry) in byDayModel {
+            let cost = await PricingService.shared.cost(model: entry.model, counts: entry.counts)
+            let b = bucketByDay[entry.day] ?? UsageBucket(day: entry.day, inputTokens: 0, outputTokens: 0,
+                        cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, costUSD: 0)
+            bucketByDay[entry.day] = UsageBucket(day: entry.day,
+                            inputTokens: b.inputTokens + entry.counts.input,
+                            outputTokens: b.outputTokens + entry.counts.output,
+                            cacheWrite5m: b.cacheWrite5m + entry.counts.cacheWrite5m,
+                            cacheWrite1h: b.cacheWrite1h + entry.counts.cacheWrite1h,
+                            cacheRead: b.cacheRead + entry.counts.cacheRead,
+                            costUSD: b.costUSD + cost)
+
+            guard entry.day >= thirtyDayCutoff else { continue }
             totalCost += cost
-            totalTokens += bucket.totalTokens
-            var mt = modelTotals[model] ?? (0, 0)
-            mt.tokens += bucket.totalTokens
+            let entryTokens = entry.counts.input + entry.counts.output
+                + entry.counts.cacheWrite5m + entry.counts.cacheWrite1h + entry.counts.cacheRead
+            var mt = modelTotals[entry.model] ?? (0, 0)
+            mt.tokens += entryTokens
             mt.cost += cost
-            modelTotals[model] = mt
+            modelTotals[entry.model] = mt
         }
-        buckets.sort { $0.day < $1.day }
+        let buckets = bucketByDay.values.sorted { $0.day < $1.day }
+        let totalTokens = buckets
+            .filter { $0.day >= thirtyDayCutoff }
+            .reduce(0) { $0 + $1.totalTokens }
         let byModel = modelTotals
             .map { ModelSpend(model: $0.key, tokens: $0.value.tokens, costUSD: $0.value.cost) }
             .sorted { $0.costUSD > $1.costUSD }
@@ -186,50 +208,83 @@ enum CodexRolloutReader {
         fingerprint: LogFileFingerprint
     ) async -> FileUsageSummary {
         if let cached = await usageCache.value(for: fingerprint) { return cached }
-        let summary = parseUsageSummary(in: url)
-        await usageCache.store(summary, for: fingerprint)
-        return summary
-    }
-
-    private static func parseUsageSummary(in url: URL) -> FileUsageSummary {
-        let cal = Calendar.current
-        var summary = FileUsageSummary()
-        var sessionModel = "gpt-5-codex"
-        try? JSONLLineReader.forEachLine(in: url) { line in
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-            // Capture model when it appears (turn_context / session_meta).
-            if let payload = obj["payload"] as? [String: Any], let m = payload["model"] as? String {
-                sessionModel = m
-            }
-            guard let payload = obj["payload"] as? [String: Any],
-                  payload["type"] as? String == "token_count",
-                  let info = payload["info"] as? [String: Any],
-                  let last = info["last_token_usage"] as? [String: Any] else { return }
-            let input = (last["input_tokens"] as? Int) ?? 0
-            let cached = (last["cached_input_tokens"] as? Int) ?? 0
-            let output = (last["output_tokens"] as? Int) ?? 0
-            var counts = TokenCounts()
-            counts.input = max(0, input - cached)
-            counts.cacheRead = cached
-            counts.output = output
-            let ts = (obj["timestamp"] as? String).flatMap(Self.parseISO) ?? Date()
-            let day = cal.startOfDay(for: ts)
-            var existing = summary.byDay[day] ?? TokenCounts()
-            existing.input += counts.input
-            existing.cacheRead += counts.cacheRead
-            existing.output += counts.output
-            summary.byDay[day] = existing
-            summary.models[day] = sessionModel
+        // Resume from the last parsed line boundary when the file only grew, so an
+        // actively-appended session log isn't re-read whole on every refresh tick.
+        var summary: FileUsageSummary
+        let startOffset: Int64
+        if let base = await usageCache.incrementalBase(forPath: fingerprint.path, notExceeding: fingerprint.size) {
+            summary = base.value
+            startOffset = base.parsedBytes
+        } else {
+            summary = FileUsageSummary()
+            startOffset = 0
         }
-        return summary
+        let cal = Calendar.current
+        let result = try? JSONLLineReader.forEachCompleteLine(in: url, fromOffset: startOffset) { line in
+            consume(line: line, into: &summary, calendar: cal)
+        }
+        // Cache only the clean line-boundary summary so an incremental resume can't
+        // double-count; fold a trailing (not-yet-newline-terminated) record into the
+        // value shown now without caching it — the next pass re-reads it once it's
+        // complete.
+        await usageCache.store(summary, for: fingerprint, parsedBytes: result?.consumed ?? startOffset)
+        guard let trailing = result?.trailing else { return summary }
+        var display = summary
+        consume(line: trailing, into: &display, calendar: cal)
+        return display
     }
 
-    static func parseISO(_ s: String) -> Date? {
+    private static func consume(line: String, into summary: inout FileUsageSummary, calendar cal: Calendar) {
+        // Only model-carrying and token_count lines matter; skip the JSON parse for
+        // the majority (user/assistant messages, tool calls).
+        guard line.contains("token_count") || line.contains("\"model\""),
+              let data = line.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        // Capture model when it appears (turn_context / session_meta); carried in
+        // `summary.lastModel` so incremental resumes keep the session's model.
+        if let payload = obj["payload"] as? [String: Any], let m = payload["model"] as? String {
+            summary.lastModel = m
+        }
+        guard let payload = obj["payload"] as? [String: Any],
+              payload["type"] as? String == "token_count",
+              let info = payload["info"] as? [String: Any],
+              let last = info["last_token_usage"] as? [String: Any] else { return }
+        let input = (last["input_tokens"] as? Int) ?? 0
+        let cached = (last["cached_input_tokens"] as? Int) ?? 0
+        let output = (last["output_tokens"] as? Int) ?? 0
+        var counts = TokenCounts()
+        counts.input = max(0, input - cached)
+        counts.cacheRead = cached
+        counts.output = output
+        let ts = (obj["timestamp"] as? String).flatMap(Self.parseISO) ?? Date()
+        let day = cal.startOfDay(for: ts)
+        let key = "\(day.timeIntervalSince1970)|\(summary.lastModel)"
+        if var existing = summary.byDayModel[key] {
+            existing.counts.input += counts.input
+            existing.counts.cacheRead += counts.cacheRead
+            existing.counts.output += counts.output
+            summary.byDayModel[key] = existing
+        } else {
+            summary.byDayModel[key] = DayModelUsage(day: day, model: summary.lastModel, counts: counts)
+        }
+    }
+
+    // Reused across the (per-line) hot path to avoid allocating a formatter every
+    // call. Configured once and only ever read via `date(from:)`, which is safe to
+    // share across the concurrent Codex/Claude parse tasks.
+    nonisolated(unsafe) private static let isoFractional: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = f.date(from: s) { return d }
+        return f
+    }()
+    nonisolated(unsafe) private static let isoPlain: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
-        return f.date(from: s)
+        return f
+    }()
+
+    static func parseISO(_ s: String) -> Date? {
+        if let d = isoFractional.date(from: s) { return d }
+        return isoPlain.date(from: s)
     }
 }

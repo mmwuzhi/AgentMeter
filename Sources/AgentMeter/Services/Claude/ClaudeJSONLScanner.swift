@@ -12,6 +12,10 @@ enum ClaudeJSONLScanner {
 
     private struct FileUsageSummary: Sendable {
         var byDayModel: [String: DayModelUsage] = [:]
+        /// message.id|requestId keys already counted. Carried in the cache so an
+        /// incremental tail parse keeps the same per-file dedup the whole-file
+        /// parse had, instead of recounting a duplicate that straddles the resume.
+        var seenDedupKeys: Set<String> = []
     }
 
     private struct DayModelUsage: Sendable {
@@ -168,57 +172,72 @@ enum ClaudeJSONLScanner {
         fingerprint: LogFileFingerprint
     ) async -> FileUsageSummary {
         if let cached = await usageCache.value(for: fingerprint) { return cached }
-        let summary = parseUsageSummary(in: url)
-        await usageCache.store(summary, for: fingerprint)
-        return summary
+        // Resume from the last parsed line boundary when the file only grew, so an
+        // actively-appended session log isn't re-read whole on every refresh tick.
+        var summary: FileUsageSummary
+        let startOffset: Int64
+        if let base = await usageCache.incrementalBase(forPath: fingerprint.path, notExceeding: fingerprint.size) {
+            summary = base.value
+            startOffset = base.parsedBytes
+        } else {
+            summary = FileUsageSummary()
+            startOffset = 0
+        }
+        let cal = Calendar.current
+        let result = try? JSONLLineReader.forEachCompleteLine(in: url, fromOffset: startOffset) { line in
+            consume(line: line, into: &summary, calendar: cal)
+        }
+        // Cache only the clean line-boundary summary so an incremental resume can't
+        // double-count; fold a trailing (not-yet-newline-terminated) record into the
+        // value shown now without caching it — the next pass re-reads it once it's
+        // complete.
+        await usageCache.store(summary, for: fingerprint, parsedBytes: result?.consumed ?? startOffset)
+        guard let trailing = result?.trailing else { return summary }
+        var display = summary
+        consume(line: trailing, into: &display, calendar: cal)
+        return display
     }
 
-    private static func parseUsageSummary(in url: URL) -> FileUsageSummary {
-        let cal = Calendar.current
-        var seen = Set<String>()
-        var summary = FileUsageSummary()
-        try? JSONLLineReader.forEachLine(in: url) { line in
-            guard line.contains("\"usage\""),
-                  let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let message = obj["message"] as? [String: Any],
-                  let usage = message["usage"] as? [String: Any] else { return }
+    private static func consume(line: String, into summary: inout FileUsageSummary, calendar cal: Calendar) {
+        guard line.contains("\"usage\""),
+              let data = line.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = obj["message"] as? [String: Any],
+              let usage = message["usage"] as? [String: Any] else { return }
 
-            let model = (message["model"] as? String) ?? "default"
-            if model == "<synthetic>" { return }
+        let model = (message["model"] as? String) ?? "default"
+        if model == "<synthetic>" { return }
 
-            let mid = (message["id"] as? String) ?? ""
-            let rid = (obj["requestId"] as? String) ?? ""
-            let dedupKey = mid + "|" + rid
-            if !mid.isEmpty {
-                guard seen.insert(dedupKey).inserted else { return }
-            }
-
-            var counts = TokenCounts()
-            counts.input = (usage["input_tokens"] as? Int) ?? 0
-            counts.output = (usage["output_tokens"] as? Int) ?? 0
-            counts.cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
-            if let cc = usage["cache_creation"] as? [String: Any] {
-                counts.cacheWrite5m = (cc["ephemeral_5m_input_tokens"] as? Int) ?? 0
-                counts.cacheWrite1h = (cc["ephemeral_1h_input_tokens"] as? Int) ?? 0
-            } else {
-                counts.cacheWrite5m = (usage["cache_creation_input_tokens"] as? Int) ?? 0
-            }
-
-            let ts = (obj["timestamp"] as? String).flatMap(CodexRolloutReader.parseISO) ?? Date()
-            let day = cal.startOfDay(for: ts)
-            let key = "\(day.timeIntervalSince1970)|\(model)"
-            if var existing = summary.byDayModel[key] {
-                existing.counts.input += counts.input
-                existing.counts.output += counts.output
-                existing.counts.cacheRead += counts.cacheRead
-                existing.counts.cacheWrite5m += counts.cacheWrite5m
-                existing.counts.cacheWrite1h += counts.cacheWrite1h
-                summary.byDayModel[key] = existing
-            } else {
-                summary.byDayModel[key] = DayModelUsage(day: day, model: model, counts: counts)
-            }
+        let mid = (message["id"] as? String) ?? ""
+        let rid = (obj["requestId"] as? String) ?? ""
+        let dedupKey = mid + "|" + rid
+        if !mid.isEmpty {
+            guard summary.seenDedupKeys.insert(dedupKey).inserted else { return }
         }
-        return summary
+
+        var counts = TokenCounts()
+        counts.input = (usage["input_tokens"] as? Int) ?? 0
+        counts.output = (usage["output_tokens"] as? Int) ?? 0
+        counts.cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
+        if let cc = usage["cache_creation"] as? [String: Any] {
+            counts.cacheWrite5m = (cc["ephemeral_5m_input_tokens"] as? Int) ?? 0
+            counts.cacheWrite1h = (cc["ephemeral_1h_input_tokens"] as? Int) ?? 0
+        } else {
+            counts.cacheWrite5m = (usage["cache_creation_input_tokens"] as? Int) ?? 0
+        }
+
+        let ts = (obj["timestamp"] as? String).flatMap(CodexRolloutReader.parseISO) ?? Date()
+        let day = cal.startOfDay(for: ts)
+        let key = "\(day.timeIntervalSince1970)|\(model)"
+        if var existing = summary.byDayModel[key] {
+            existing.counts.input += counts.input
+            existing.counts.output += counts.output
+            existing.counts.cacheRead += counts.cacheRead
+            existing.counts.cacheWrite5m += counts.cacheWrite5m
+            existing.counts.cacheWrite1h += counts.cacheWrite1h
+            summary.byDayModel[key] = existing
+        } else {
+            summary.byDayModel[key] = DayModelUsage(day: day, model: model, counts: counts)
+        }
     }
 }
