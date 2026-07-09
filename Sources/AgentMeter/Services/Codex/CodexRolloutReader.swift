@@ -151,10 +151,10 @@ enum CodexRolloutReader {
 
         // totalCostUSD/totalTokens/byModel are surfaced as the "30-day" totals
         // (ModelBreakdown, MenuView's footer), so they must use the same rolling
-        // 30-day cutoff as SpendWindows.lastDays(30) — not every day the 31-day
+        // 30-day cutoff as SpendWindows.lastDays(30) — not every day the buffered
         // file scan happened to pick up — or the two "30-day" figures disagree.
         let thirtyDayCutoff = Calendar.current.date(
-            byAdding: .day, value: -30, to: Calendar.current.startOfDay(for: Date())
+            byAdding: .day, value: -29, to: Calendar.current.startOfDay(for: Date())
         ) ?? Date.distantPast
 
         var bucketByDay: [Date: UsageBucket] = [:]
@@ -212,7 +212,7 @@ enum CodexRolloutReader {
         // actively-appended session log isn't re-read whole on every refresh tick.
         var summary: FileUsageSummary
         let startOffset: Int64
-        if let base = await usageCache.incrementalBase(forPath: fingerprint.path, notExceeding: fingerprint.size) {
+        if let base = await usageCache.incrementalBase(for: fingerprint) {
             summary = base.value
             startOffset = base.parsedBytes
         } else {

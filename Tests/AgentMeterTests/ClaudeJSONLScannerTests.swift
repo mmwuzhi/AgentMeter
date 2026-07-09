@@ -50,6 +50,27 @@ final class ClaudeJSONLScannerTests: XCTestCase {
         XCTAssertEqual(report.byModel.first?.tokens, 30, "per-model totals must apply the same cutoff")
     }
 
+    func testRollingThirtyDayCutoffIncludesTodayAndPreviousTwentyNineDays() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory.appendingPathComponent("claude-jsonl-boundary-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        let outside = ISO8601DateFormatter().string(from: cal.date(byAdding: .day, value: -30, to: today)!)
+        let inside = ISO8601DateFormatter().string(from: cal.date(byAdding: .day, value: -29, to: today)!)
+        let payload = [
+            #"{"timestamp":"\#(outside)","requestId":"req-out","message":{"id":"msg-out","model":"claude-sonnet-4-20250514","usage":{"input_tokens":100,"output_tokens":0}}}"#,
+            #"{"timestamp":"\#(inside)","requestId":"req-in","message":{"id":"msg-in","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":20}}}"#
+        ].joined(separator: "\n")
+        try payload.write(to: url, atomically: true, encoding: .utf8)
+
+        let report = await ClaudeJSONLScanner.usageReport(files: [url])
+
+        XCTAssertEqual(report.buckets.count, 2, "heatmap buckets keep scanned boundary days")
+        XCTAssertEqual(report.totalTokens, 30, "30-day totals are today plus the previous 29 days")
+        XCTAssertEqual(report.byModel.first?.tokens, 30)
+    }
+
     /// Incremental resume must carry the per-file dedup set: a duplicate message
     /// that lands in the appended tail (after the cached head) must not recount.
     func testIncrementalAppendPreservesDedupAcrossResume() async throws {

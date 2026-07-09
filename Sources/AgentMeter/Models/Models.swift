@@ -173,7 +173,7 @@ struct UsageBucket: Identifiable, Codable, Sendable, Equatable {
     var totalTokens: Int { inputTokens + outputTokens + cacheWrite5m + cacheWrite1h + cacheRead }
 }
 
-/// All-time spend + tokens attributed to one model.
+/// Rolling-window spend + tokens attributed to one model.
 struct ModelSpend: Identifiable, Codable, Sendable, Equatable {
     var id: String { model }
     let model: String

@@ -17,7 +17,8 @@ private enum SpendWindows {
     /// Rolling window covering the last `days` day-buckets (incl. today).
     static func lastDays(_ days: Int, _ usage: UsageReport) -> WindowTotals {
         let cal = Calendar.current
-        guard let cutoff = cal.date(byAdding: .day, value: -days, to: cal.startOfDay(for: Date())) else {
+        guard days > 0,
+              let cutoff = cal.date(byAdding: .day, value: -(days - 1), to: cal.startOfDay(for: Date())) else {
             return WindowTotals(cost: 0, tokens: 0)
         }
         let recent = usage.buckets.filter { $0.day >= cutoff }

@@ -133,4 +133,15 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         XCTAssertEqual(snapshot.planType, "pro")
         XCTAssertNil(snapshot.note)
     }
+
+    func testSessionUtilizationIsUsedPercentNotRemainingPercent() throws {
+        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(from: [
+            "plan_type": "pro",
+            "five_hour": ["utilization": 94.0]
+        ])
+
+        let window = try XCTUnwrap(snapshot.windows.first)
+        XCTAssertEqual(window.usedPercent, 94)
+        XCTAssertEqual(window.remainingPercent, 6)
+    }
 }

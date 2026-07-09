@@ -4,6 +4,7 @@ import SwiftUI
 struct QuotaRow: View {
     let window: QuotaWindow
     var runway: QuotaRunway?
+    nonisolated private static let alertLeadTime: TimeInterval = 30 * 60
 
     private var color: Color { QuotaColor.forRemaining(window.remainingPercent) }
     var body: some View {
@@ -16,7 +17,7 @@ struct QuotaRow: View {
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
                     Text("\(Int(window.remainingPercent.rounded()))")
                         .font(.title3.weight(.semibold).monospacedDigit())
-                    Text("%")
+                    Text("% left")
                         .font(.caption.weight(.semibold))
                 }
                 .foregroundStyle(color)
@@ -28,12 +29,18 @@ struct QuotaRow: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
-            if let runway, runway.status == .atRisk {
+            if let runway, Self.shouldShowRunwayAlert(runway) {
                 Text(runway.message)
                     .font(.caption2)
                     .foregroundStyle(.red)
             }
         }
+    }
+
+    nonisolated static func shouldShowRunwayAlert(_ runway: QuotaRunway, now: Date = Date()) -> Bool {
+        guard runway.status == .atRisk,
+              let depletion = runway.estimatedDepletionAt else { return false }
+        return depletion.timeIntervalSince(now) <= alertLeadTime
     }
 
     nonisolated static func relative(_ date: Date, prefixed: Bool = true) -> String {

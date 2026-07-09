@@ -4,6 +4,22 @@ struct LogFileFingerprint: Hashable, Sendable {
     let path: String
     let size: Int64
     let modifiedAt: TimeInterval
+    let fileID: UInt64?
+    let volumeID: UInt64?
+
+    init(
+        path: String,
+        size: Int64,
+        modifiedAt: TimeInterval,
+        fileID: UInt64? = nil,
+        volumeID: UInt64? = nil
+    ) {
+        self.path = path
+        self.size = size
+        self.modifiedAt = modifiedAt
+        self.fileID = fileID
+        self.volumeID = volumeID
+    }
 
     static func current(for url: URL) -> LogFileFingerprint? {
         guard let values = try? FileManager.default.attributesOfItem(atPath: url.path),
@@ -12,8 +28,17 @@ struct LogFileFingerprint: Hashable, Sendable {
         return LogFileFingerprint(
             path: url.path,
             size: size.int64Value,
-            modifiedAt: modifiedAt.timeIntervalSince1970
+            modifiedAt: modifiedAt.timeIntervalSince1970,
+            fileID: (values[.systemFileNumber] as? NSNumber)?.uint64Value,
+            volumeID: (values[.systemNumber] as? NSNumber)?.uint64Value
         )
+    }
+
+    func hasSameStableIdentity(as other: LogFileFingerprint) -> Bool {
+        guard let fileID, let volumeID, let otherFileID = other.fileID, let otherVolumeID = other.volumeID else {
+            return false
+        }
+        return fileID == otherFileID && volumeID == otherVolumeID
     }
 }
 
@@ -29,16 +54,22 @@ actor LogFileParseCache<Value: Sendable> {
     private var entries: [String: Entry] = [:]
 
     func value(for fingerprint: LogFileFingerprint) -> Value? {
-        guard let entry = entries[fingerprint.path], entry.fingerprint == fingerprint else { return nil }
+        guard let entry = entries[fingerprint.path],
+              entry.fingerprint == fingerprint,
+              entry.parsedBytes == fingerprint.size else { return nil }
         return entry.value
     }
 
-    /// A prior parse of the same path to resume from, but only if the file hasn't
-    /// shrunk below what we already consumed — a smaller file means truncation or
-    /// rotation, so the caller must re-parse from the top instead. (Same-size /
-    /// same-mtime exact hits are served by `value(for:)`; this is the grew case.)
-    func incrementalBase(forPath path: String, notExceeding size: Int64) -> (value: Value, parsedBytes: Int64)? {
-        guard let entry = entries[path], entry.parsedBytes <= size else { return nil }
+    /// A prior parse of the same path to resume from, but only if it is still the
+    /// same filesystem object and has grown past the last consumed line boundary.
+    /// A same-path replacement, truncation, or rotation must re-parse from the top.
+    /// Same-size / same-mtime exact hits are served by `value(for:)`; this is the
+    /// append-only grew case.
+    func incrementalBase(for fingerprint: LogFileFingerprint) -> (value: Value, parsedBytes: Int64)? {
+        guard let entry = entries[fingerprint.path],
+              entry.fingerprint.hasSameStableIdentity(as: fingerprint),
+              entry.parsedBytes <= fingerprint.size,
+              fingerprint.modifiedAt >= entry.fingerprint.modifiedAt else { return nil }
         return (entry.value, entry.parsedBytes)
     }
 
