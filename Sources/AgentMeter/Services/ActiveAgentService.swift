@@ -414,7 +414,10 @@ enum ActiveAgentService {
         var model = "gpt-5-codex"
         var totals: [String: TokenCounts] = [:]
         try? JSONLLineReader.forEachLine(in: url) { line in
-            guard let object = jsonObject(from: line),
+            // Skip the JSON parse for lines that carry neither a model nor a
+            // token_count event — the bulk of a rollout log.
+            guard line.contains("token_count") || line.contains("\"model\""),
+                  let object = jsonObject(from: line),
                   let payload = object["payload"] as? [String: Any] else { return }
             if let nextModel = payload["model"] as? String {
                 model = nextModel
