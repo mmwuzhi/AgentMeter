@@ -39,6 +39,8 @@ struct QuotaRow: View {
     nonisolated static func relative(_ date: Date, prefixed: Bool = true) -> String {
         let interval = date.timeIntervalSinceNow
         if interval <= 0 { return "now" }
+        // Smallest formatter unit is a minute, so sub-60s would read "0 min".
+        if interval < 60 { return prefixed ? "in under a minute" : "under a minute" }
         let f = DateComponentsFormatter()
         f.allowedUnits = [.day, .hour, .minute]
         f.maximumUnitCount = 2

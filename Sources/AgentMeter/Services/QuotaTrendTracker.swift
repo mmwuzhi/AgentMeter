@@ -10,6 +10,11 @@ enum QuotaTrendTracker {
     /// that produces "would run out" alarms no sustained usage pattern would ever hit,
     /// especially on long-horizon windows (weekly, or a months-long one-time credit).
     static let maxExtrapolationMultiplier: Double = 6
+    /// Drain rate is averaged over the most recent observations within this
+    /// trailing window rather than the last two adjacent samples, so a single
+    /// tick's burst (or lull) can't swing the projection. Falls back to the full
+    /// same-reset-epoch span when the window is too sparse to hold two samples.
+    static let runwayLookback: TimeInterval = 10 * 60
 
     static func record(
         existing: [QuotaObservation],
@@ -72,7 +77,7 @@ enum QuotaTrendTracker {
         }
 
         let current = samples.last!
-        guard let previous = previousDrainingSample(before: current, in: samples) else {
+        guard let anchor = trailingAnchor(for: current, in: samples) else {
             return QuotaRunway(
                 provider: provider,
                 windowID: window.id,
@@ -84,8 +89,8 @@ enum QuotaTrendTracker {
             )
         }
 
-        let elapsedHours = max(current.observedAt.timeIntervalSince(previous.observedAt) / 3600, 1 / 120)
-        let percentPerHour = (previous.remainingPercent - current.remainingPercent) / elapsedHours
+        let elapsedHours = max(current.observedAt.timeIntervalSince(anchor.observedAt) / 3600, 1 / 120)
+        let percentPerHour = (anchor.remainingPercent - current.remainingPercent) / elapsedHours
         guard percentPerHour > 0 else {
             return QuotaRunway(
                 provider: provider,
@@ -190,20 +195,27 @@ enum QuotaTrendTracker {
         )
     }
 
-    private static func previousDrainingSample(
-        before current: QuotaObservation,
+    /// Anchor point for the average drain rate: the oldest observation within the
+    /// trailing lookback (or the full same-epoch span when the lookback is too
+    /// sparse to hold two samples). Returns nil — reported as steady — when quota
+    /// rose inside the pool (a refill/correction makes the drain signal
+    /// unreliable) or when there is no net drain from the anchor to now.
+    private static func trailingAnchor(
+        for current: QuotaObservation,
         in samples: [QuotaObservation]
     ) -> QuotaObservation? {
-        for sample in samples.dropLast().reversed() {
-            if sample.remainingPercent < current.remainingPercent - 0.1 {
-                return nil
-            }
-            if sample.remainingPercent > current.remainingPercent + 0.1,
-               current.observedAt.timeIntervalSince(sample.observedAt) >= 30 {
-                return sample
-            }
+        let cutoff = current.observedAt.addingTimeInterval(-runwayLookback)
+        let within = samples.filter { $0.observedAt >= cutoff }
+        let pool = within.count >= 2 ? within : samples
+        if pool.dropLast().contains(where: { $0.remainingPercent < current.remainingPercent - 0.1 }) {
+            return nil
         }
-        return nil
+        guard let anchor = pool.first,
+              anchor.observedAt < current.observedAt,
+              anchor.remainingPercent > current.remainingPercent + 0.1 else {
+            return nil
+        }
+        return anchor
     }
 
     private static func statusFor(
@@ -238,6 +250,9 @@ enum QuotaTrendTracker {
     private static func relative(_ date: Date, now: Date) -> String {
         let interval = date.timeIntervalSince(now)
         if interval <= 0 { return "now" }
+        // The formatter's smallest unit is a minute, so anything under 60s renders
+        // as "in 0 min"; say "in under a minute" instead.
+        if interval < 60 { return "in under a minute" }
         let f = DateComponentsFormatter()
         f.allowedUnits = [.day, .hour, .minute]
         f.maximumUnitCount = 2
