@@ -290,6 +290,55 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertTrue(runway.message.contains("%/h"))
     }
 
+    func testRunwayDoesNotTreatLongFlatHistoryAsSustainedDrainEvidence() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let reset = now.addingTimeInterval(90 * 24 * 3600)
+        let window = QuotaWindow(
+            id: "cinder_cove", label: "Included credit", usedPercent: 3, resetsAt: reset,
+            isOneTimeCredit: true
+        )
+        let observations = [
+            QuotaObservation(
+                provider: .claude,
+                windowID: "cinder_cove",
+                remainingPercent: 98,
+                observedAt: now.addingTimeInterval(-24 * 3600),
+                resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .claude,
+                windowID: "cinder_cove",
+                remainingPercent: 98,
+                observedAt: now.addingTimeInterval(-3600),
+                resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .claude,
+                windowID: "cinder_cove",
+                remainingPercent: 98,
+                observedAt: now.addingTimeInterval(-600),
+                resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .claude,
+                windowID: "cinder_cove",
+                remainingPercent: 97,
+                observedAt: now,
+                resetsAt: reset
+            )
+        ]
+
+        let runway = QuotaTrendTracker.runway(
+            provider: .claude,
+            window: window,
+            observations: observations,
+            now: now
+        )
+
+        XCTAssertEqual(runway.status, .watch)
+        XCTAssertNil(runway.estimatedDepletionAt)
+    }
+
     func testRunwaySustainedLongHorizonDrainStillReportsAtRisk() {
         let now = Date(timeIntervalSince1970: 1_000)
         let reset = now.addingTimeInterval(90 * 24 * 3600)
@@ -303,6 +352,27 @@ final class QuotaTrendTrackerTests: XCTestCase {
                 windowID: "cinder_cove",
                 remainingPercent: 80,
                 observedAt: now.addingTimeInterval(-24 * 3600), // a full day of sustained drain
+                resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .claude,
+                windowID: "cinder_cove",
+                remainingPercent: 70,
+                observedAt: now.addingTimeInterval(-16 * 3600),
+                resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .claude,
+                windowID: "cinder_cove",
+                remainingPercent: 60,
+                observedAt: now.addingTimeInterval(-8 * 3600),
+                resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .claude,
+                windowID: "cinder_cove",
+                remainingPercent: 51,
+                observedAt: now.addingTimeInterval(-600),
                 resetsAt: reset
             ),
             QuotaObservation(
@@ -322,6 +392,7 @@ final class QuotaTrendTrackerTests: XCTestCase {
         )
 
         XCTAssertEqual(runway.status, .atRisk)
+        XCTAssertEqual(runway.percentPerHour ?? -1, 6.0, accuracy: 0.1)
         XCTAssertNotNil(runway.estimatedDepletionAt)
     }
 

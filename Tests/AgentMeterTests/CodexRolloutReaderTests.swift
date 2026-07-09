@@ -110,6 +110,29 @@ final class CodexRolloutReaderTests: XCTestCase {
         XCTAssertEqual(report.byModel.first?.tokens, 150, "per-model totals must apply the same cutoff")
     }
 
+    func testRollingThirtyDayCutoffIncludesTodayAndPreviousTwentyNineDays() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory.appendingPathComponent("codex-rollout-boundary-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        let outside = ISO8601DateFormatter().string(from: cal.date(byAdding: .day, value: -30, to: today)!)
+        let inside = ISO8601DateFormatter().string(from: cal.date(byAdding: .day, value: -29, to: today)!)
+        let payload = [
+            #"{"timestamp":"\#(outside)","payload":{"model":"gpt-5-codex"}}"#,
+            #"{"timestamp":"\#(outside)","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":0}}}}"#,
+            #"{"timestamp":"\#(inside)","payload":{"model":"gpt-5-codex"}}"#,
+            #"{"timestamp":"\#(inside)","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30}}}}"#
+        ].joined(separator: "\n")
+        try payload.write(to: url, atomically: true, encoding: .utf8)
+
+        let report = await CodexRolloutReader.usageReport(files: [url])
+
+        XCTAssertEqual(report.buckets.count, 2, "heatmap buckets keep scanned boundary days")
+        XCTAssertEqual(report.totalTokens, 150, "30-day totals are today plus the previous 29 days")
+        XCTAssertEqual(report.byModel.first?.tokens, 150)
+    }
+
     /// Incremental resume must be additive and carry the session model: a
     /// token_count appended after the cached head (with no fresh model line) must
     /// add to the prior total and stay attributed to the head's model, not the

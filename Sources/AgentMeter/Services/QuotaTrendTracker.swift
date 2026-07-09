@@ -16,6 +16,11 @@ enum QuotaTrendTracker {
     /// same-reset-epoch span when the window is too sparse to hold two samples.
     static let runwayLookback: TimeInterval = 10 * 60
 
+    private struct DrainSignal {
+        let rateAnchor: QuotaObservation
+        let evidenceStart: QuotaObservation
+    }
+
     static func record(
         existing: [QuotaObservation],
         states: [ProviderState],
@@ -77,7 +82,7 @@ enum QuotaTrendTracker {
         }
 
         let current = samples.last!
-        guard let anchor = trailingAnchor(for: current, in: samples) else {
+        guard let signal = drainSignal(for: current, in: samples) else {
             return QuotaRunway(
                 provider: provider,
                 windowID: window.id,
@@ -89,8 +94,9 @@ enum QuotaTrendTracker {
             )
         }
 
-        let elapsedHours = max(current.observedAt.timeIntervalSince(anchor.observedAt) / 3600, 1 / 120)
-        let percentPerHour = (anchor.remainingPercent - current.remainingPercent) / elapsedHours
+        let elapsedHours = max(current.observedAt.timeIntervalSince(signal.rateAnchor.observedAt) / 3600, 1 / 120)
+        let evidenceHours = max(current.observedAt.timeIntervalSince(signal.evidenceStart.observedAt) / 3600, elapsedHours)
+        let percentPerHour = (signal.rateAnchor.remainingPercent - current.remainingPercent) / elapsedHours
         guard percentPerHour > 0 else {
             return QuotaRunway(
                 provider: provider,
@@ -108,7 +114,7 @@ enum QuotaTrendTracker {
         let safeRate = safePercentPerHour(window: window, now: now)
         var status = statusFor(depletion: depletion, reset: window.resetsAt)
         var reportedDepletion: Date? = depletion
-        if status == .atRisk, hoursToDepletion > elapsedHours * maxExtrapolationMultiplier {
+        if status == .atRisk, hoursToDepletion > evidenceHours * maxExtrapolationMultiplier {
             // Not enough sustained history to trust a projection this far out — report
             // the pace without the "would run out" alarm or a specific depletion date.
             status = .watch
@@ -195,27 +201,40 @@ enum QuotaTrendTracker {
         )
     }
 
-    /// Anchor point for the average drain rate: the oldest observation within the
-    /// trailing lookback (or the full same-epoch span when the lookback is too
-    /// sparse to hold two samples). Returns nil — reported as steady — when quota
-    /// rose inside the pool (a refill/correction makes the drain signal
-    /// unreliable) or when there is no net drain from the anchor to now.
-    private static func trailingAnchor(
+    /// Signal for the average drain rate plus the span of sustained drain evidence.
+    /// Rate uses the oldest observation within the trailing lookback (or the full
+    /// same-epoch span when the lookback is too sparse), while extrapolation trust
+    /// uses the start of the current monotonic drain run. Returns nil — reported as
+    /// steady — when quota rose inside the same reset epoch or when there is no net
+    /// drain from the rate anchor to now.
+    private static func drainSignal(
         for current: QuotaObservation,
         in samples: [QuotaObservation]
-    ) -> QuotaObservation? {
+    ) -> DrainSignal? {
+        guard let evidenceStart = sustainedDrainStart(in: samples) else { return nil }
         let cutoff = current.observedAt.addingTimeInterval(-runwayLookback)
         let within = samples.filter { $0.observedAt >= cutoff }
         let pool = within.count >= 2 ? within : samples
-        if pool.dropLast().contains(where: { $0.remainingPercent < current.remainingPercent - 0.1 }) {
+        guard let rateAnchor = pool.first,
+              rateAnchor.observedAt < current.observedAt,
+              rateAnchor.remainingPercent > current.remainingPercent + 0.1 else {
             return nil
         }
-        guard let anchor = pool.first,
-              anchor.observedAt < current.observedAt,
-              anchor.remainingPercent > current.remainingPercent + 0.1 else {
-            return nil
+        return DrainSignal(rateAnchor: rateAnchor, evidenceStart: evidenceStart)
+    }
+
+    private static func sustainedDrainStart(in samples: [QuotaObservation]) -> QuotaObservation? {
+        guard samples.count >= 2 else { return nil }
+        var start: QuotaObservation?
+        for (previous, next) in zip(samples.dropLast(), samples.dropFirst()) {
+            if next.remainingPercent > previous.remainingPercent + 0.1 {
+                return nil
+            }
+            if previous.remainingPercent > next.remainingPercent + 0.1, start == nil {
+                start = previous
+            }
         }
-        return anchor
+        return start
     }
 
     private static func statusFor(
