@@ -325,6 +325,68 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertNotNil(runway.estimatedDepletionAt)
     }
 
+    func testRunwayAveragesOverTrailingWindowInsteadOfLastTickBurst() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(4 * 3600)
+        let window = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 50, resetsAt: reset)
+        // 30 samples at 60s spacing: flat at 51% for ~29 minutes, then a single
+        // 1% drop in the last tick. The old last-two-sample slope would read this
+        // as 60%/h and cry "would run out"; the 10-minute average sees 6%/h.
+        var observations: [QuotaObservation] = []
+        for k in stride(from: 29, through: 1, by: -1) {
+            observations.append(
+                QuotaObservation(
+                    provider: .codex, windowID: "five_hour", remainingPercent: 51,
+                    observedAt: now.addingTimeInterval(-Double(k) * 60), resetsAt: reset
+                )
+            )
+        }
+        observations.append(
+            QuotaObservation(
+                provider: .codex, windowID: "five_hour", remainingPercent: 50,
+                observedAt: now, resetsAt: reset
+            )
+        )
+
+        let runway = QuotaTrendTracker.runway(
+            provider: .codex,
+            window: window,
+            observations: observations,
+            now: now
+        )
+
+        XCTAssertEqual(runway.status, .safe)
+        XCTAssertEqual(runway.percentPerHour ?? -1, 6.0, accuracy: 0.1)
+        XCTAssertGreaterThan(runway.estimatedDepletionAt ?? now, reset)
+    }
+
+    func testRunwaySubMinuteDepletionReadsUnderAMinute() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(3600)
+        let window = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 99, resetsAt: reset)
+        // 3% -> 1% over 60s = 120%/h, so 1% remaining depletes in ~30s.
+        let observations = [
+            QuotaObservation(
+                provider: .codex, windowID: "five_hour", remainingPercent: 3,
+                observedAt: now.addingTimeInterval(-60), resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .codex, windowID: "five_hour", remainingPercent: 1,
+                observedAt: now, resetsAt: reset
+            )
+        ]
+
+        let runway = QuotaTrendTracker.runway(
+            provider: .codex,
+            window: window,
+            observations: observations,
+            now: now
+        )
+
+        XCTAssertEqual(runway.status, .atRisk)
+        XCTAssertEqual(runway.message, "would run out in under a minute")
+    }
+
     func testRecordIgnoresUnavailableQuota() {
         let now = Date(timeIntervalSince1970: 1_000)
         let existing = [
