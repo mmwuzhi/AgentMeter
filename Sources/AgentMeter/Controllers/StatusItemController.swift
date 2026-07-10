@@ -159,12 +159,7 @@ private final class StatusItemSlotController: NSObject {
             lastLength = statusLength
             statusItem.length = statusLength
         }
-        contentView.frame = NSRect(
-            x: -MenuBarContentView.statusItemOverhang,
-            y: 0,
-            width: width,
-            height: button.bounds.height
-        )
+        contentView.frame = NSRect(x: 0, y: 0, width: width, height: button.bounds.height)
         contentView.apply(elements: elements, showCaptions: showCaptions)
     }
 

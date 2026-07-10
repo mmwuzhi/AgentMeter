@@ -158,13 +158,12 @@ final class MenuBarLayoutTests: XCTestCase {
         )
     }
 
-    func testStatusLengthUsesSymmetricVisualOverhang() {
+    func testStatusLengthCoversFullVisualWidth() {
+        // Regression: declaring the item narrower than the drawn width clips
+        // the status item replica on non-active displays.
         let visualWidth: CGFloat = 48
 
-        XCTAssertEqual(
-            MenuBarContentView.statusLength(forVisualWidth: visualWidth),
-            visualWidth - MenuBarContentView.statusItemOverhang * 2
-        )
+        XCTAssertEqual(MenuBarContentView.statusLength(forVisualWidth: visualWidth), visualWidth)
     }
 
     func testProviderTemplateIconsLoad() {

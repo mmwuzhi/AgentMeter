@@ -21,7 +21,6 @@ final class MenuBarContentView: NSView {
     static let spacing: CGFloat = 4
     static let horizontalInset: CGFloat = 0
     static let textYOffset: CGFloat = 2
-    static let statusItemOverhang: CGFloat = 6
 
     // iStat-style compact two-line readout: balanced captions and restrained values.
     static func captionFont() -> NSFont { .systemFont(ofSize: 8.5, weight: .regular) }
@@ -74,8 +73,10 @@ final class MenuBarContentView: NSView {
         return pieces.reduce(0, +) + gaps + horizontalInset * 2
     }
 
+    /// The declared length must cover the full drawn width. Non-active displays
+    /// render status-item replicas clipped to `NSStatusItem.length`.
     static func statusLength(forVisualWidth width: CGFloat) -> CGFloat {
-        max(1, width - statusItemOverhang * 2)
+        max(1, width)
     }
 
     override func draw(_ dirtyRect: NSRect) {

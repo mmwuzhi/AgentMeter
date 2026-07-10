@@ -1,38 +1,60 @@
 import SwiftUI
 
 /// Compact daily-token sparkline for the collapsed "Activity" row (last N days).
+/// One bar per day; hovering a bar shows that day's tokens + spend.
 struct MiniSparkline: View {
     let buckets: [UsageBucket]
     var tint: Color
     var days: Int = 21
 
-    private var values: [Int] {
+    private struct DayValue: Identifiable {
+        let day: Date
+        let tokens: Int
+        let cost: Double
+        var id: Date { day }
+    }
+
+    private var values: [DayValue] {
         let cal = Calendar.current
         var byDay: [Date: Int] = [:]
-        for b in buckets { byDay[cal.startOfDay(for: b.day), default: 0] += b.totalTokens }
+        var byDayCost: [Date: Double] = [:]
+        for b in buckets {
+            let key = cal.startOfDay(for: b.day)
+            byDay[key, default: 0] += b.totalTokens
+            byDayCost[key, default: 0] += b.costUSD
+        }
         let today = cal.startOfDay(for: Date())
         return (0..<days).reversed().compactMap { offset in
             guard let d = cal.date(byAdding: .day, value: -offset, to: today) else { return nil }
-            return byDay[d] ?? 0
+            return DayValue(day: d, tokens: byDay[d] ?? 0, cost: byDayCost[d] ?? 0)
         }
     }
 
     var body: some View {
         let vals = values
-        let maxV = max(1, vals.max() ?? 1)
+        let maxV = max(1, vals.map(\.tokens).max() ?? 1)
         GeometryReader { geo in
             let count = max(1, vals.count)
-            let spacing: CGFloat = 1.5
+            let spacing: CGFloat = 2
             let barW = max(1, (geo.size.width - spacing * CGFloat(count - 1)) / CGFloat(count))
             HStack(alignment: .bottom, spacing: spacing) {
-                ForEach(Array(vals.enumerated()), id: \.offset) { _, v in
-                    let h = v == 0 ? 1.5 : max(2, geo.size.height * CGFloat(Double(v) / Double(maxV)))
-                    RoundedRectangle(cornerRadius: 1)
-                        .fill(v == 0 ? Color.primary.opacity(0.12) : tint.opacity(0.85))
-                        .frame(width: barW, height: h)
+                ForEach(vals) { v in
+                    // Sqrt-ish scaling keeps one spike day from flattening
+                    // every other bar into an unreadable dot.
+                    let frac = pow(Double(v.tokens) / Double(maxV), 0.6)
+                    let h = v.tokens == 0 ? 2 : max(3, geo.size.height * CGFloat(frac))
+                    ZStack(alignment: .bottom) {
+                        Color.clear
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(v.tokens == 0 ? Color.primary.opacity(0.08) : tint.opacity(0.85))
+                            .frame(height: h)
+                    }
+                    .frame(width: barW)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .help(UsageHeatmap.tooltip(v.day, v.tokens, v.cost))
                 }
             }
-            .frame(maxHeight: .infinity, alignment: .bottom)
         }
     }
 }

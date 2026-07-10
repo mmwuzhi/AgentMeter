@@ -317,8 +317,11 @@ struct ProviderSection: View {
                     Text("Activity").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     if !showHeatmap {
+                        // Fill the rest of the row: the old fixed width made
+                        // 21 days of activity hard to read.
                         MiniSparkline(buckets: state.usage.buckets, tint: tint)
-                            .frame(width: 120, height: 14)
+                            .frame(height: 20)
+                            .frame(maxWidth: .infinity)
                             .transition(.opacity)
                     }
                 }
