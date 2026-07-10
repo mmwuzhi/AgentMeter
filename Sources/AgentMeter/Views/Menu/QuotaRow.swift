@@ -25,9 +25,10 @@ struct QuotaRow: View {
             QuotaBar(remainingPercent: window.remainingPercent)
             if let resets = window.resetsAt {
                 let verb = window.isOneTimeCredit == true ? "expires" : "resets"
-                Text("\(verb) \(Self.relative(resets))")
+                Text("\(verb) \(Self.absolute(resets))")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
+                    .help("\(verb) \(Self.relative(resets))")
             }
             if let runway, Self.shouldShowRunwayAlert(runway) {
                 Text(runway.message)
@@ -41,6 +42,51 @@ struct QuotaRow: View {
         guard runway.status == .atRisk,
               let depletion = runway.estimatedDepletionAt else { return false }
         return depletion.timeIntervalSince(now) <= alertLeadTime
+    }
+
+    /// Wall-clock phrasing for the reset line ("at 20:29", "tomorrow at 07:59",
+    /// "Tue 23:59", "on 30 Sep 2026"): a clock time is easier to plan around than
+    /// a countdown. The countdown form stays available as the hover tooltip.
+    /// Time rendering follows the system 12/24-hour setting via the locale.
+    nonisolated static func absolute(
+        _ date: Date,
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String {
+        if date.timeIntervalSince(now) <= 0 { return "now" }
+        func formatter() -> DateFormatter {
+            let f = DateFormatter()
+            f.locale = locale
+            f.calendar = calendar
+            f.timeZone = calendar.timeZone
+            return f
+        }
+        let dayDelta = calendar.dateComponents(
+            [.day],
+            from: calendar.startOfDay(for: now),
+            to: calendar.startOfDay(for: date)
+        ).day ?? 0
+        switch dayDelta {
+        case ..<1:
+            let time = formatter()
+            time.timeStyle = .short
+            return "at \(time.string(from: date))"
+        case 1:
+            let time = formatter()
+            time.timeStyle = .short
+            return "tomorrow at \(time.string(from: date))"
+        case 2...6:
+            // A weekday name is only unambiguous inside the next week; 7 days
+            // out wraps around to today's own weekday, so use a date there.
+            let f = formatter()
+            f.setLocalizedDateFormatFromTemplate("EEEjmm")
+            return f.string(from: date)
+        default:
+            let f = formatter()
+            f.dateStyle = .medium
+            return "on \(f.string(from: date))"
+        }
     }
 
     nonisolated static func relative(_ date: Date, prefixed: Bool = true) -> String {
