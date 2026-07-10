@@ -17,11 +17,13 @@ final class AppViewModel {
     var quotaObservations: [QuotaObservation] = []
     var codexResetCreditState = CodexResetCreditState()
     var activeAgents: [ActiveAgent] = []
+    var lifetimeSpend: [LifetimeDayRecord] = []
     /// Not persisted (like `activeAgents`) — a stale "outage" shown from a launch
     /// days ago would be misleading, so this starts empty and fills in on first refresh.
     var providerStatus: [Provider: ProviderStatusResult] = [:]
 
     init() {
+        let storedLifetimeSpend = LifetimeSpendStore.load() ?? []
         // Show the last values we saw immediately; the first refresh replaces them.
         if let snap = StateCache.load() {
             codex = snap.codex
@@ -29,7 +31,21 @@ final class AppViewModel {
             copilot = snap.copilot
             quotaObservations = snap.quotaObservations
             codexResetCreditState = snap.codexResetCreditState
+            lifetimeSpend = storedLifetimeSpend.isEmpty ? snap.lifetimeSpend : storedLifetimeSpend
+            if lifetimeSpend.isEmpty {
+                lifetimeSpend = LifetimeSpendTracker.bootstrapFromLegacyReports([codex.usage, claude.usage])
+            }
+            if !lifetimeSpend.isEmpty {
+                LifetimeSpendStore.save(lifetimeSpend)
+            }
+        } else {
+            lifetimeSpend = storedLifetimeSpend
         }
+    }
+
+    /// All-time observed spend for one provider, from the persisted ledger.
+    func lifetimeSpendUSD(for provider: Provider) -> Double {
+        LifetimeSpendTracker.totalCostUSD(lifetimeSpend, provider: provider)
     }
 
     var totalSpendUSD: Double {

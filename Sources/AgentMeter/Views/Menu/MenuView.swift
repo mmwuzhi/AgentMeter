@@ -74,6 +74,7 @@ struct MenuView: View {
         HStack(spacing: 4) {
             Text(spendSummary)
                 .font(.caption).foregroundStyle(.secondary)
+                .help("Accrued across refreshes since AgentMeter started tracking. Local logs only reach back about 30 days, so earlier spend is not included.")
             Spacer()
             SettingsLink { Text("Settings").font(.caption) }.buttonStyle(.borderless)
             Button("Quit", action: onQuit).buttonStyle(.borderless).font(.caption)
@@ -99,9 +100,16 @@ struct MenuView: View {
     private var spendSummary: String {
         switch scope {
         case .provider(let provider):
-            let state = PopoverOrder.state(provider, model)
-            return String(format: "30-day spend  $%.2f", state.usage.totalCostUSD)
+            return "All-time spend  \(Self.dollars(model.lifetimeSpendUSD(for: provider)))"
         }
+    }
+
+    private static func dollars(_ value: Double) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.minimumFractionDigits = 2
+        f.maximumFractionDigits = 2
+        return "$" + (f.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value))
     }
 }
 

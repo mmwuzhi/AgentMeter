@@ -162,6 +162,11 @@ final class RefreshCoordinator {
                 states: quotaStates,
                 at: now
             )
+            viewModel.lifetimeSpend = LifetimeSpendTracker.merge(
+                existing: viewModel.lifetimeSpend,
+                reports: [viewModel.codex.usage, viewModel.claude.usage]
+            )
+            LifetimeSpendStore.save(viewModel.lifetimeSpend)
             viewModel.lastRefresh = Date()
             viewModel.isRefreshing = false
             refreshStartedAt = nil
@@ -171,7 +176,8 @@ final class RefreshCoordinator {
                 claude: viewModel.claude,
                 copilot: viewModel.copilot,
                 quotaObservations: viewModel.quotaObservations,
-                codexResetCreditState: viewModel.codexResetCreditState
+                codexResetCreditState: viewModel.codexResetCreditState,
+                lifetimeSpend: viewModel.lifetimeSpend
             )
             NotificationManager.shared.evaluate(provider: .codex, windows: viewModel.codex.quota.windows)
             NotificationManager.shared.evaluate(provider: .claude, windows: viewModel.claude.quota.windows)

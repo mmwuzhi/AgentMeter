@@ -150,11 +150,13 @@ enum CodexRolloutReader {
         }
 
         // totalCostUSD/totalTokens/byModel are surfaced as the "30-day" totals
-        // (ModelBreakdown, MenuView's footer), so they must use the same rolling
-        // 30-day cutoff as SpendWindows.lastDays(30) — not every day the buffered
+        // (ModelBreakdown), so they must use the same rolling 30-day cutoff as
+        // SpendWindows.lastDays(UsageReport.totalsWindowDays) — not every day the buffered
         // file scan happened to pick up — or the two "30-day" figures disagree.
         let thirtyDayCutoff = Calendar.current.date(
-            byAdding: .day, value: -29, to: Calendar.current.startOfDay(for: Date())
+            byAdding: .day,
+            value: -(UsageReport.totalsWindowDays - 1),
+            to: Calendar.current.startOfDay(for: Date())
         ) ?? Date.distantPast
 
         var bucketByDay: [Date: UsageBucket] = [:]

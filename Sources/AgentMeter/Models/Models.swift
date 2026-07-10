@@ -183,11 +183,17 @@ struct ModelSpend: Identifiable, Codable, Sendable, Equatable {
 
 /// Per-provider rollup of usage buckets + spend.
 struct UsageReport: Codable, Sendable, Equatable {
+    /// Widest rolling window the UI presents ("By model · 30-day",
+    /// SpendBreakdownGrid). Scanners clamp totals/byModel to this window;
+    /// buckets may reach further back for the heatmap. The popover footer's
+    /// all-time figure comes from the persisted LifetimeSpendTracker ledger.
+    static let totalsWindowDays = 30
+
     let provider: Provider
     let buckets: [UsageBucket]          // sorted ascending by day
-    let totalCostUSD: Double            // rolling last 30 days, matches SpendWindows.lastDays(30)
-    let totalTokens: Int                // rolling last 30 days, matches SpendWindows.lastDays(30)
-    var byModel: [ModelSpend] = []      // rolling last 30 days, sorted by cost descending
+    let totalCostUSD: Double            // rolling last `totalsWindowDays` days
+    let totalTokens: Int                // rolling last `totalsWindowDays` days
+    var byModel: [ModelSpend] = []      // rolling last `totalsWindowDays` days, sorted by cost descending
 
     static func empty(_ provider: Provider) -> UsageReport {
         UsageReport(provider: provider, buckets: [], totalCostUSD: 0, totalTokens: 0)

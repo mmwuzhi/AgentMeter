@@ -41,7 +41,7 @@ struct SpendSummary: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             cell("local day", TokenFormat.short(SpendWindows.today(usage).tokens))
             cell("7-day", TokenFormat.short(SpendWindows.lastDays(7, usage).tokens))
-            cell("30-day", TokenFormat.short(SpendWindows.lastDays(30, usage).tokens))
+            cell("30-day", TokenFormat.short(SpendWindows.lastDays(UsageReport.totalsWindowDays, usage).tokens))
         }
         .help("Usage is read from recent local logs and the day resets at local midnight.")
     }
@@ -71,7 +71,7 @@ struct SpendBreakdownGrid: View {
         let cols: [(label: String, totals: WindowTotals)] = [
             ("local day", SpendWindows.today(usage)),
             ("7-day", SpendWindows.lastDays(7, usage)),
-            ("30-day", SpendWindows.lastDays(30, usage)),
+            ("30-day", SpendWindows.lastDays(UsageReport.totalsWindowDays, usage)),
         ]
 
         VStack(alignment: .leading, spacing: 4) {
