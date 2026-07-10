@@ -57,6 +57,15 @@ enum ClaudeOAuthFetcher {
         // codename this simply stops matching (windows.isEmpty note reappears) rather
         // than parsing something wrong.
         add("cinder_cove", "Included credit", isOneTimeCredit: true)
+        // Newer responses also carry a `limits` array. Its `session`/`weekly_all`
+        // entries duplicate `five_hour`/`seven_day` above, but model-scoped weekly
+        // limits (e.g. Fable) exist ONLY here — there is no named `seven_day_fable`
+        // key (confirmed against a live response; the named model keys stay null).
+        // Parse it as a supplement: map each known kind onto the equivalent named
+        // window id and skip ids already added, so the named keys stay authoritative
+        // when both are present and trend observations keep a stable window id
+        // either way.
+        addLimits(from: obj, into: &windows)
 
         let plan = planType(in: obj, windows: windows)
 
@@ -70,6 +79,45 @@ enum ClaudeOAuthFetcher {
 
         return QuotaSnapshot(provider: .claude, windows: windows, source: .oauth,
                              planType: plan, fetchedAt: Date(), note: note)
+    }
+
+    /// Folds `limits` array entries into `windows`, skipping kinds already covered
+    /// by a named key. Unknown kinds are ignored rather than guessed at, matching
+    /// how the named-key whitelist behaves.
+    private static func addLimits(from obj: [String: Any], into windows: inout [QuotaWindow]) {
+        guard let limits = obj["limits"] as? [[String: Any]] else { return }
+        for limit in limits {
+            guard let kind = limit["kind"] as? String else { continue }
+            let id: String
+            let label: String
+            switch kind {
+            case "session":
+                id = "five_hour"
+                label = "5-hour"
+            case "weekly_all":
+                id = "seven_day"
+                label = "Weekly"
+            case "weekly_scoped":
+                // Scoped to one model; the display name is the only identity the
+                // response carries (`scope.model.id` is null in live responses).
+                guard let scope = limit["scope"] as? [String: Any],
+                      let model = scope["model"] as? [String: Any],
+                      let name = (model["display_name"] as? String)?
+                          .trimmingCharacters(in: .whitespacesAndNewlines),
+                      !name.isEmpty else { continue }
+                id = "seven_day_" + name.lowercased().replacingOccurrences(of: " ", with: "_")
+                label = "Weekly (\(name))"
+            default:
+                continue
+            }
+            // `percent` is a bare integer in live responses (62, not 62.0), so go
+            // through NSNumber instead of an `as? Double` cast that only tolerates
+            // one numeric shape.
+            guard !windows.contains(where: { $0.id == id }),
+                  let percent = (limit["percent"] as? NSNumber)?.doubleValue else { continue }
+            let resets = (limit["resets_at"] as? String).flatMap(CodexRolloutReader.parseISO)
+            windows.append(QuotaWindow(id: id, label: label, usedPercent: percent, resetsAt: resets))
+        }
     }
 
     /// Best-effort capture of a window-less `/api/oauth/usage` body, so the real field
