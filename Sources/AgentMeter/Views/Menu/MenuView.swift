@@ -149,8 +149,29 @@ struct ActiveAgentsSection: View {
 
 private struct ActiveAgentRow: View {
     let agent: ActiveAgent
+    @State private var hovering = false
 
     var body: some View {
+        Button {
+            AgentAppActivator.activateHostApp(forPID: agent.pid)
+        } label: {
+            rowContent
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.primary.opacity(hovering ? 0.07 : 0))
+                )
+                .padding(.horizontal, -6)
+                .padding(.vertical, -3)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Bring the app running this session to the front")
+    }
+
+    private var rowContent: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Circle()
                 .fill(PopoverOrder.tint(agent.provider))
