@@ -339,6 +339,53 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertNil(runway.estimatedDepletionAt)
     }
 
+    func testLongWindowSuddenDropAfterPlateauDoesNotClaimImmediateDepletion() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval((4 * 24 + 8) * 3600)
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 32, resetsAt: reset)
+        let observations = [
+            QuotaObservation(
+                provider: .claude,
+                windowID: "seven_day",
+                remainingPercent: 91,
+                observedAt: now.addingTimeInterval(-17 * 3600),
+                resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .claude,
+                windowID: "seven_day",
+                remainingPercent: 90,
+                observedAt: now.addingTimeInterval(-16 * 3600),
+                resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .claude,
+                windowID: "seven_day",
+                remainingPercent: 90,
+                observedAt: now.addingTimeInterval(-7 * 60),
+                resetsAt: reset
+            ),
+            QuotaObservation(
+                provider: .claude,
+                windowID: "seven_day",
+                remainingPercent: 68,
+                observedAt: now,
+                resetsAt: reset
+            )
+        ]
+
+        let runway = QuotaTrendTracker.runway(
+            provider: .claude,
+            window: window,
+            observations: observations,
+            now: now
+        )
+
+        XCTAssertEqual(runway.status, .watch)
+        XCTAssertNil(runway.estimatedDepletionAt)
+        XCTAssertTrue(runway.message.contains("%/h"))
+    }
+
     func testRunwaySustainedLongHorizonDrainStillReportsAtRisk() {
         let now = Date(timeIntervalSince1970: 1_000)
         let reset = now.addingTimeInterval(90 * 24 * 3600)

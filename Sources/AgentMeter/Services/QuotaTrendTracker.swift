@@ -10,6 +10,11 @@ enum QuotaTrendTracker {
     /// that produces "would run out" alarms no sustained usage pattern would ever hit,
     /// especially on long-horizon windows (weekly, or a months-long one-time credit).
     static let maxExtrapolationMultiplier: Double = 6
+    /// Long reset windows need a little absolute history before we claim an
+    /// immediate depletion time. A weekly quota can move in coarse server-side
+    /// steps, so a few minutes of evidence should stay informational.
+    static let longWindowMinimumAtRiskEvidence: TimeInterval = 30 * 60
+    static let longWindowHorizon: TimeInterval = 24 * 60 * 60
     /// Drain rate is averaged over the most recent observations within this
     /// trailing window rather than the last two adjacent samples, so a single
     /// tick's burst (or lull) can't swing the projection. Falls back to the full
@@ -114,7 +119,13 @@ enum QuotaTrendTracker {
         let safeRate = safePercentPerHour(window: window, now: now)
         var status = statusFor(depletion: depletion, reset: window.resetsAt)
         var reportedDepletion: Date? = depletion
-        if status == .atRisk, hoursToDepletion > evidenceHours * maxExtrapolationMultiplier {
+        if status == .atRisk,
+           shouldDowngradeAtRisk(
+               hoursToDepletion: hoursToDepletion,
+               evidenceHours: evidenceHours,
+               reset: window.resetsAt,
+               observedAt: current.observedAt
+           ) {
             // Not enough sustained history to trust a projection this far out — report
             // the pace without the "would run out" alarm or a specific depletion date.
             status = .watch
@@ -226,15 +237,35 @@ enum QuotaTrendTracker {
     private static func sustainedDrainStart(in samples: [QuotaObservation]) -> QuotaObservation? {
         guard samples.count >= 2 else { return nil }
         var start: QuotaObservation?
-        for (previous, next) in zip(samples.dropLast(), samples.dropFirst()) {
-            if next.remainingPercent > previous.remainingPercent + 0.1 {
-                return nil
-            }
-            if previous.remainingPercent > next.remainingPercent + 0.1, start == nil {
+        var sawDrain = false
+        for (previous, next) in Array(zip(samples.dropLast(), samples.dropFirst())).reversed() {
+            let delta = previous.remainingPercent - next.remainingPercent
+            if delta > 0.1 {
                 start = previous
+                sawDrain = true
+            } else if delta < -0.1 {
+                return nil
+            } else if sawDrain {
+                return start
             }
         }
         return start
+    }
+
+    private static func shouldDowngradeAtRisk(
+        hoursToDepletion: Double,
+        evidenceHours: Double,
+        reset: Date?,
+        observedAt: Date
+    ) -> Bool {
+        if hoursToDepletion > evidenceHours * maxExtrapolationMultiplier {
+            return true
+        }
+        guard let reset else { return false }
+        let remainingWindow = reset.timeIntervalSince(observedAt)
+        let evidenceSeconds = evidenceHours * 3600
+        return remainingWindow > longWindowHorizon
+            && evidenceSeconds < longWindowMinimumAtRiskEvidence
     }
 
     private static func statusFor(
