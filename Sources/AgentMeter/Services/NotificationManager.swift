@@ -42,12 +42,13 @@ enum QuotaNotificationPolicy {
                 events.append(.critical(provider: provider, window: window))
             } else {
                 if state.criticalNotified.contains(key),
-                   recoveryEnabled,
-                   hasRecoveredAfterReset(window: window, previousReset: state.criticalResetAt[key], now: now) {
-                    events.append(.recovered(provider: provider, window: window))
+                   hasRecoveredAfterReset(previousReset: state.criticalResetAt[key], now: now) {
+                    if recoveryEnabled {
+                        events.append(.recovered(provider: provider, window: window))
+                    }
+                    state.criticalNotified.remove(key)
+                    state.criticalResetAt.removeValue(forKey: key)
                 }
-                state.criticalNotified.remove(key)
-                state.criticalResetAt.removeValue(forKey: key)
             }
         }
         return events
@@ -57,15 +58,9 @@ enum QuotaNotificationPolicy {
         "\(provider.rawValue):\(windowID)"
     }
 
-    private static func hasRecoveredAfterReset(
-        window: QuotaWindow,
-        previousReset: Date?,
-        now: Date
-    ) -> Bool {
+    private static func hasRecoveredAfterReset(previousReset: Date?, now: Date) -> Bool {
         guard let previousReset else { return false }
-        if previousReset <= now { return true }
-        guard let currentReset = window.resetsAt else { return false }
-        return currentReset.timeIntervalSince(previousReset) > 1
+        return previousReset <= now
     }
 }
 

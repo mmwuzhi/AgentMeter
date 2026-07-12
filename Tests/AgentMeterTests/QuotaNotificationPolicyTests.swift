@@ -78,6 +78,65 @@ final class QuotaNotificationPolicyTests: XCTestCase {
         XCTAssertEqual(events, [.recovered(provider: .claude, window: recovered)])
     }
 
+    func testResetTimeDriftBeforeResetDoesNotRecoverOrRearmCritical() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let reset = now.addingTimeInterval(5 * 3600)
+        let low = QuotaWindow(
+            id: "primary",
+            label: "5-hour",
+            usedPercent: 100,
+            resetsAt: reset
+        )
+        let transientHigh = QuotaWindow(
+            id: "primary",
+            label: "5-hour",
+            usedPercent: 5,
+            resetsAt: reset.addingTimeInterval(3 * 60)
+        )
+        let lowAgain = QuotaWindow(
+            id: "primary",
+            label: "5-hour",
+            usedPercent: 100,
+            resetsAt: reset
+        )
+        var state = QuotaNotificationState()
+
+        _ = QuotaNotificationPolicy.evaluate(
+            provider: .codex,
+            windows: [low],
+            now: now,
+            threshold: 10,
+            alertsEnabled: true,
+            recoveryEnabled: true,
+            canDeliver: true,
+            state: &state
+        )
+        let recoveryEvents = QuotaNotificationPolicy.evaluate(
+            provider: .codex,
+            windows: [transientHigh],
+            now: now.addingTimeInterval(60),
+            threshold: 10,
+            alertsEnabled: true,
+            recoveryEnabled: true,
+            canDeliver: true,
+            state: &state
+        )
+        let repeatedCriticalEvents = QuotaNotificationPolicy.evaluate(
+            provider: .codex,
+            windows: [lowAgain],
+            now: now.addingTimeInterval(120),
+            threshold: 10,
+            alertsEnabled: true,
+            recoveryEnabled: true,
+            canDeliver: true,
+            state: &state
+        )
+
+        XCTAssertTrue(recoveryEvents.isEmpty)
+        XCTAssertTrue(repeatedCriticalEvents.isEmpty)
+        XCTAssertFalse(state.criticalNotified.isEmpty)
+    }
+
     func testNonCriticalResetDoesNotNotify() {
         let now = Date(timeIntervalSince1970: 1_000)
         let window = QuotaWindow(

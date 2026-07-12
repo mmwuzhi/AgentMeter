@@ -397,19 +397,46 @@ enum ActiveAgentRefreshPolicy {
 
 extension ProviderState {
     func preservingLiveQuota(from previousQuota: QuotaSnapshot, at date: Date) -> ProviderState {
-        guard shouldPreserve(previousQuota: previousQuota, at: date) else { return self }
         var state = self
-        state.quota = previousQuota
+        if quota.source == .unavailable {
+            guard previousQuota.hasUsableWindow(at: date) else { return self }
+            state.quota = previousQuota
+            return state
+        }
+        guard provider == .codex else { return self }
+        if quota.source.hasHigherCodexAuthority(than: previousQuota.source) {
+            return self
+        }
+        if quota.source.hasLowerCodexAuthority(than: previousQuota.source) {
+            state.quota = quota.preservingHigherAuthoritySameEpochWindows(
+                from: previousQuota,
+                at: date
+            )
+            return state
+        }
+        state.quota = quota.preservingSameEpochRecoverySpikes(from: previousQuota, at: date)
         return state
     }
+}
 
-    private func shouldPreserve(previousQuota: QuotaSnapshot, at date: Date) -> Bool {
-        guard previousQuota.hasUsableWindow(at: date) else { return false }
-        if quota.source == .unavailable { return true }
+extension QuotaSnapshot.SourceKind {
+    private var codexAuthority: Int? {
+        switch self {
+        case .oauth: return 3
+        case .appServer: return 2
+        case .rolloutFile: return 1
+        case .cli, .unavailable: return nil
+        }
+    }
 
-        return provider == .codex
-            && previousQuota.source == .appServer
-            && quota.source == .rolloutFile
+    func hasHigherCodexAuthority(than other: Self) -> Bool {
+        guard let authority = codexAuthority, let otherAuthority = other.codexAuthority else { return false }
+        return authority > otherAuthority
+    }
+
+    func hasLowerCodexAuthority(than other: Self) -> Bool {
+        guard let authority = codexAuthority, let otherAuthority = other.codexAuthority else { return false }
+        return authority < otherAuthority
     }
 }
 
@@ -419,5 +446,83 @@ extension QuotaSnapshot {
             guard let resetsAt = window.resetsAt else { return true }
             return resetsAt > date
         }
+    }
+
+    func preservingSameEpochRecoverySpikes(from previous: QuotaSnapshot, at date: Date) -> QuotaSnapshot {
+        guard provider == .codex, previous.provider == provider else { return self }
+        if let previousCredits = previous.resetCreditsAvailable,
+           let currentCredits = resetCreditsAvailable,
+           currentCredits < previousCredits {
+            return self
+        }
+        var changed = false
+        let mergedWindows = windows.map { window in
+            guard let previousWindow = previous.windows.first(where: { $0.id == window.id }),
+                  window.isSameEpochRecoverySpike(from: previousWindow, at: date) else {
+                return window
+            }
+            changed = true
+            return previousWindow
+        }
+        guard changed else { return self }
+        return QuotaSnapshot(
+            provider: provider,
+            windows: mergedWindows,
+            source: source,
+            planType: planType,
+            resetCreditsAvailable: resetCreditsAvailable,
+            resetCreditsExpiresAt: resetCreditsExpiresAt,
+            extraUsageSpentUSD: extraUsageSpentUSD,
+            fetchedAt: fetchedAt,
+            note: note
+        )
+    }
+
+    func preservingHigherAuthoritySameEpochWindows(
+        from previous: QuotaSnapshot,
+        at date: Date
+    ) -> QuotaSnapshot {
+        guard provider == .codex, previous.provider == provider else { return self }
+        var changed = false
+        let mergedWindows = windows.map { window in
+            guard let previousWindow = previous.windows.first(where: { $0.id == window.id }),
+                  window.hasSameUsableEpoch(as: previousWindow, at: date) else {
+                return window
+            }
+            changed = true
+            return previousWindow
+        }
+        guard changed else { return self }
+        return QuotaSnapshot(
+            provider: provider,
+            windows: mergedWindows,
+            source: source,
+            planType: planType,
+            resetCreditsAvailable: resetCreditsAvailable,
+            resetCreditsExpiresAt: resetCreditsExpiresAt,
+            extraUsageSpentUSD: extraUsageSpentUSD,
+            fetchedAt: fetchedAt,
+            note: note
+        )
+    }
+}
+
+extension QuotaWindow {
+    func hasSameUsableEpoch(as previous: QuotaWindow, at date: Date) -> Bool {
+        let sameEpochTolerance: TimeInterval = 5 * 60
+        guard id == previous.id,
+              let previousReset = previous.resetsAt,
+              let currentReset = resetsAt,
+              previousReset > date,
+              abs(currentReset.timeIntervalSince(previousReset)) <= sameEpochTolerance else {
+            return false
+        }
+        return true
+    }
+
+    func isSameEpochRecoverySpike(from previous: QuotaWindow, at date: Date) -> Bool {
+        let recoveryJitterTolerance = 2.0
+        guard hasSameUsableEpoch(as: previous, at: date) else { return false }
+        return remainingPercent > previous.remainingPercent + recoveryJitterTolerance
     }
 }
