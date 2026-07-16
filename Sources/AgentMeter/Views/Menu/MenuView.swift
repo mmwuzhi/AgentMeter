@@ -1,3 +1,4 @@
+import AgentStatusCore
 import SwiftUI
 
 /// Root content of the menubar popover.
@@ -117,6 +118,9 @@ struct ActiveAgentsSection: View {
     let agents: [ActiveAgent]
     var title = "Active Sessions"
 
+    private var groups: [ActiveAgentGroup] { ActiveAgentGrouping.group(agents) }
+    private var totalCount: Int { groups.reduce(0) { $0 + $1.agentCount } }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
@@ -125,19 +129,23 @@ struct ActiveAgentsSection: View {
                     .foregroundStyle(.secondary)
                 Text(title).font(.caption.weight(.semibold))
                 Spacer()
-                Text("\(agents.count)")
+                Text("\(totalCount)")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.tertiary)
             }
 
-            if agents.isEmpty {
+            if groups.isEmpty {
                 Label("No local Codex or Claude sessions running", systemImage: "info.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 8) {
-                    ForEach(agents) { agent in
-                        ActiveAgentRow(agent: agent)
+                    ForEach(groups) { group in
+                        if group.isFlat {
+                            ActiveAgentRow(agent: group.nodes[0].agent)
+                        } else {
+                            ActiveAgentGroupRow(group: group)
+                        }
                     }
                 }
             }
@@ -147,13 +155,58 @@ struct ActiveAgentsSection: View {
     }
 }
 
+private struct ActiveAgentGroupRow: View {
+    let group: ActiveAgentGroup
+    @State private var expanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 8)
+                    Circle().fill(statusColor(group.topStatus, provider: group.provider))
+                        .frame(width: 7, height: 7)
+                    Text(group.projectName)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Text("\(group.agentCount)")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(spacing: 6) {
+                    ForEach(group.nodes) { node in
+                        ActiveAgentRow(agent: node.agent)
+                        ForEach(node.children) { child in
+                            ActiveAgentRow(agent: child)
+                                .padding(.leading, 14)
+                        }
+                    }
+                }
+                .padding(.leading, 8)
+            }
+        }
+    }
+}
+
 private struct ActiveAgentRow: View {
     let agent: ActiveAgent
     @State private var hovering = false
 
     var body: some View {
         Button {
-            AgentAppActivator.activateHostApp(forPID: agent.pid)
+            AgentAppActivator.focus(agent)
         } label: {
             rowContent
                 .padding(.horizontal, 6)
@@ -168,13 +221,23 @@ private struct ActiveAgentRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("Bring the app running this session to the front")
+        .help(helpText)
+    }
+
+    private var helpText: String {
+        switch agent.status {
+        case .waiting: return "Waiting for your input — click to jump to this session"
+        case .error: return "This session hit an error — click to jump to it"
+        case .working: return "Working — click to jump to this session"
+        case .idle: return "Idle — click to jump to this session"
+        case nil: return "Click to jump to this session"
+        }
     }
 
     private var rowContent: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Circle()
-                .fill(PopoverOrder.tint(agent.provider))
+                .fill(statusColor(agent.status, provider: agent.provider))
                 .frame(width: 7, height: 7)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -183,6 +246,11 @@ private struct ActiveAgentRow: View {
                     Text(agent.elapsedText)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
+                    if agent.status == .waiting || agent.status == .error {
+                        Text(agent.status == .waiting ? "waiting" : "error")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(agent.status == .waiting ? Color.yellow : Color.red)
+                    }
                     if let session = agent.session {
                         Text(session.shortID)
                             .font(.caption2.monospacedDigit().weight(.medium))
@@ -221,6 +289,17 @@ private struct ActiveAgentRow: View {
                     .foregroundStyle(.tertiary)
             }
         }
+    }
+}
+
+@MainActor
+private func statusColor(_ status: AgentStatusState?, provider: Provider) -> Color {
+    switch status {
+    case .error: return .red
+    case .waiting: return .yellow
+    case .working: return .green
+    case .idle: return .gray
+    case nil: return PopoverOrder.tint(provider)
     }
 }
 

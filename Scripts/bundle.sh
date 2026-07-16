@@ -17,10 +17,15 @@ echo "    bin: $BIN_DIR"
 
 echo "==> Assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks" "$APP/Contents/Helpers"
 
 # Executable
 cp "$BIN_DIR/AgentMeter" "$APP/Contents/MacOS/AgentMeter"
+
+# Claude Code invokes this small helper from opt-in status hooks. The app copies
+# it to a stable Application Support path before installing those hooks.
+cp "$BIN_DIR/AgentMeterHook" "$APP/Contents/Helpers/agentmeter-hook"
+chmod 0755 "$APP/Contents/Helpers/agentmeter-hook"
 
 # Resources go in Contents/Resources (the only place codesign accepts). The SPM
 # resource bundle's generated Bundle.module accessor looks at the .app root, which
@@ -56,8 +61,9 @@ else
     echo "==> Codesigning with $SIGN_IDENTITY"
 fi
 
-# Sign framework first, then the app bundle.
+# Sign nested code first, then the app bundle.
 codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$APP/Contents/Frameworks/Sparkle.framework" 2>/dev/null || true
+codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$APP/Contents/Helpers/agentmeter-hook" 2>/dev/null || true
 codesign --force --deep --sign "$SIGN_IDENTITY" --timestamp=none "$APP" 2>/dev/null || true
 
 echo "==> Done: $APP"

@@ -129,6 +129,8 @@ private struct AlertSettings: View {
 private struct GeneralSettings: View {
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("refreshIntervalSeconds") private var refreshIntervalSeconds = 60.0
+    @AppStorage("statusHooksEnabled") private var statusHooksEnabled = false
+    @State private var hookMessage: String?
 
     var body: some View {
         Form {
@@ -142,6 +144,20 @@ private struct GeneralSettings: View {
                     Text("5 minutes").tag(300.0)
                 }
             }
+            Section("Claude Code Status") {
+                Toggle(
+                    "Show live session status",
+                    isOn: Binding(
+                        get: { statusHooksEnabled },
+                        set: { applyHooks($0) }
+                    )
+                )
+                Text("Installs reversible hooks in ~/.claude/settings.json so sessions can report working, waiting, idle, or error state.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let hookMessage {
+                    Text(hookMessage).font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Software Update") {
                 LabeledContent("Version", value: Self.appVersion)
                 LabeledContent("Check for updates") {
@@ -150,6 +166,24 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func applyHooks(_ enabled: Bool) {
+        do {
+            if enabled {
+                guard ClaudeHookInstaller.installManagedCLI() != nil else {
+                    throw ClaudeHookInstaller.InstallError.helperUnavailable
+                }
+                _ = try ClaudeHookInstaller.install()
+                hookMessage = "Installed. Restart running Claude Code sessions so they load the hooks."
+            } else {
+                _ = try ClaudeHookInstaller.remove()
+                hookMessage = "Removed AgentMeter hooks from settings.json."
+            }
+            statusHooksEnabled = enabled
+        } catch {
+            hookMessage = "Couldn't update settings.json: \(error.localizedDescription)"
+        }
     }
 
     /// e.g. "1.4.2 (37)" from the bundle, falling back gracefully for dev builds.

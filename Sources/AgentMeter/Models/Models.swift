@@ -1,3 +1,4 @@
+import AgentStatusCore
 import Foundation
 
 /// Which agent a snapshot belongs to.
@@ -248,8 +249,14 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     let command: String
     let elapsedSeconds: TimeInterval
     let observedAt: Date
+    /// Controlling terminal reported by `ps` (for exact terminal-tab focus).
+    var tty: String? = nil
     var cwd: String? = nil
     var session: ActiveAgentSession? = nil
+    /// Nearest ancestor that is another agent of the same provider.
+    var parentAgentPID: Int? = nil
+    /// Optional live state supplied by Claude Code hooks.
+    var status: AgentStatusState? = nil
 
     var id: String { "\(provider.rawValue):\(pid)" }
 

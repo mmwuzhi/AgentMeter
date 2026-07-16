@@ -1,3 +1,4 @@
+import AgentStatusCore
 import Foundation
 
 enum ActiveAgentService {
@@ -6,8 +7,40 @@ enum ActiveAgentService {
     static func fetch() async -> [ActiveAgent] {
         await Task.detached {
             let agents = parsePSOutput(runPS().output, observedAt: Date())
-            return await enrichSessionUsage(agents)
+            return attachStatus(await enrichSessionUsage(agents))
         }.value
+    }
+
+    static func attachStatus(
+        _ agents: [ActiveAgent],
+        payloads: [AgentStatusPayload] = AgentStatusStore.readAll()
+    ) -> [ActiveAgent] {
+        let claudePIDs = Set(agents.lazy.filter { $0.provider == .claude }.map(\.pid))
+        var byPID: [Int: AgentStatusPayload] = [:]
+        var bySession: [String: AgentStatusPayload] = [:]
+
+        for payload in payloads {
+            if let pid = payload.processAncestry?.first(where: claudePIDs.contains),
+               payload.updatedAt > (byPID[pid]?.updatedAt ?? .distantPast) {
+                byPID[pid] = payload
+            }
+            if payload.updatedAt > (bySession[payload.sessionID]?.updatedAt ?? .distantPast) {
+                bySession[payload.sessionID] = payload
+            }
+        }
+
+        return agents.map { agent in
+            guard agent.provider == .claude else { return agent }
+            let processPayload = byPID[agent.pid].flatMap { payload -> AgentStatusPayload? in
+                let startedAt = agent.observedAt.addingTimeInterval(-agent.elapsedSeconds)
+                return payload.updatedAt >= startedAt.addingTimeInterval(-5) ? payload : nil
+            }
+            let payload = processPayload ?? agent.session.flatMap { bySession[$0.id] }
+            guard let payload else { return agent }
+            var agent = agent
+            agent.status = payload.state
+            return agent
+        }
     }
 
     static func parsePSOutput(_ output: String, observedAt: Date) -> [ActiveAgent] {
@@ -70,6 +103,27 @@ enum ActiveAgentService {
             by: { $0 }
         ).mapValues(\.count)
 
+        let ppidByPID = Dictionary(
+            rows.map { ($0.pid, $0.parentPID) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let providerByAgentPID = Dictionary(
+            candidates.map { ($0.row.pid, $0.provider) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        func nearestAgentAncestor(of candidate: AgentCandidate) -> Int? {
+            var current = ppidByPID[candidate.row.pid]
+            var visited = Set<Int>()
+            while let pid = current,
+                  pid > 1,
+                  visited.insert(pid).inserted,
+                  visited.count <= 64 {
+                if providerByAgentPID[pid] == candidate.provider { return pid }
+                current = ppidByPID[pid]
+            }
+            return nil
+        }
+
         return candidates
             .map { candidate in
                 let session = candidate.cwd.flatMap { cwd -> ActiveAgentSession? in
@@ -84,8 +138,10 @@ enum ActiveAgentService {
                     command: candidate.row.command,
                     elapsedSeconds: candidate.row.elapsedSeconds,
                     observedAt: observedAt,
+                    tty: candidate.row.tty,
                     cwd: candidate.cwd,
-                    session: session
+                    session: session,
+                    parentAgentPID: nearestAgentAncestor(of: candidate)
                 )
             }
             .sorted { lhs, rhs in
@@ -125,7 +181,7 @@ enum ActiveAgentService {
     private static func runPS() -> ProcessResult {
         runProcessResult(
             executable: URL(fileURLWithPath: "/bin/ps"),
-            arguments: ["-axo", "pid=,ppid=,etime=,command="],
+            arguments: ["-axo", "pid=,ppid=,tty=,etime=,command="],
             timeout: 2
         )
     }
@@ -595,19 +651,33 @@ enum ActiveAgentService {
     struct ProcessRow {
         let pid: Int
         let parentPID: Int
+        let tty: String?
         let elapsedSeconds: TimeInterval
         let command: String
 
         init?(line: String) {
-            let parts = line.split(maxSplits: 3, whereSeparator: \.isWhitespace).map(String.init)
-            guard parts.count == 4,
+            let parts = line.split(maxSplits: 4, whereSeparator: \.isWhitespace).map(String.init)
+            guard parts.count == 4 || parts.count == 5,
                   let pid = Int(parts[0]),
-                  let parentPID = Int(parts[1]),
-                  let elapsedSeconds = Self.parseElapsed(parts[2]) else { return nil }
+                  let parentPID = Int(parts[1]) else { return nil }
             self.pid = pid
             self.parentPID = parentPID
-            self.elapsedSeconds = elapsedSeconds
-            self.command = parts[3]
+            if let elapsedSeconds = Self.parseElapsed(parts[2]) {
+                // Backward-compatible test/parser input without the TTY column.
+                self.tty = nil
+                self.elapsedSeconds = elapsedSeconds
+                self.command = parts.dropFirst(3).joined(separator: " ")
+            } else {
+                guard parts.count == 5,
+                      let elapsedSeconds = Self.parseElapsed(parts[3]) else { return nil }
+                self.tty = Self.normalizeTTY(parts[2])
+                self.elapsedSeconds = elapsedSeconds
+                self.command = parts[4]
+            }
+        }
+
+        private static func normalizeTTY(_ raw: String) -> String? {
+            (raw == "??" || raw == "?" || raw.isEmpty) ? nil : raw
         }
 
         private static func parseElapsed(_ raw: String) -> TimeInterval? {

@@ -24,6 +24,8 @@
     <true/>
     <key>NSHumanReadableCopyright</key>
     <string>Personal tool.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>AgentMeter focuses the terminal tab running a Claude or Codex session when you click it in the popover.</string>
     <key>SUFeedURL</key>
     <string>https://github.com/mmwuzhi/AgentMeter/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>

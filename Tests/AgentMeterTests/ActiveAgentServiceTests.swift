@@ -1,3 +1,4 @@
+import AgentStatusCore
 import Foundation
 @testable import AgentMeter
 import XCTest
@@ -32,6 +33,64 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(agents.map(\.pid), [51001, 51002, 11111])
         XCTAssertEqual(agents[0].elapsedText, "6d")
         XCTAssertEqual(agents[2].elapsedText, "4m")
+    }
+
+    func testParsePSOutputCapturesTTYAndAgentParent() {
+        let output = """
+          PID  PPID TT       ELAPSED COMMAND
+        10000     1 ttys001     01:00 claude
+        10001 10000 ttys001     00:30 /bin/zsh -l
+        10002 10001 ttys001     00:10 claude --resume
+        """
+
+        let agents = ActiveAgentService.parsePSOutput(
+            output,
+            observedAt: Date(timeIntervalSince1970: 100),
+            cwdLookup: { _ in "/Users/me/project" },
+            sessionLookup: { _, _, _, _ in nil }
+        )
+
+        XCTAssertEqual(agents.map(\.tty), ["ttys001", "ttys001"])
+        XCTAssertEqual(agents.first(where: { $0.pid == 10002 })?.parentAgentPID, 10000)
+    }
+
+    func testStatusPayloadAncestryDisambiguatesSameDirectorySessions() {
+        let now = Date(timeIntervalSince1970: 100)
+        let agents = [
+            ActiveAgent(provider: .claude, pid: 100, parentPID: 1, command: "claude",
+                        elapsedSeconds: 20, observedAt: now, cwd: "/tmp/project"),
+            ActiveAgent(provider: .claude, pid: 200, parentPID: 1, command: "claude",
+                        elapsedSeconds: 10, observedAt: now, cwd: "/tmp/project"),
+        ]
+        let payloads = [
+            AgentStatusPayload(state: .waiting, sessionID: "a", processAncestry: [501, 100, 1], updatedAt: now),
+            AgentStatusPayload(state: .working, sessionID: "b", processAncestry: [502, 200, 1], updatedAt: now),
+        ]
+
+        let attached = ActiveAgentService.attachStatus(agents, payloads: payloads)
+
+        XCTAssertEqual(attached.first(where: { $0.pid == 100 })?.status, .waiting)
+        XCTAssertEqual(attached.first(where: { $0.pid == 200 })?.status, .working)
+    }
+
+    func testStatusPayloadFromOlderPIDLifetimeIsIgnored() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let agent = ActiveAgent(
+            provider: .claude,
+            pid: 100,
+            parentPID: 1,
+            command: "claude",
+            elapsedSeconds: 10,
+            observedAt: now
+        )
+        let stale = AgentStatusPayload(
+            state: .error,
+            sessionID: "old",
+            processAncestry: [100],
+            updatedAt: now.addingTimeInterval(-100)
+        )
+
+        XCTAssertNil(ActiveAgentService.attachStatus([agent], payloads: [stale]).first?.status)
     }
 
     func testParsePSOutputExcludesUsageAndAppServerHelpers() {
