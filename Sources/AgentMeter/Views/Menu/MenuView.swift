@@ -369,6 +369,15 @@ struct ProviderSection: View {
                 }
             }
 
+            if let extra = state.quota.extraUsageSpentUSD {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Extra usage").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(Self.dollars(extra))
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                }
+            }
+
             // Copilot is flat-rate (no token spend), so skip the spend block for
             // providers with no usage history.
             if !state.usage.buckets.isEmpty {
@@ -428,6 +437,14 @@ struct ProviderSection: View {
         case .cli: return "cli"
         case .unavailable: return "usage only"
         }
+    }
+
+    private static func dollars(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return "$" + (formatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value))
     }
 
     /// One line per available reset credit, e.g. "4 resets available" followed by

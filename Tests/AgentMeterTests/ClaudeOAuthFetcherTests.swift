@@ -108,6 +108,59 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         XCTAssertNil(snapshot.note)
     }
 
+    func testParseSnapshotHidesFullyUsedIncludedCredit() throws {
+        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
+            from: [
+                "plan_type": "enterprise",
+                "cinder_cove": ["utilization": 100, "resets_at": "2026-09-30T04:13:36Z"],
+            ],
+            captureDebugResponse: false
+        )
+
+        XCTAssertTrue(snapshot.windows.isEmpty)
+    }
+
+    func testParseSnapshotKeepsFullyUsedRecurringWindow() throws {
+        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(from: [
+            "plan_type": "pro",
+            "five_hour": ["utilization": 100],
+        ])
+
+        XCTAssertEqual(snapshot.windows.map(\.id), ["five_hour"])
+    }
+
+    func testParseSnapshotSurfacesUSDExtraUsageSpend() throws {
+        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
+            from: [
+                "plan_type": "enterprise",
+                "extra_usage": [
+                    "is_enabled": true,
+                    "used_credits": 35_736,
+                    "currency": "USD",
+                    "decimal_places": 2,
+                ],
+            ],
+            captureDebugResponse: false
+        )
+
+        XCTAssertEqual(snapshot.extraUsageSpentUSD ?? 0, 357.36, accuracy: 0.001)
+    }
+
+    func testExtraUsageRejectsDisabledUnknownCurrencyAndInvalidScale() {
+        XCTAssertNil(ClaudeOAuthFetcher.extraUsageSpentUSD(in: [
+            "extra_usage": ["is_enabled": false, "used_credits": 100],
+        ]))
+        XCTAssertNil(ClaudeOAuthFetcher.extraUsageSpentUSD(in: [
+            "extra_usage": ["used_credits": 100, "currency": "EUR", "decimal_places": 2],
+        ]))
+        XCTAssertNil(ClaudeOAuthFetcher.extraUsageSpentUSD(in: [
+            "extra_usage": ["used_credits": 100, "currency": "USD", "decimal_places": 2.5],
+        ]))
+        XCTAssertNil(ClaudeOAuthFetcher.extraUsageSpentUSD(in: [
+            "extra_usage": ["used_credits": 0, "currency": "USD"],
+        ]))
+    }
+
     func testParseSnapshotIgnoresInactiveNamedCreditBuckets() throws {
         let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
             from: [

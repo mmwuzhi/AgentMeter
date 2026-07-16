@@ -111,6 +111,8 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
     let planType: String?       // e.g. "free", "pro"
     let resetCreditsAvailable: Int? // Codex-only reset credits, when exposed
     let resetCreditsExpiresAt: Date? // Codex-only, nil when the protocol omits expiry
+    /// Claude-only pay-as-you-go spend past plan limits, in USD.
+    let extraUsageSpentUSD: Double?
     let fetchedAt: Date
     let note: String?           // user-facing hint when degraded
 
@@ -121,6 +123,7 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
         planType: String?,
         resetCreditsAvailable: Int? = nil,
         resetCreditsExpiresAt: Date? = nil,
+        extraUsageSpentUSD: Double? = nil,
         fetchedAt: Date,
         note: String?
     ) {
@@ -130,6 +133,7 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
         self.planType = planType
         self.resetCreditsAvailable = resetCreditsAvailable
         self.resetCreditsExpiresAt = resetCreditsExpiresAt
+        self.extraUsageSpentUSD = extraUsageSpentUSD
         self.fetchedAt = fetchedAt
         self.note = note
     }
@@ -149,6 +153,7 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
             planType: planType,
             resetCreditsAvailable: resetCreditsAvailable,
             resetCreditsExpiresAt: expiresAt,
+            extraUsageSpentUSD: extraUsageSpentUSD,
             fetchedAt: fetchedAt,
             note: note
         )

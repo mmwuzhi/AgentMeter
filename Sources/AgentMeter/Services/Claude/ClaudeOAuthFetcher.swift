@@ -38,7 +38,11 @@ enum ClaudeOAuthFetcher {
         var windows: [QuotaWindow] = []
         func add(_ key: String, _ label: String, isOneTimeCredit: Bool = false) {
             guard let w = obj[key] as? [String: Any] else { return }
-            let util = (w["utilization"] as? Double) ?? 0
+            let util = (w["utilization"] as? NSNumber)?.doubleValue ?? 0
+            guard util.isFinite else { return }
+            // A fully consumed one-time credit never refills, so a permanent
+            // 0%-left row is noise. Recurring windows remain visible at 100%.
+            if isOneTimeCredit && util >= 100 { return }
             let resets = (w["resets_at"] as? String).flatMap(CodexRolloutReader.parseISO)
             windows.append(QuotaWindow(id: key, label: label, usedPercent: util, resetsAt: resets,
                                         isOneTimeCredit: isOneTimeCredit))
@@ -68,17 +72,45 @@ enum ClaudeOAuthFetcher {
         addLimits(from: obj, into: &windows)
 
         let plan = planType(in: obj, windows: windows)
+        let extraUsage = extraUsageSpentUSD(in: obj)
 
         var note: String?
         if windows.isEmpty {
             if captureDebugResponse {
                 captureRawResponseForDebugging(obj)
             }
-            note = "\(plan?.capitalized ?? "This") plan has no session-based quota windows — showing usage/spend below"
+            note = "\(plan?.capitalized ?? "This") plan has no session-based quota limits"
         }
 
         return QuotaSnapshot(provider: .claude, windows: windows, source: .oauth,
-                             planType: plan, fetchedAt: Date(), note: note)
+                             planType: plan, extraUsageSpentUSD: extraUsage,
+                             fetchedAt: Date(), note: note)
+    }
+
+    /// Converts Claude's integer-style extra-usage credits into USD. Unknown
+    /// currencies are deliberately not relabeled as dollars.
+    static func extraUsageSpentUSD(in obj: [String: Any]) -> Double? {
+        guard let extra = obj["extra_usage"] as? [String: Any] else { return nil }
+        if let enabled = extra["is_enabled"] as? Bool, !enabled { return nil }
+        guard let currency = (extra["currency"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              currency.uppercased() == "USD",
+              !(extra["used_credits"] is Bool),
+              let used = (extra["used_credits"] as? NSNumber)?.doubleValue,
+              used.isFinite,
+              used > 0 else { return nil }
+        let places: Int
+        if !(extra["decimal_places"] is Bool),
+           let rawPlaces = (extra["decimal_places"] as? NSNumber)?.doubleValue {
+            guard rawPlaces.isFinite,
+                  rawPlaces.rounded() == rawPlaces,
+                  (0.0...6.0).contains(rawPlaces) else { return nil }
+            places = Int(rawPlaces)
+        } else {
+            places = 2
+        }
+        let dollars = used / pow(10, Double(places))
+        return dollars.isFinite ? dollars : nil
     }
 
     /// Folds `limits` array entries into `windows`, skipping kinds already covered
