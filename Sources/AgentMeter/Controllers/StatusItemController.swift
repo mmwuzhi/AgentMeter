@@ -175,7 +175,11 @@ private final class StatusItemSlotController: NSObject {
         } else if let button = statusItem.button {
             closeOthers(slot)
             coordinator.setActiveAgentsVisible(true)
-            coordinator.refresh(forceVisibleQuota: true, forceActiveAgents: true)
+            coordinator.refresh(
+                forceVisibleQuota: true,
+                forcedUsageProviders: slot.provider == .copilot ? [] : [slot.provider],
+                forceActiveAgents: true
+            )
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }

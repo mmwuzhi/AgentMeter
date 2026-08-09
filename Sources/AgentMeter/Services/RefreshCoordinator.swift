@@ -28,6 +28,7 @@ final class RefreshCoordinator {
     private var lastResetCreditsRefresh: Date?
     private var lastProviderStatusRefresh: Date?
     private var activeAgentsVisibleCount = 0
+    private var pendingRefreshRequest = ProviderRefreshRequest()
 
     init(viewModel: AppViewModel) {
         self.viewModel = viewModel
@@ -84,20 +85,28 @@ final class RefreshCoordinator {
     func refresh(
         forceAll: Bool = false,
         forceVisibleQuota: Bool = false,
+        forcedUsageProviders: Set<Provider> = [],
         forceActiveAgents: Bool = false
     ) {
+        let request = ProviderRefreshRequest(
+            forceAll: forceAll,
+            forceVisibleQuota: forceVisibleQuota,
+            forcedUsageProviders: forcedUsageProviders,
+            forceActiveAgents: forceActiveAgents
+        )
         // Coalesce concurrent refreshes, but never let a wedged fetch (e.g. a hung
         // network call) suppress refreshes forever — opening the popover must win.
         if viewModel.isRefreshing {
-            guard let started = refreshStartedAt, Date().timeIntervalSince(started) > 30 else { return }
+            guard let started = refreshStartedAt, Date().timeIntervalSince(started) > 30 else {
+                pendingRefreshRequest.merge(request)
+                return
+            }
         }
         viewModel.isRefreshing = true
         let startedAt = Date()
         refreshStartedAt = startedAt
         let plan = refreshPlan(
-            forceAll: forceAll,
-            forceVisibleQuota: forceVisibleQuota,
-            forceActiveAgents: forceActiveAgents,
+            request: request,
             now: startedAt
         )
         let previousCodex = viewModel.codex
@@ -168,8 +177,6 @@ final class RefreshCoordinator {
             )
             LifetimeSpendStore.save(viewModel.lifetimeSpend)
             viewModel.lastRefresh = Date()
-            viewModel.isRefreshing = false
-            refreshStartedAt = nil
             // Cache for the next launch so the menu bar shows last values instantly.
             StateCache.save(
                 codex: viewModel.codex,
@@ -182,6 +189,7 @@ final class RefreshCoordinator {
             NotificationManager.shared.evaluate(provider: .codex, windows: viewModel.codex.quota.windows)
             NotificationManager.shared.evaluate(provider: .claude, windows: viewModel.claude.quota.windows)
             NotificationManager.shared.evaluate(provider: .copilot, windows: viewModel.copilot.quota.windows)
+            finishRefresh(startedAt: startedAt)
         }
     }
 
@@ -212,74 +220,45 @@ final class RefreshCoordinator {
     }
 
     private func refreshPlan(
-        forceAll: Bool,
-        forceVisibleQuota: Bool,
-        forceActiveAgents: Bool,
+        request: ProviderRefreshRequest,
         now: Date
     ) -> ProviderRefreshPlan {
-        if forceAll {
-            return ProviderRefreshPlan(
-                refreshQuota: Set(Provider.allCases),
-                refreshUsage: [.codex, .claude],
-                refreshActiveAgents: true,
-                refreshResetCredits: true,
-                refreshProviderStatus: true
-            )
-        }
-
-        let foregroundKinds = MenuBarLayout.activeRefreshKinds(viewModel)
-        var quota = Set<Provider>()
-        var usage = Set<Provider>()
-        if forceVisibleQuota {
-            for slot in MenuBarLayout.visibleSlots(viewModel) {
-                quota.insert(slot.provider)
-            }
-        }
-        for provider in Provider.allCases {
-            let kinds = foregroundKinds[provider] ?? []
-            if kinds.contains(.quota) || backgroundRefreshDue(provider: provider, lastRefreshes: lastQuotaRefresh, now: now) {
-                quota.insert(provider)
-            }
-            guard provider != .copilot else { continue }
-            if kinds.contains(.usage) || backgroundRefreshDue(provider: provider, lastRefreshes: lastUsageRefresh, now: now) {
-                usage.insert(provider)
-            }
-        }
-        let activeAgents = ActiveAgentRefreshPolicy.shouldRefresh(
-            forceActiveAgents: forceActiveAgents,
+        ProviderRefreshPlan.make(
+            forceAll: request.forceAll,
+            forceVisibleQuota: request.forceVisibleQuota,
+            forcedUsageProviders: request.forcedUsageProviders,
+            forceActiveAgents: request.forceActiveAgents,
+            now: now,
+            visibleSlots: MenuBarLayout.visibleSlots(viewModel),
+            foregroundKinds: MenuBarLayout.activeRefreshKinds(viewModel),
+            lastQuotaRefresh: lastQuotaRefresh,
+            lastUsageRefresh: lastUsageRefresh,
+            lastActiveAgentsRefresh: lastActiveAgentsRefresh,
             activeAgentsVisible: activeAgentsVisibleCount > 0,
-            lastRefresh: lastActiveAgentsRefresh,
             refreshInterval: refreshInterval,
-            backgroundMinimumRefreshInterval: backgroundMinimumActiveAgentsRefreshInterval,
-            now: now
-        )
-        // Only worth asking when Codex quota is already due this cycle — no point
-        // hitting a second endpoint for a panel that isn't being refreshed anyway.
-        let resetCredits = quota.contains(.codex) && (
-            lastResetCreditsRefresh.map { now.timeIntervalSince($0) >= resetCreditsMinimumRefreshInterval } ?? true
-        )
-        // Only worth asking when some quota refresh is due this cycle anyway — same
-        // "don't fetch for a panel that isn't refreshing" rule as reset credits.
-        let providerStatus = !quota.isEmpty && (
-            lastProviderStatusRefresh.map { now.timeIntervalSince($0) >= providerStatusMinimumRefreshInterval } ?? true
-        )
-        return ProviderRefreshPlan(
-            refreshQuota: quota,
-            refreshUsage: usage,
-            refreshActiveAgents: activeAgents,
-            refreshResetCredits: resetCredits,
-            refreshProviderStatus: providerStatus
+            backgroundMinimumRefreshInterval: backgroundMinimumRefreshInterval,
+            backgroundMinimumActiveAgentsRefreshInterval: backgroundMinimumActiveAgentsRefreshInterval,
+            lastResetCreditsRefresh: lastResetCreditsRefresh,
+            resetCreditsMinimumRefreshInterval: resetCreditsMinimumRefreshInterval,
+            lastProviderStatusRefresh: lastProviderStatusRefresh,
+            providerStatusMinimumRefreshInterval: providerStatusMinimumRefreshInterval
         )
     }
 
-    private func backgroundRefreshDue(
-        provider: Provider,
-        lastRefreshes: [Provider: Date],
-        now: Date
-    ) -> Bool {
-        guard let last = lastRefreshes[provider] else { return true }
-        let interval = max(refreshInterval, backgroundMinimumRefreshInterval)
-        return now.timeIntervalSince(last) >= interval
+    private func finishRefresh(startedAt: Date) {
+        guard refreshStartedAt == startedAt else { return }
+        viewModel.isRefreshing = false
+        refreshStartedAt = nil
+
+        let request = pendingRefreshRequest
+        pendingRefreshRequest = ProviderRefreshRequest()
+        guard request.requiresRefresh else { return }
+        refresh(
+            forceAll: request.forceAll,
+            forceVisibleQuota: request.forceVisibleQuota,
+            forcedUsageProviders: request.forcedUsageProviders,
+            forceActiveAgents: request.forceActiveAgents
+        )
     }
 
     private func seedBackgroundRefreshDates(at date: Date) {
@@ -371,12 +350,133 @@ final class RefreshCoordinator {
     }
 }
 
+struct ProviderRefreshRequest: Sendable {
+    var forceAll = false
+    var forceVisibleQuota = false
+    var forcedUsageProviders: Set<Provider> = []
+    var forceActiveAgents = false
+
+    var requiresRefresh: Bool {
+        forceAll || forceVisibleQuota || !forcedUsageProviders.isEmpty || forceActiveAgents
+    }
+
+    mutating func merge(_ other: ProviderRefreshRequest) {
+        forceAll = forceAll || other.forceAll
+        forceVisibleQuota = forceVisibleQuota || other.forceVisibleQuota
+        forcedUsageProviders.formUnion(other.forcedUsageProviders)
+        forceActiveAgents = forceActiveAgents || other.forceActiveAgents
+    }
+}
+
 struct ProviderRefreshPlan: Sendable {
     let refreshQuota: Set<Provider>
     let refreshUsage: Set<Provider>
     let refreshActiveAgents: Bool
     let refreshResetCredits: Bool
     let refreshProviderStatus: Bool
+
+    static func make(
+        forceAll: Bool,
+        forceVisibleQuota: Bool,
+        forcedUsageProviders: Set<Provider>,
+        forceActiveAgents: Bool,
+        now: Date,
+        visibleSlots: [MenuBarSlot],
+        foregroundKinds: [Provider: Set<MenuBarRefreshKind>],
+        lastQuotaRefresh: [Provider: Date],
+        lastUsageRefresh: [Provider: Date],
+        lastActiveAgentsRefresh: Date?,
+        activeAgentsVisible: Bool,
+        refreshInterval: TimeInterval,
+        backgroundMinimumRefreshInterval: TimeInterval,
+        backgroundMinimumActiveAgentsRefreshInterval: TimeInterval,
+        lastResetCreditsRefresh: Date?,
+        resetCreditsMinimumRefreshInterval: TimeInterval,
+        lastProviderStatusRefresh: Date?,
+        providerStatusMinimumRefreshInterval: TimeInterval
+    ) -> ProviderRefreshPlan {
+        if forceAll {
+            return ProviderRefreshPlan(
+                refreshQuota: Set(Provider.allCases),
+                refreshUsage: [.codex, .claude],
+                refreshActiveAgents: true,
+                refreshResetCredits: true,
+                refreshProviderStatus: true
+            )
+        }
+
+        var quota = Set<Provider>()
+        var usage = Set<Provider>()
+        if forceVisibleQuota {
+            for slot in visibleSlots {
+                quota.insert(slot.provider)
+            }
+        }
+        for provider in forcedUsageProviders where provider != .copilot {
+            usage.insert(provider)
+        }
+        for provider in Provider.allCases {
+            let kinds = foregroundKinds[provider] ?? []
+            if kinds.contains(.quota)
+                || Self.backgroundRefreshDue(
+                    provider: provider,
+                    lastRefreshes: lastQuotaRefresh,
+                    now: now,
+                    refreshInterval: refreshInterval,
+                    backgroundMinimumRefreshInterval: backgroundMinimumRefreshInterval
+                ) {
+                quota.insert(provider)
+            }
+            guard provider != .copilot else { continue }
+            if kinds.contains(.usage)
+                || Self.backgroundRefreshDue(
+                    provider: provider,
+                    lastRefreshes: lastUsageRefresh,
+                    now: now,
+                    refreshInterval: refreshInterval,
+                    backgroundMinimumRefreshInterval: backgroundMinimumRefreshInterval
+                ) {
+                usage.insert(provider)
+            }
+        }
+        let activeAgents = ActiveAgentRefreshPolicy.shouldRefresh(
+            forceActiveAgents: forceActiveAgents,
+            activeAgentsVisible: activeAgentsVisible,
+            lastRefresh: lastActiveAgentsRefresh,
+            refreshInterval: refreshInterval,
+            backgroundMinimumRefreshInterval: backgroundMinimumActiveAgentsRefreshInterval,
+            now: now
+        )
+        // Only worth asking when Codex quota is already due this cycle — no point
+        // hitting a second endpoint for a panel that isn't being refreshed anyway.
+        let resetCredits = quota.contains(.codex) && (
+            lastResetCreditsRefresh.map { now.timeIntervalSince($0) >= resetCreditsMinimumRefreshInterval } ?? true
+        )
+        // Only worth asking when some quota refresh is due this cycle anyway — same
+        // "don't fetch for a panel that isn't refreshing" rule as reset credits.
+        let providerStatus = !quota.isEmpty && (
+            lastProviderStatusRefresh.map { now.timeIntervalSince($0) >= providerStatusMinimumRefreshInterval } ?? true
+        )
+        return ProviderRefreshPlan(
+            refreshQuota: quota,
+            refreshUsage: usage,
+            refreshActiveAgents: activeAgents,
+            refreshResetCredits: resetCredits,
+            refreshProviderStatus: providerStatus
+        )
+    }
+
+    private static func backgroundRefreshDue(
+        provider: Provider,
+        lastRefreshes: [Provider: Date],
+        now: Date,
+        refreshInterval: TimeInterval,
+        backgroundMinimumRefreshInterval: TimeInterval
+    ) -> Bool {
+        guard let last = lastRefreshes[provider] else { return true }
+        let interval = max(refreshInterval, backgroundMinimumRefreshInterval)
+        return now.timeIntervalSince(last) >= interval
+    }
 }
 
 enum ActiveAgentRefreshPolicy {
