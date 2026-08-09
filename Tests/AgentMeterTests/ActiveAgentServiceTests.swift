@@ -31,8 +31,6 @@ final class ActiveAgentServiceTests: XCTestCase {
 
         XCTAssertEqual(agents.map(\.provider), [.claude, .claude, .codex])
         XCTAssertEqual(agents.map(\.pid), [51001, 51002, 11111])
-        XCTAssertEqual(agents[0].elapsedText, "6d")
-        XCTAssertEqual(agents[2].elapsedText, "4m")
     }
 
     func testParsePSOutputCapturesTTYAndAgentParent() {
@@ -116,6 +114,36 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(agents.first?.provider, .claude)
     }
 
+    func testParsePSOutputExcludesChatGPTDesktopHelpersAndConfiguredAppServer() {
+        let output = """
+          PID  PPID     ELAPSED COMMAND
+        10001      1 12-03:59:18 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/150/Helpers/browser_crashpad_handler --handshake-fd=5
+        10002  99999       03:52 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/151/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --seatbelt-client=165
+        10003  99999       03:52 /Applications/ChatGPT.app/Contents/Resources/codex -c features.code_mode_host=true app-server --analytics-default-enabled
+        10004  10003       02:53 /Applications/ChatGPT.app/Contents/Resources/codex sandbox -c shell_environment_policy.inherit=all
+        """
+
+        let agents = ActiveAgentService.parsePSOutput(
+            output,
+            observedAt: Date(timeIntervalSince1970: 10_000),
+            cwdLookup: { pid in pid == 10004 ? "/Users/me/project" : "/" },
+            sessionLookup: { provider, cwd, _, _ in
+                guard provider == .codex, cwd == "/Users/me/project" else { return nil }
+                return ActiveAgentSession(
+                    id: "session-10004",
+                    projectPath: cwd,
+                    projectName: "project",
+                    branch: nil,
+                    lastUpdatedAt: Date(timeIntervalSince1970: 9_990),
+                    source: "test"
+                )
+            }
+        )
+
+        XCTAssertEqual(agents.map(\.pid), [10004])
+        XCTAssertEqual(agents.first?.session?.projectName, "project")
+    }
+
     func testParsePSOutputIncludesCodexDesktopApp() {
         let output = """
           PID  PPID     ELAPSED COMMAND
@@ -131,6 +159,23 @@ final class ActiveAgentServiceTests: XCTestCase {
 
         XCTAssertEqual(agents.map(\.pid), [10002])
         XCTAssertEqual(agents.first?.provider, .codex)
+    }
+
+    func testParsePSOutputIncludesClaudeDesktopExecutableWithSpaces() {
+        let output = """
+          PID  PPID     ELAPSED COMMAND
+        10002 99999       00:10 /Users/me/Library/Application Support/Claude/claude-code/claude --resume
+        """
+
+        let agents = ActiveAgentService.parsePSOutput(
+            output,
+            observedAt: Date(timeIntervalSince1970: 0),
+            cwdLookup: { _ in nil },
+            sessionLookup: { _, _, _, _ in nil }
+        )
+
+        XCTAssertEqual(agents.map(\.pid), [10002])
+        XCTAssertEqual(agents.first?.provider, .claude)
     }
 
     func testParsePSOutputAttachesCurrentSession() {
@@ -163,6 +208,62 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(agents.first?.cwd, "/Users/me/project")
         XCTAssertEqual(agents.first?.session?.shortID, "abcdef12")
         XCTAssertEqual(agents.first?.session?.displayProject, "project")
+    }
+
+    func testActiveAgentPresentationUsesProjectSourceAndLastActivity() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let recent = ActiveAgent(
+            provider: .codex,
+            pid: 100,
+            parentPID: 1,
+            command: "/Applications/ChatGPT.app/Contents/Resources/codex sandbox",
+            elapsedSeconds: 7 * 86_400,
+            observedAt: now,
+            cwd: "/Users/me/project",
+            session: ActiveAgentSession(
+                id: "session-100",
+                projectPath: "/Users/me/project",
+                projectName: "project",
+                branch: nil,
+                lastUpdatedAt: now.addingTimeInterval(-30),
+                source: "test"
+            )
+        )
+        let idle = ActiveAgent(
+            provider: .codex,
+            pid: 101,
+            parentPID: 1,
+            command: "/usr/local/bin/codex exec",
+            elapsedSeconds: 3_600,
+            observedAt: now,
+            cwd: "/Users/me/other",
+            session: ActiveAgentSession(
+                id: "session-101",
+                projectPath: "/Users/me/other",
+                projectName: "other",
+                branch: nil,
+                lastUpdatedAt: now.addingTimeInterval(-8 * 60),
+                source: "test"
+            )
+        )
+        let unresolved = ActiveAgent(
+            provider: .claude,
+            pid: 102,
+            parentPID: 1,
+            command: "claude",
+            elapsedSeconds: 10,
+            observedAt: now
+        )
+
+        XCTAssertEqual(recent.displayTitle, "project")
+        XCTAssertEqual(recent.sourceLabel, "Codex Desktop")
+        XCTAssertEqual(recent.displayStatus, .working)
+        XCTAssertEqual(recent.activityText, "active now")
+        XCTAssertEqual(recent.usageDisplayText, "No usage yet")
+        XCTAssertEqual(idle.displayStatus, .idle)
+        XCTAssertEqual(idle.activityText, "idle · 8m ago")
+        XCTAssertEqual(unresolved.activityText, "open now")
+        XCTAssertEqual(unresolved.usageDisplayText, "Usage unavailable")
     }
 
     func testParsePSOutputDoesNotGuessSessionForDuplicateProviderCWD() {

@@ -7,7 +7,7 @@ struct ActiveAgentNode: Identifiable, Sendable, Equatable {
     var id: String { agent.id }
 
     var topStatus: AgentStatusState? {
-        ([agent] + children).compactMap(\.status).max { $0.priority < $1.priority }
+        ([agent] + children).compactMap(\.displayStatus).max { $0.priority < $1.priority }
     }
 
     var statusRank: Int { topStatus?.priority ?? -1 }
@@ -108,8 +108,8 @@ enum ActiveAgentGrouping {
     }
 
     private static func agentOrdersBefore(_ lhs: ActiveAgent, _ rhs: ActiveAgent) -> Bool {
-        let lhsRank = lhs.status?.priority ?? -1
-        let rhsRank = rhs.status?.priority ?? -1
+        let lhsRank = lhs.displayStatus?.priority ?? -1
+        let rhsRank = rhs.displayStatus?.priority ?? -1
         if lhsRank != rhsRank { return lhsRank > rhsRank }
         if lhs.elapsedSeconds != rhs.elapsedSeconds { return lhs.elapsedSeconds > rhs.elapsedSeconds }
         return lhs.pid < rhs.pid

@@ -116,7 +116,7 @@ struct MenuView: View {
 
 struct ActiveAgentsSection: View {
     let agents: [ActiveAgent]
-    var title = "Active Sessions"
+    var title = "Sessions"
 
     private var groups: [ActiveAgentGroup] { ActiveAgentGrouping.group(agents) }
     private var totalCount: Int { groups.reduce(0) { $0 + $1.agentCount } }
@@ -225,69 +225,49 @@ private struct ActiveAgentRow: View {
     }
 
     private var helpText: String {
-        switch agent.status {
-        case .waiting: return "Waiting for your input — click to jump to this session"
-        case .error: return "This session hit an error — click to jump to it"
-        case .working: return "Working — click to jump to this session"
-        case .idle: return "Idle — click to jump to this session"
-        case nil: return "Click to jump to this session"
+        let action = switch agent.displayStatus {
+        case .waiting: "Waiting for your input, click to jump to this session"
+        case .error: "This session needs attention, click to jump to it"
+        case .working: "Active, click to jump to this session"
+        case .idle: "Idle, click to jump to this session"
+        case nil: "Open, click to jump to this session"
         }
+        var details = [action, "PID #\(agent.pid)"]
+        if let session = agent.session {
+            details.append("Session \(session.shortID)")
+        }
+        details.append(agent.command)
+        return details.joined(separator: "\n")
     }
 
     private var rowContent: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Circle()
-                .fill(statusColor(agent.status, provider: agent.provider))
+                .fill(statusColor(agent.displayStatus, provider: agent.provider))
                 .frame(width: 7, height: 7)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(agent.provider.displayName)
+                HStack(spacing: 4) {
+                    Text(agent.displayTitle)
                         .font(.caption.weight(.semibold))
-                    Text(agent.elapsedText)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    if agent.status == .waiting || agent.status == .error {
-                        Text(agent.status == .waiting ? "waiting" : "error")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(agent.status == .waiting ? Color.yellow : Color.red)
-                    }
-                    if let session = agent.session {
-                        Text(session.shortID)
-                            .font(.caption2.monospacedDigit().weight(.medium))
-                            .foregroundStyle(.secondary)
+                    if let branch = agent.session?.branch, branch != "HEAD" {
+                        Text(branch)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
                 }
-                if let session = agent.session {
-                    HStack(spacing: 4) {
-                        Text(session.displayProject)
-                        if let branch = session.branch, branch != "HEAD" {
-                            Text(branch)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
+                .lineLimit(1)
+                .truncationMode(.middle)
+                Text("\(agent.sourceLabel) · \(agent.activityText)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .truncationMode(.middle)
-                } else {
-                    Text(agent.displayCommand)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
             }
             Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 2) {
-                if let usageText = agent.session?.usageText {
-                    Text(usageText)
-                        .font(.caption2.monospacedDigit().weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
-                Text("#\(agent.pid)")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-            }
+            Text(agent.usageDisplayText)
+                .font(.caption2.monospacedDigit().weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
     }
 }

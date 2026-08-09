@@ -10,16 +10,28 @@ final class ActiveAgentGroupingTests: XCTestCase {
         cwd: String?,
         elapsed: TimeInterval = 60,
         parentAgentPID: Int? = nil,
-        status: AgentStatusState? = nil
+        status: AgentStatusState? = nil,
+        lastUpdatedAt: Date? = nil
     ) -> ActiveAgent {
-        ActiveAgent(
+        let observedAt = Date(timeIntervalSince1970: 1_000)
+        return ActiveAgent(
             provider: provider,
             pid: pid,
             parentPID: 1,
             command: provider.rawValue,
             elapsedSeconds: elapsed,
-            observedAt: Date(timeIntervalSince1970: 0),
+            observedAt: observedAt,
             cwd: cwd,
+            session: lastUpdatedAt.map {
+                ActiveAgentSession(
+                    id: "session-\(pid)",
+                    projectPath: cwd,
+                    projectName: nil,
+                    branch: nil,
+                    lastUpdatedAt: $0,
+                    source: "test"
+                )
+            },
             parentAgentPID: parentAgentPID,
             status: status
         )
@@ -58,6 +70,18 @@ final class ActiveAgentGroupingTests: XCTestCase {
             agent(pid: 101, cwd: "/Users/me/alpha", parentAgentPID: 100, status: .error),
         ])
         XCTAssertEqual(groups[0].topStatus, .error)
+    }
+
+    func testRecentActivityPromotesGroupAndSessionOrder() {
+        let groups = ActiveAgentGrouping.group([
+            agent(pid: 100, cwd: "/Users/me/alpha", elapsed: 500),
+            agent(pid: 200, cwd: "/Users/me/beta", elapsed: 10, lastUpdatedAt: Date(timeIntervalSince1970: 990)),
+            agent(pid: 201, cwd: "/Users/me/beta", elapsed: 600),
+        ])
+
+        XCTAssertEqual(groups.map(\.projectName), ["beta", "alpha"])
+        XCTAssertEqual(groups[0].topStatus, .working)
+        XCTAssertEqual(groups[0].nodes.map(\.agent.pid), [200, 201])
     }
 
     func testDifferentProviderCannotBecomeParent() {

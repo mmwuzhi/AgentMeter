@@ -1,4 +1,5 @@
 import AgentStatusCore
+import Darwin
 import Foundation
 
 enum ActiveAgentService {
@@ -45,10 +46,12 @@ enum ActiveAgentService {
 
     static func parsePSOutput(_ output: String, observedAt: Date) -> [ActiveAgent] {
         let rows = processRows(from: output)
-        let cwdByPID = cwdMap(for: agentPIDs(in: rows))
+        let executableByPID = executablePathMap(for: rows)
+        let cwdByPID = cwdMap(for: agentPIDs(in: rows, executableByPID: executableByPID))
         return parseProcessRows(
             rows,
             observedAt: observedAt,
+            executableLookup: { executableByPID[$0] },
             cwdLookup: { cwdByPID[$0] },
             sessionLookup: currentSession(provider:cwd:startedAt:observedAt:)
         )
@@ -59,10 +62,10 @@ enum ActiveAgentService {
             .compactMap { line -> ProcessRow? in ProcessRow(line: String(line)) }
     }
 
-    private static func agentPIDs(in rows: [ProcessRow]) -> [Int] {
+    private static func agentPIDs(in rows: [ProcessRow], executableByPID: [Int: String]) -> [Int] {
         rows.compactMap { row -> Int? in
-            guard provider(for: row.command) != nil,
-                  !isHelperCommand(row.command) else { return nil }
+            guard let process = agentProcess(row, executablePath: executableByPID[row.pid]),
+                  !isHelperProcess(process) else { return nil }
             return row.pid
         }
     }
@@ -76,6 +79,7 @@ enum ActiveAgentService {
         parseProcessRows(
             processRows(from: output),
             observedAt: observedAt,
+            executableLookup: { _ in nil },
             cwdLookup: cwdLookup,
             sessionLookup: sessionLookup
         )
@@ -84,16 +88,17 @@ enum ActiveAgentService {
     private static func parseProcessRows(
         _ rows: [ProcessRow],
         observedAt: Date,
+        executableLookup: (Int) -> String?,
         cwdLookup: (Int) -> String?,
         sessionLookup: (Provider, String?, Date, Date) -> ActiveAgentSession?
     ) -> [ActiveAgent] {
         let candidates: [AgentCandidate] = rows
             .compactMap { row -> AgentCandidate? in
-                guard let provider = provider(for: row.command),
-                      !isHelperCommand(row.command) else { return nil }
+                guard let process = agentProcess(row, executablePath: executableLookup(row.pid)),
+                      !isHelperProcess(process) else { return nil }
                 let cwd = cwdLookup(row.pid)
                 let startedAt = observedAt.addingTimeInterval(-row.elapsedSeconds)
-                return AgentCandidate(row: row, provider: provider, cwd: cwd, startedAt: startedAt)
+                return AgentCandidate(row: row, provider: process.provider, cwd: cwd, startedAt: startedAt)
             }
         let groupCounts = Dictionary(
             grouping: candidates.compactMap { candidate -> SessionGroup? in
@@ -186,32 +191,101 @@ enum ActiveAgentService {
         )
     }
 
-    private static func provider(for command: String) -> Provider? {
-        let pieces = command.split(separator: " ", maxSplits: 1).map(String.init)
-        guard let executable = pieces.first else { return nil }
-        let name = URL(fileURLWithPath: executable).lastPathComponent.lowercased()
+    private static func agentProcess(_ row: ProcessRow, executablePath: String?) -> AgentProcess? {
+        let resolvedPath: String
+        if let executablePath,
+           provider(forExecutablePath: executablePath) != nil {
+            resolvedPath = executablePath
+        } else if let inferredPath = inferredExecutablePath(from: row.command) {
+            // Script-based installs can report the interpreter from
+            // `proc_pidpath`; retain the explicit argv[0] fallback for them.
+            resolvedPath = inferredPath
+        } else {
+            return nil
+        }
+        guard let provider = provider(forExecutablePath: resolvedPath) else { return nil }
+        return AgentProcess(
+            provider: provider,
+            arguments: commandArguments(row.command, executablePath: resolvedPath)
+        )
+    }
+
+    private static func provider(forExecutablePath executablePath: String) -> Provider? {
+        let name = URL(fileURLWithPath: executablePath).lastPathComponent.lowercased()
+        let provider: Provider
         switch name {
         case "claude":
-            return .claude
+            provider = .claude
         case "codex":
-            return .codex
+            provider = .codex
         default:
             return nil
         }
+        return provider
     }
 
-    private static func isHelperCommand(_ command: String) -> Bool {
-        let lower = command.lowercased()
-        if lower.contains("agentmeter.app/contents/macos/agentmeter") { return true }
-        if lower.contains("claude /usage") { return true }
-        if lower.contains("codex app-server") { return true }
-        if lower.contains("codex computer use.app") { return true }
-        if lower.contains("/applications/codex.app/contents/") {
-            if lower.contains("/resources/codex ") { return false }
-            if lower.contains("/applications/codex.app/contents/macos/codex") { return false }
+    private static func isHelperProcess(_ process: AgentProcess) -> Bool {
+        let arguments = Set(process.arguments.map { $0.lowercased() })
+        if arguments.contains("--help") || arguments.contains("--version") { return true }
+        switch process.provider {
+        case .claude:
+            return arguments.contains("/usage")
+        case .codex:
+            return arguments.contains("app-server")
+        case .copilot:
             return true
         }
-        return false
+    }
+
+    /// Synthetic `ps` fixtures cannot be resolved with `proc_pidpath`. Keep a
+    /// conservative fallback for tests and restricted environments: app-bundle
+    /// commands are accepted only at the two real agent executable locations.
+    private static func inferredExecutablePath(from command: String) -> String? {
+        let lower = command.lowercased()
+        if lower.contains(".app/contents/") {
+            // Nested Chromium/Electron helpers often contain a second
+            // `Contents/MacOS/Codex` path. They are never interactive agents.
+            if lower.contains("/contents/frameworks/") { return nil }
+            for marker in [".app/contents/resources/codex", ".app/contents/macos/codex"] {
+                guard let range = command.range(of: marker, options: .caseInsensitive) else { continue }
+                return String(command[..<range.upperBound])
+            }
+            return nil
+        }
+        if let range = command.range(
+            of: "application support/claude/claude-code/claude",
+            options: .caseInsensitive
+        ) {
+            return String(command[..<range.upperBound])
+        }
+        return command.split(whereSeparator: \.isWhitespace).first.map(String.init)
+    }
+
+    private static func commandArguments(_ command: String, executablePath: String) -> [String] {
+        if command.hasPrefix(executablePath) {
+            return command.dropFirst(executablePath.count).split(whereSeparator: \.isWhitespace).map(String.init)
+        }
+        return command.split(whereSeparator: \.isWhitespace).dropFirst().map(String.init)
+    }
+
+    private static func executablePathMap(for rows: [ProcessRow]) -> [Int: String] {
+        Dictionary(uniqueKeysWithValues: rows.compactMap { row -> (Int, String)? in
+            let lower = row.command.lowercased()
+            guard lower.contains("codex") || lower.contains("claude"),
+                  let path = executablePath(forPID: row.pid) else { return nil }
+            return (row.pid, path)
+        })
+    }
+
+    private static func executablePath(forPID pid: Int) -> String? {
+        // PROC_PIDPATHINFO_MAXSIZE is a C macro Swift cannot import.
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        let length = buffer.withUnsafeMutableBytes { bytes in
+            proc_pidpath(Int32(pid), bytes.baseAddress, UInt32(bytes.count))
+        }
+        guard length > 0 else { return nil }
+        let bytes = buffer.prefix(Int(length)).prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     private static func cwdMap(for pids: [Int]) -> [Int: String] {
@@ -641,6 +715,11 @@ enum ActiveAgentService {
         let provider: Provider
         let cwd: String?
         let startedAt: Date
+    }
+
+    private struct AgentProcess {
+        let provider: Provider
+        let arguments: [String]
     }
 
     private struct SessionGroup: Hashable {

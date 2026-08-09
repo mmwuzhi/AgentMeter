@@ -248,6 +248,8 @@ struct ActiveAgentSession: Codable, Sendable, Equatable {
 
 /// One locally running interactive agent process.
 struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
+    private static let recentActivityWindow: TimeInterval = 120
+
     let provider: Provider
     let pid: Int
     let parentPID: Int
@@ -265,21 +267,60 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
 
     var id: String { "\(provider.rawValue):\(pid)" }
 
-    var elapsedText: String {
-        let seconds = max(0, Int(elapsedSeconds))
-        if seconds >= 86_400 { return "\(seconds / 86_400)d" }
-        if seconds >= 3_600 { return "\(seconds / 3_600)h" }
-        if seconds >= 60 { return "\(seconds / 60)m" }
-        return "\(seconds)s"
+    var displayTitle: String {
+        if let session { return session.displayProject }
+        if let cwd, !cwd.isEmpty {
+            let name = URL(fileURLWithPath: cwd).lastPathComponent
+            if !name.isEmpty { return name }
+        }
+        return provider.displayName
     }
 
-    var displayCommand: String {
-        let pieces = command.split(separator: " ", maxSplits: 2).map(String.init)
-        guard pieces.count > 1 else { return provider.displayName }
-        return pieces.dropFirst().joined(separator: " ")
+    var sourceLabel: String {
+        let lower = command.lowercased()
+        switch provider {
+        case .codex:
+            return lower.contains(".app/contents/") ? "Codex Desktop" : "Codex CLI"
+        case .claude:
+            return lower.contains("application support/claude/") ? "Claude Desktop" : "Claude CLI"
+        case .copilot:
+            return "Copilot"
+        }
     }
 
-    var displaySession: String {
-        session?.shortID ?? "unknown"
+    var displayStatus: AgentStatusState? {
+        if let status { return status }
+        guard let lastUpdatedAt = session?.lastUpdatedAt else { return nil }
+        return observedAt.timeIntervalSince(lastUpdatedAt) <= Self.recentActivityWindow ? .working : .idle
+    }
+
+    var activityText: String {
+        switch status {
+        case .working: return "working now"
+        case .waiting: return "waiting for input"
+        case .error: return "needs attention"
+        case .idle:
+            guard let lastUpdatedAt = session?.lastUpdatedAt else { return "idle" }
+            return "idle · \(relativeAge(since: lastUpdatedAt))"
+        case nil:
+            guard let lastUpdatedAt = session?.lastUpdatedAt else { return "open now" }
+            if observedAt.timeIntervalSince(lastUpdatedAt) <= Self.recentActivityWindow {
+                return "active now"
+            }
+            return "idle · \(relativeAge(since: lastUpdatedAt))"
+        }
+    }
+
+    var usageDisplayText: String {
+        guard let session else { return "Usage unavailable" }
+        return session.usageText ?? "No usage yet"
+    }
+
+    private func relativeAge(since date: Date) -> String {
+        let seconds = max(0, Int(observedAt.timeIntervalSince(date)))
+        if seconds < 60 { return "\(seconds)s ago" }
+        if seconds < 3_600 { return "\(seconds / 60)m ago" }
+        if seconds < 86_400 { return "\(seconds / 3_600)h ago" }
+        return "\(seconds / 86_400)d ago"
     }
 }
