@@ -1,66 +1,78 @@
-# CLAUDE.md
+# AgentMeter agent guide
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+AgentMeter is a menu-bar-only macOS app for Codex, Claude Code, and GitHub
+Copilot quota, runway, usage, and estimated spend. It is local-first and reuses
+existing CLI logins; never introduce API-key setup. The project is a SwiftPM
+executable targeting macOS 14+, Xcode 16+, and Swift 6.
 
-AgentMeter is a menu-bar-only (no Dock icon) macOS app showing Codex, Claude Code, and GitHub Copilot usage: quota bars, quota runway risk, a usage heatmap, and estimated spend where available. It is local-first — it reuses the existing CLI logins, so there are no API keys. Requires the Xcode toolchain (Xcode 16+ / Swift 6); SwiftPM executable target, `.macOS(.v14)`, Swift 6 language mode.
+`AGENTS.md` is a symlink to this file, so this is the shared source of truth for
+Claude Code and Codex.
 
-## Commands
+## Read before editing
+
+Load only the references relevant to the task:
+
+- Provider fetchers, usage scanners, quota models, status, pricing, or runway:
+  [docs/agent/providers.md](docs/agent/providers.md)
+- Menu bar, popover, settings, cached state, spend/usage presentation, or
+  Claude hooks: [docs/agent/ui-state.md](docs/agent/ui-state.md)
+- Package, scripts, signing, versions, Sparkle, DMG, release workflow, or
+  installed-app handoff: [docs/agent/release.md](docs/agent/release.md)
+
+For cross-cutting changes, read every applicable reference before editing.
+
+## Project map
+
+- `Sources/AgentMeter/App` — launch and app lifecycle
+- `Sources/AgentMeter/Controllers` — status item and popover ownership
+- `Sources/AgentMeter/ViewModels` — `AppViewModel`, the UI source of truth
+- `Sources/AgentMeter/Views` — menu bar, popover, and Settings UI
+- `Sources/AgentMeter/Services` — refresh orchestration, providers, state,
+  notifications, pricing, quota trends, and active-agent integration
+- `Sources/AgentStatusCore` / `Sources/AgentMeterHook` — Claude status helper
+- `Tests/AgentMeterTests` — XCTest suite
+- `Scripts` / `.github/workflows/release.yml` — bundle and release tooling
+
+The main runtime path is:
+`AppDelegate → RefreshCoordinator → AppViewModel → StatusItemController/MenuView`.
+`RefreshCoordinator` fetches providers in parallel, records quota observations,
+persists cacheable state, and evaluates notifications.
+
+## Commands and verification
 
 ```bash
-make run      # build release, assemble dist/AgentMeter.app, launch it
-make debug    # swift build (debug) + run ./.build/debug/AgentMeter from the terminal
-make app      # just assemble dist/AgentMeter.app (runs Scripts/bundle.sh)
+make run      # release build, assemble dist/AgentMeter.app, launch that copy
+make debug    # debug build and run from the terminal
+make app      # assemble dist/AgentMeter.app
 make dmg      # package dist/AgentMeter-<version>.dmg
-make appcast  # regenerate dist/appcast.xml for the latest DMG
-make clean    # rm -rf .build dist
+make appcast  # regenerate the Sparkle feed entry
+make clean    # remove .build and dist
+swift test    # run the XCTest suite
 ```
 
-GitHub Actions release automation lives in `.github/workflows/release.yml`.
-Pushing a `vX.Y.Z` tag or manually running the **Release** workflow builds the
-DMG, verifies bundle contents/version/signature, uploads workflow artifacts, and
-creates or updates the GitHub Release. Sparkle appcast generation remains manual
-because it needs the private Sparkle signing key.
+- Run `swift test` after code changes. Use the narrowest relevant test during
+  iteration, then the full suite before handoff.
+- For UI/menu-bar changes, also run the app and inspect it. This environment
+  cannot capture the menu bar because it lacks Screen Recording permission;
+  hand the user an exact visual checklist when render verification is needed.
+- A running AgentMeter can cause SwiftPM's transient “input file was modified
+  during the build” error. Stop the old process and rebuild. `make run` launches
+  `dist/AgentMeter.app` and does not replace or terminate an installed copy.
+- After producing a newer local build for the user, follow the installed-app
+  handoff in [docs/agent/release.md](docs/agent/release.md). Do not add install
+  side effects to shared Make targets.
+- The status item may land behind the notch after relaunch. Confirm the process
+  with `pgrep -lf "AgentMeter.app"` before treating a missing icon as a crash.
 
-There is a small XCTest suite (`swift test`) and no linter configured. For UI or menu-bar visual changes, also run the app and look at it.
+## Cross-cutting rules
 
-- **Flaky build error** "input file ... was modified during the build": a running AgentMeter instance touches files SwiftPM is reading. Just re-run `make run` — it succeeds on the second try. `make run` does not kill the old instance, so relaunching leaves the previous process; `pkill -f "AgentMeter.app"` before rebuilding when iterating.
-- **You cannot screenshot the menu bar** from this environment (the CLI lacks Screen Recording permission; `screencapture` fails with "could not create image from display"). For any menu-bar visual change, state that you cannot verify the render and hand the exact check to the user.
-- **The menu-bar item is easily lost behind the notch.** macOS reassigns status-item position on every relaunch; on a crowded menu bar it lands in the hidden region. "I can't find it" almost always means hidden, not crashed — confirm the process with `pgrep -lf "AgentMeter.app"`.
-
-## Architecture
-
-**Launch → refresh → render** pipeline:
-
-- `App/AppDelegate` sets `NSApp.setActivationPolicy(.accessory)` (menu-bar only) and wires the three long-lived objects: `RefreshCoordinator`, `UpdaterController`, `StatusItemController`, all sharing one `AppViewModel`.
-- `Services/RefreshCoordinator` owns a configurable `Timer` (`refreshIntervalSeconds`, clamped 15…3600) plus manual `refresh()` (with a 30s watchdog so a wedged fetch can't suppress popover-open refreshes). Each refresh fetches Codex, Claude, and Copilot **in parallel** (`async let`), writes `AppViewModel.codex` / `.claude` / `.copilot`, records quota observations through `QuotaTrendTracker`, persists provider state plus observations via `StateCache` (so the next launch shows last values instantly — `AppViewModel.init` loads them), and runs `NotificationManager.evaluate` for low-quota and recovery alerts. Pricing is refreshed once at `start()`.
-- `ViewModels/AppViewModel` is `@MainActor @Observable`. It is the single source of UI truth. `MenuBarLayout.activeElements(_:)` resolves the configured menu-bar items from the model, while `AppViewModel.runway(for:window:)` exposes per-window runway predictions to the popover.
-- `Controllers/StatusItemController` owns the `NSStatusItem` + the transient popover hosting `MenuView`. It uses `withObservationTracking` to re-render the menu-bar title when the model changes, and listens to `UserDefaults.didChangeNotification` so Settings changes update the menu bar immediately.
-- `Views/Menu/MenuView` is the popover root (SwiftUI). `SettingsView` is a separate `Settings` scene (`AgentMeterApp`).
-
-**Per-provider data flow** — `CodexService`, `ClaudeService`, and `CopilotService` each return a `ProviderState(quota:usage:)` (`Models/Models.swift`). Providers use fallback chains where possible, and the source actually used is reported back via `QuotaSnapshot.source` (shown in the UI as "live" / "local log" / "oauth" / "cli" / "usage only"):
-
-- **Codex quota**: `CodexOAuthUsageFetcher` (`GET chatgpt.com/backend-api/wham/usage`, direct HTTPS via `CodexCredentials`) → falls back to `AppServerSession` (`codex app-server` JSON-RPC subprocess) → falls back to `CodexRolloutReader` parsing the newest `~/.codex/sessions/**/rollout-*.jsonl` `rate_limits`. The HTTPS path is primary specifically to avoid spawning a subprocess on every refresh tick; `AppServerSession` still matters for setups without a ChatGPT OAuth session (e.g. API-key-only Codex installs). `wham/usage`'s field names (`rate_limit.primary_window`/`secondary_window`, `used_percent`, `reset_at` epoch seconds, `limit_window_seconds`) were read directly out of CodexBar's (MIT) open-source client, not reverse-engineered blind — see `CodexOAuthUsageFetcher.swift`. Usage/spend = per-day `last_token_usage` summed from rollout logs. **`CodexRolloutReader.rolloutFiles()` must enumerate BOTH `~/.codex/sessions/` (date-nested) and `~/.codex/archived_sessions/` (flat).** Codex CLI ≥0.142 moves older/inactive sessions into `archived_sessions/`; reading only `sessions/` makes today's usage/spend collapse the moment a still-active session is archived mid-day (quota stays server-truth via the OAuth/app-server path, so the symptom is "quota heavy / spend light"). Files are deduped by name so a session caught mid-move in both roots is not double-counted.
-- **Codex reset credits** (banked rate-limit resets, June 2026+): `account/rateLimits/read` does not carry per-credit grant/expiry timestamps, only sometimes a bare count, so real dates come from a separate, undocumented ChatGPT backend call — `CodexResetCreditFetcher` hits `chatgpt.com/backend-api/wham/rate-limit-reset-credits` using the Codex CLI's own OAuth token (`CodexCredentials`, reads `~/.codex/auth.json` plaintext — no Keychain, unlike Claude). `RefreshCoordinator` throttles this fetch independently (`resetCreditsMinimumRefreshInterval`, 20 min) since credits change over days not minutes. Real per-credit data always overrides `CodexResetCreditTracker`'s local-inference fallback (which only guesses a 30-day expiry from whenever *this app* first observes a count increase — wrong for credits granted before AgentMeter was running). Field names are inferred from third-party reverse engineering of this endpoint, not an official spec, so `CodexResetCreditFetcher.parseCredits` is defensive (multiple key aliases, tolerant of bare-array vs wrapped-object shapes) and capped at `CodexResetCreditTracker.maxStoredCredits` (20) since the response is untrusted; an unparsable body is dumped to `~/Library/Application Support/AgentMeter/debug-codex-reset-credits.json` (same pattern as Claude's `debug-claude-oauth-usage.json`) instead of guessed. If OpenAI ever scopes the CLI token away from this web-backend endpoint, every fetch 401s and the app silently degrades to the local-inference fallback — check that debug file first if reset-credit expiry stops looking real.
-- **Claude quota**: `ClaudeCredentials` (token from `~/.claude/.credentials.json` → Keychain `Claude Code-credentials`) → `ClaudeOAuthFetcher` (`GET api.anthropic.com/api/oauth/usage`) → `ClaudeCLIScraper` (scrape `claude /usage`) → usage-only. **Claude quota requires the network** (reset windows are not on disk); first OAuth read may prompt the Keychain. Usage/spend = `ClaudeJSONLScanner` over `~/.claude/projects/**/*.jsonl`, deduped by `message.id`. **Spend-based plans (e.g. Enterprise) have no `five_hour`/`seven_day*` keys at all** — `ClaudeOAuthFetcher.parseSnapshot` treats an empty `windows` result as a legitimate plan shape, not a parse failure, and dumps the raw body to `~/Library/Application Support/AgentMeter/debug-claude-oauth-usage.json` (capped at 256KB) so real field names can be confirmed instead of guessed. The one confirmed field so far is a one-time Claude Code + Cowork credit exposed under an opaque, Anthropic-assigned codename (currently `cinder_cove`) rather than a fixed key — it's wired through `add(...)` like the other windows but flagged `isOneTimeCredit: true` so `QuotaRow` says "expires" instead of "resets". If Anthropic rotates the codename, this silently stops matching (falls back to the empty-windows note) rather than parsing something wrong — re-check the debug capture file if that happens. **Model-scoped weekly limits (e.g. Fable) live only in the newer `limits` array** — the named model keys (`seven_day_opus` etc.) stay null for them, confirmed against a live response. `ClaudeOAuthFetcher.addLimits` folds `limits` entries in after the named keys, mapping known kinds to the equivalent named ids (`session`→`five_hour`, `weekly_all`→`seven_day`, `weekly_scoped`→`seven_day_<model>` from `scope.model.display_name`) and skipping ids already parsed — named keys stay authoritative when both are present, and trend-observation window ids stay stable if Anthropic later promotes a scoped limit to a named key. Unknown kinds are ignored, not guessed.
-- **Copilot quota**: `CopilotGitHubClient` shells out to `gh api /copilot_internal/user` (reusing the existing `gh` login — token stays in gh's keyring, never read here). Parses `quota_snapshots` into metered windows (e.g. `premium_interactions`), skipping `unlimited` ones; `gh` missing or not authed → unavailable. `copilot_internal` is an undocumented internal endpoint (the one editors use), so its shape can change. Copilot is **flat-rate — no spend/usage history** (`usage` is always empty, so its popover panel shows quota only and `MenuBarLayout` offers no `s:copilot` item).
-- **Provider status** (`Services/ProviderStatusService`): polls each provider's public, unauthenticated Statuspage.io status page (`status.openai.com`, `status.claude.com` — note `status.anthropic.com` just 302s there, use the direct URL — and `www.githubstatus.com`) so the popover can say "OpenAI is degraded" instead of a generic "Live quota unavailable" when a fetch failure coincides with a real incident. Throttled independently at 30 min (`providerStatusMinimumRefreshInterval`) — incidents don't need near-real-time freshness, and this deliberately doesn't erode the resource savings from the Codex HTTPS quota path above. Not persisted (`AppViewModel.providerStatus`, like `activeAgents`) since a stale "outage" shown days later would mislead. `RefreshCoordinator.mergeProviderStatus` merges this cycle's results into the existing map rather than replacing it wholesale — a single provider's transient poll failure must not erase (or silently regress) the other two providers' last-known state. `description` text from these pages renders directly in the popover, so `ProviderStatusService.sanitizedDescription` strips control characters and caps length before it's ever shown, treating the response as untrusted despite being an official page. **The page-wide `status.indicator` is too coarse for the healthy-quota banner** — a FedRAMP-only OpenAI incident flips the whole page to "minor" for days, showing a permanent "Partial System Degradation" under a perfectly fine Codex panel. So `ProviderStatusResult` carries two readings: page-wide (`level`/`description`, still used by `unavailableNote` — when the quota fetch is failing, any incident is a plausible cause) and component-filtered (`componentLevel`/`componentDescription`, used by the banner; `relevantComponentKeywords` substring-matches `components[].name` — "codex" / "claude code"+"claude api" / "copilot"). If component data is missing or a rename stops the keywords matching, the component reading mirrors page-wide (noisier, never blind); when a relevant component is degraded, the banner prefers the name of an incident tagged with that component over the generic page description. Deliberately popover-only, no menu-bar icon/dot — reusing the existing low-quota alert dot for a service-status signal would be visually indistinguishable from "your quota is low," which is a different problem.
-- **Pricing** (`Services/Pricing/PricingService`): LiteLLM → models.dev fallback → embedded `Resources/embedded-pricing.json`; cached to `~/Library/Application Support/AgentMeter/pricing.json`.
-- **Quota trend layer** (`Services/QuotaTrendTracker`): records bounded per-refresh observations (24h / 200 samples) in `StateCache` and derives runway from remaining-percent drain. It only shows popover runway text when current pace would hit that same window before reset; longer windows are suppressed when a shorter same-provider hard limit would stop usage first. The drain rate is averaged over a trailing lookback (`runwayLookback`, 10 min; falls back to the full same-reset-epoch span when too sparse to hold two samples) rather than the last two adjacent samples, so a single refresh tick's burst or lull can't swing the projection. That averaged rate is only trusted to extrapolate up to `maxExtrapolationMultiplier` (6x) the timespan it was actually observed over — a short burst projected across a long-horizon window (weekly, or a months-long one-time credit) downgrades from `.atRisk` to `.watch` instead of producing a "would run out in N days" alarm no sustained usage pattern would ever hit.
-
-### Conventions and gotchas
-
-- **`@AppStorage` keys are the settings contract**, written in `SettingsView`, read in multiple places: `menuBarItemsConfig` (the ordered, per-item visible/hidden list — single source of truth for the menu bar, owned by `MenuBarLayout`) + `menuBarShowCaptions`, `popoverOrder` / `popoverHiddenProviders` (provider panels; `PopoverOrder` seeds legacy `codexFirst`, starts Copilot hidden by default, and backfills new providers), `refreshIntervalSeconds`, `warnThresholdPercent` / `alertThresholdPercent` / `alertsEnabled` / `quotaRecoveryNotificationsEnabled` (notifications), `launchAtLogin` (`Services/LoginItem`), `statusHooksEnabled` (opt-in Claude Code status hooks, repaired at launch). The older coarse toggles (`menuBarProvider`, `showPercentInMenuBar`, `showSpendInMenuBar`, `menuBarBothProviders`, `menuBarShowIcon`) survive only as migration defaults in `MenuBarLayout.autoDefault`/`baseConfig`. Adding a setting: wire it and remember the menu-bar live-update path goes through the `UserDefaults.didChangeNotification` observer.
-- **Menu-bar content is drawn live, not titled or rasterized.** `Views/MenuBarContentView` is an `NSView` hosted as a subview of the status button (`button.image = NSImage()` reserves the frame; the subview passes clicks through). It draws an ordered list of `MenuBarElement`s (gauge icon + caption/value columns) in `draw(_:)` at native backing scale via baseline-anchored `NSAttributedString.draw(with:)`, mirroring Stats' `Mini` widget. Do **not** go back to a template `NSImage` — template conversion thins out small/light text. Never draw outside the declared `statusItem.length` (no overhang): menu bars on **non-active displays** render a replica clipped to the declared length, so overflow gets cut off there. Slot gaps are tightened system-side instead, via the `NSStatusItemSpacing` / `NSStatusItemSelectionPadding` defaults registered in `AppDelegate`. Pick colors by appearance (`NSAppearance.currentDrawing()` → white / `.textColor`); each low-quota dot is drawn beside the specific quota segment that triggered it, never as a global corner indicator. `MenuBarLayout` resolves which elements show, in what order, from `menuBarItemsConfig`.
-- **Accessory apps open Settings inactive**, which desaturates Toggle/Picker accent colors so on/off look identical. `SettingsView.onAppear` calls `NSApp.activate` + `makeKeyAndOrderFront` to fix it. Gray window traffic-lights are the tell that a window is not key.
-- **Quota window short labels** (`QuotaWindow.shortLabel`, e.g. `5h` / `7d`) are derived from the human label and used only in the menu bar; the popover (`QuotaRow`) shows the full `label`. Token counts are formatted everywhere through `TokenFormat.short` (k/M/B/T) — do not reintroduce per-site formatting.
-- **Threshold color** (`QuotaColor.forRemaining`) is the green→red scale for the in-popover quota bar and headline %; it is intentionally NOT used in the menu bar.
-- **The popover footer shows all-time spend from a persisted ledger, not a scan window.** Scanners only read recent log files, so a true lifetime total cannot be recomputed from disk. `LifetimeSpendTracker` keeps one record per provider-day, merged on every refresh with per-day max semantics (a day shrinking in a fresh scan means its logs aged out, never that spend decreased). `LifetimeSpendStore` persists the ledger separately in `lifetime-spend.json`; `StateCache` still carries a compatibility copy, but it is not the source of truth because older builds rewrite `last-state.json` without unknown fields.
-- **`UsageReport` totals are 30-day clamped, buckets are not.** Log files are selected by mtime, so a recently-touched session file can carry day-buckets far older than 30 days. Scanners clamp `totalCostUSD`/`totalTokens`/`byModel` to `UsageReport.totalsWindowDays`; `buckets` keep the older days for the heatmap. Any UI label that says "30-day" must go through `SpendWindows`, never sum buckets directly.
-- **Empty `windows` is not automatically a failure state.** `ProviderSection` (`MenuView.swift`) only shows the red `exclamationmark.triangle` icon when `quota.source == .unavailable` (a genuine fetch failure); any other source with empty windows (e.g. a spend-based Claude plan that fetched fine but has no rate-limit windows) shows a neutral `info.circle` instead. Don't reuse the triangle for "this plan just doesn't have windows."
-- **Claude live session status is opt-in and must preserve user hooks.** `ClaudeHookInstaller` edits `~/.claude/settings.json` only after parsing and backing it up, and removes only individual commands whose executable basename is exactly `agentmeter-hook`; never replace or delete an entire matcher group because it may also contain user commands. Claude hook metadata comes from the official stdin JSON contract (`session_id`, `cwd`, and event fields), not guessed environment variables. The bundled helper writes bounded per-session JSON through `AgentStatusCore`; process ancestry disambiguates multiple Claude sessions in one directory.
-
-### Packaging
-
-SwiftPM produces the app executable plus `AgentMeterHook`; `Scripts/bundle.sh` assembles the `.app`: copies the app binary, the hook helper to `Contents/Helpers/agentmeter-hook`, the SPM resource bundle (`AgentMeter_AgentMeter.bundle`), a loose `embedded-pricing.json` for `Bundle.main`, `AppIcon.icns`, and `Sparkle.framework`; substitutes versions into `Scripts/Info.plist`; adds an `@executable_path/../Frameworks` rpath; signs nested code before the app. `Scripts/dmg.sh` uses `dmgbuild` for the styled installer window and falls back to a plain `hdiutil` DMG when `dmgbuild` is unavailable. The app is ad-hoc signed and local-only — on another Mac clear quarantine with `xattr -dr com.apple.quarantine`.
-
-**Sparkle auto-update is configured** with `SUFeedURL=https://github.com/mmwuzhi/AgentMeter/releases/latest/download/appcast.xml` and a public EdDSA key in `Scripts/Info.plist`. Generate the feed on a machine that has the matching Sparkle private key in Keychain, or pass `SPARKLE_PRIVATE_KEY` in CI. Use `SPARKLE_VERSION=<version> SPARKLE_DOWNLOAD_URL_PREFIX=https://github.com/mmwuzhi/AgentMeter/releases/download/v<version>/ make appcast` so local stale DMGs do not leak into the feed.
+- Preserve `QuotaSnapshot.source`; the UI distinguishes live, fallback, and
+  unavailable data.
+- Treat provider responses and status descriptions as untrusted input: parse
+  defensively, sanitize displayed text, and do not invent undocumented fields.
+- Keep persisted settings and state backward compatible. Migration-only keys
+  must not become new sources of truth.
+- For visual changes, preserve native menu-bar rendering and declared status
+  item bounds; secondary displays clip content outside that width.
+- GitHub releases are automated, but Sparkle appcast generation is manual
+  because it needs the private signing key.
