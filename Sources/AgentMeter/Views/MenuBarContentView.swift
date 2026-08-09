@@ -179,7 +179,12 @@ final class MenuBarContentView: NSView {
         let image: NSImage?
         switch provider {
         case .codex:
-            image = fileTemplateIcon(at: "/Applications/Codex.app/Contents/Resources/codexTemplate@2x.png")
+            image = firstIcon(at: [
+                "/Applications/Codex.app/Contents/Resources/codexTemplate@2x.png",
+                "/Applications/Codex.app/Contents/Resources/codexTemplate.png",
+                "/Applications/ChatGPT.app/Contents/Resources/chatgptTemplate@2x.png",
+                "/Applications/ChatGPT.app/Contents/Resources/chatgptTemplate.png"
+            ])
         case .claude:
             image = svgTemplateIcon(Self.claudeSVG)
                 ?? fileTemplateIcon(at: "/Applications/Claude.app/Contents/Resources/TrayIconTemplate@2x.png")
@@ -191,6 +196,13 @@ final class MenuBarContentView: NSView {
             templateIconCache[provider] = image
         }
         return image
+    }
+
+    static func firstIcon(at paths: [String]) -> NSImage? {
+        for path in paths {
+            if let image = fileTemplateIcon(at: path) { return image }
+        }
+        return nil
     }
 
     private static func fileTemplateIcon(at path: String) -> NSImage? {

@@ -176,6 +176,27 @@ final class MenuBarLayoutTests: XCTestCase {
         }
     }
 
+    func testTemplateIconPathFallbackLoadsSecondAvailableImage() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let imageURL = directory.appendingPathComponent("fallback.png")
+        let png = try XCTUnwrap(Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        ))
+        try png.write(to: imageURL)
+
+        let icon = MenuBarContentView.firstIcon(at: [
+            directory.appendingPathComponent("missing.png").path,
+            imageURL.path,
+        ])
+
+        XCTAssertNotNil(icon)
+        XCTAssertEqual(icon?.size, NSSize(width: MenuBarContentView.iconSize, height: MenuBarContentView.iconSize))
+    }
+
     private func configuredModel() -> AppViewModel {
         let model = AppViewModel()
         model.codex = providerState(.codex)
