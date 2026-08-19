@@ -221,23 +221,7 @@ private struct ActiveAgentRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help(helpText)
-    }
-
-    private var helpText: String {
-        let action = switch agent.displayStatus {
-        case .waiting: "Waiting for your input, click to jump to this session"
-        case .error: "This session needs attention, click to jump to it"
-        case .working: "Active, click to jump to this session"
-        case .idle: "Idle, click to jump to this session"
-        case nil: "Open, click to jump to this session"
-        }
-        var details = [action, "PID #\(agent.pid)"]
-        if let session = agent.session {
-            details.append("Session \(session.shortID)")
-        }
-        details.append(agent.command)
-        return details.joined(separator: "\n")
+        .help(ActiveAgentTooltip.text(for: agent))
     }
 
     private var rowContent: some View {
@@ -269,6 +253,23 @@ private struct ActiveAgentRow: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
         }
+    }
+}
+
+enum ActiveAgentTooltip {
+    static func text(for agent: ActiveAgent) -> String {
+        let action = switch agent.displayStatus {
+        case .waiting: "Waiting for your input, click to jump to this session"
+        case .error: "This session needs attention, click to jump to it"
+        case .working: "Active, click to jump to this session"
+        case .idle: "Idle, click to jump to this session"
+        case nil: "Open, click to jump to this session"
+        }
+        var identity = ["PID #\(agent.pid)"]
+        if let session = agent.session {
+            identity.append("Session \(session.shortID)")
+        }
+        return [action, identity.joined(separator: " · ")].joined(separator: "\n")
     }
 }
 

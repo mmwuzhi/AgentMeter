@@ -121,6 +121,9 @@ final class ActiveAgentServiceTests: XCTestCase {
         10002  99999       03:52 /Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/151/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --seatbelt-client=165
         10003  99999       03:52 /Applications/ChatGPT.app/Contents/Resources/codex -c features.code_mode_host=true app-server --analytics-default-enabled
         10004  10003       02:53 /Applications/ChatGPT.app/Contents/Resources/codex sandbox -c shell_environment_policy.inherit=all
+        10005      1       02:53 /Applications/ChatGPT.app/Contents/Resources/codex-code-mode-host
+        10006      1       00:10 /usr/bin/rg /Applications/ChatGPT.app/Contents/Resources/codex
+        10007      1       00:10 /usr/bin/rg /Users/me/Library/Application Support/Claude/claude-code/claude
         """
 
         let agents = ActiveAgentService.parsePSOutput(
@@ -144,7 +147,7 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(agents.first?.session?.projectName, "project")
     }
 
-    func testParsePSOutputIncludesCodexDesktopApp() {
+    func testParsePSOutputExcludesCodexDesktopShellProcess() {
         let output = """
           PID  PPID     ELAPSED COMMAND
         10002 99999       00:10 /Applications/Codex.app/Contents/MacOS/Codex
@@ -157,8 +160,7 @@ final class ActiveAgentServiceTests: XCTestCase {
             sessionLookup: { _, _, _, _ in nil }
         )
 
-        XCTAssertEqual(agents.map(\.pid), [10002])
-        XCTAssertEqual(agents.first?.provider, .codex)
+        XCTAssertTrue(agents.isEmpty)
     }
 
     func testParsePSOutputIncludesClaudeDesktopExecutableWithSpaces() {
@@ -254,6 +256,22 @@ final class ActiveAgentServiceTests: XCTestCase {
             elapsedSeconds: 10,
             observedAt: now
         )
+        let farFuture = ActiveAgent(
+            provider: .codex,
+            pid: 103,
+            parentPID: 1,
+            command: "codex",
+            elapsedSeconds: 10,
+            observedAt: now,
+            session: ActiveAgentSession(
+                id: "session-103",
+                projectPath: "/Users/me/future",
+                projectName: "future",
+                branch: nil,
+                lastUpdatedAt: now.addingTimeInterval(3_600),
+                source: "test"
+            )
+        )
 
         XCTAssertEqual(recent.displayTitle, "project")
         XCTAssertEqual(recent.sourceLabel, "Codex Desktop")
@@ -264,6 +282,8 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(idle.activityText, "idle · 8m ago")
         XCTAssertEqual(unresolved.activityText, "open now")
         XCTAssertEqual(unresolved.usageDisplayText, "Usage unavailable")
+        XCTAssertEqual(farFuture.displayStatus, .idle)
+        XCTAssertEqual(farFuture.activityText, "idle · 0s ago")
     }
 
     func testParsePSOutputDoesNotGuessSessionForDuplicateProviderCWD() {
@@ -292,6 +312,111 @@ final class ActiveAgentServiceTests: XCTestCase {
 
         XCTAssertEqual(agents.count, 2)
         XCTAssertTrue(agents.allSatisfy { $0.session == nil })
+    }
+
+    func testParsePSOutputAssociatesIdentifiedCodexSandboxesInSameDirectory() {
+        let output = """
+          PID  PPID     ELAPSED COMMAND
+        10004 99999       00:10 /Applications/ChatGPT.app/Contents/Resources/codex sandbox -c permissions.node_repl={filesystem={"/Users/me/.codex/visualizations/2025/01/01/00000000-0000-7000-8000-000000000001"="write"}}
+        10005 99999       00:20 /Applications/ChatGPT.app/Contents/Resources/codex sandbox -c permissions.node_repl={filesystem={"/Users/me/.codex/visualizations/2025/01/01/00000000-0000-7000-8000-000000000002"="write"}}
+        """
+
+        let agents = ActiveAgentService.parsePSOutput(
+            output,
+            observedAt: Date(timeIntervalSince1970: 100),
+            cwdLookup: { _ in "/Users/me/project" },
+            sessionLookup: { _, cwd, startedAt, _ in
+                ActiveAgentSession(
+                    id: String(Int(startedAt.timeIntervalSince1970)),
+                    projectPath: cwd,
+                    projectName: "project",
+                    branch: nil,
+                    lastUpdatedAt: Date(timeIntervalSince1970: 99),
+                    source: "test"
+                )
+            }
+        )
+
+        XCTAssertEqual(agents.count, 2)
+        XCTAssertEqual(Set(agents.compactMap(\.session?.id)), ["80", "90"])
+    }
+
+    func testCodexRolloutIdentifierRequiresOneUniqueVisualizationTask() {
+        let identifier = "00000000-0000-7000-8000-000000000001"
+        let desktopExecutable = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        let visualizationPath = "/Users/me/.codex/visualizations/2025/01/01/\(identifier)"
+        let identified = """
+        \(desktopExecutable) sandbox -c permissions.node_repl={filesystem={"\(visualizationPath)"="write","\(visualizationPath)/.git"="read"}}
+        """
+        let ambiguous = identified + " /Users/me/.codex/visualizations/2025/01/01/00000000-0000-7000-8000-000000000002"
+
+        XCTAssertEqual(
+            ActiveAgentService.codexRolloutIdentifier(from: identified, executablePath: desktopExecutable),
+            identifier
+        )
+        XCTAssertNil(
+            ActiveAgentService.codexRolloutIdentifier(from: ambiguous, executablePath: desktopExecutable)
+        )
+        XCTAssertNil(
+            ActiveAgentService.codexRolloutIdentifier(
+                from: "codex sandbox \(identified)",
+                executablePath: "/usr/local/bin/codex"
+            )
+        )
+        XCTAssertNil(
+            ActiveAgentService.codexRolloutIdentifier(
+                from: "\(desktopExecutable) app-server \(visualizationPath)",
+                executablePath: desktopExecutable
+            )
+        )
+        XCTAssertNil(
+            ActiveAgentService.codexRolloutIdentifier(
+                from: "\(desktopExecutable) sandbox --working-dir /Users/me/project",
+                executablePath: desktopExecutable
+            )
+        )
+    }
+
+    func testIdentifiedCodexSessionRequiresMatchingRolloutIDAndCWD() throws {
+        let identifier = "00000000-0000-7000-8000-000000000001"
+        let file = try makeTempFile(
+            contents: """
+            {"type":"session_meta","payload":{"id":"\(identifier)","cwd":"/Users/me/project"}}
+            """,
+            filename: "rollout-2026-08-13T00-00-00-\(identifier).jsonl"
+        )
+        let observedAt = Date().addingTimeInterval(1)
+
+        let session = ActiveAgentService.identifiedCodexSession(
+            identifier: identifier,
+            cwd: "/Users/me/project",
+            observedAt: observedAt,
+            rolloutFiles: [file]
+        )
+        let wrongProject = ActiveAgentService.identifiedCodexSession(
+            identifier: identifier,
+            cwd: "/Users/me/other",
+            observedAt: observedAt,
+            rolloutFiles: [file]
+        )
+
+        XCTAssertEqual(session?.logPath, file.path)
+        XCTAssertEqual(session?.projectName, "project")
+        XCTAssertNil(wrongProject)
+
+        try FileManager.default.setAttributes(
+            [.modificationDate: observedAt.addingTimeInterval(3_600)],
+            ofItemAtPath: file.path
+        )
+        let refreshedFileURL = URL(fileURLWithPath: file.path)
+        XCTAssertNil(
+            ActiveAgentService.identifiedCodexSession(
+                identifier: identifier,
+                cwd: "/Users/me/project",
+                observedAt: observedAt,
+                rolloutFiles: [refreshedFileURL]
+            )
+        )
     }
 
     func testCWDMapParsesBatchLsofFieldOutput() {
@@ -386,12 +511,12 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(second?.tokenCount, 45)
     }
 
-    private func makeTempFile(contents: String) throws -> URL {
+    private func makeTempFile(contents: String, filename: String = "session.jsonl") throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("AgentMeterTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         tempDirs.append(dir)
-        let file = dir.appendingPathComponent("session.jsonl")
+        let file = dir.appendingPathComponent(filename)
         try contents.data(using: .utf8)?.write(to: file)
         return file
     }

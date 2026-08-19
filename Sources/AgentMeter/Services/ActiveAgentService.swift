@@ -47,13 +47,29 @@ enum ActiveAgentService {
     static func parsePSOutput(_ output: String, observedAt: Date) -> [ActiveAgent] {
         let rows = processRows(from: output)
         let executableByPID = executablePathMap(for: rows)
-        let cwdByPID = cwdMap(for: agentPIDs(in: rows, executableByPID: executableByPID))
+        let pids = agentPIDs(in: rows, executableByPID: executableByPID)
+        let cwdByPID = cwdMap(for: pids)
+        let hasCodexAgent = rows.contains { row in
+            guard pids.contains(row.pid),
+                  let process = agentProcess(row, executablePath: executableByPID[row.pid]) else { return false }
+            return process.provider == .codex
+        }
+        let codexRolloutFiles = hasCodexAgent ? CodexRolloutReader.rolloutFiles() : []
         return parseProcessRows(
             rows,
             observedAt: observedAt,
             executableLookup: { executableByPID[$0] },
             cwdLookup: { cwdByPID[$0] },
-            sessionLookup: currentSession(provider:cwd:startedAt:observedAt:)
+            sessionLookup: { provider, cwd, startedAt, observedAt, rolloutIdentifier in
+                currentSession(
+                    provider: provider,
+                    cwd: cwd,
+                    startedAt: startedAt,
+                    observedAt: observedAt,
+                    codexRolloutIdentifier: rolloutIdentifier,
+                    codexRolloutFiles: codexRolloutFiles
+                )
+            }
         )
     }
 
@@ -81,7 +97,9 @@ enum ActiveAgentService {
             observedAt: observedAt,
             executableLookup: { _ in nil },
             cwdLookup: cwdLookup,
-            sessionLookup: sessionLookup
+            sessionLookup: { provider, cwd, startedAt, observedAt, _ in
+                sessionLookup(provider, cwd, startedAt, observedAt)
+            }
         )
     }
 
@@ -90,7 +108,7 @@ enum ActiveAgentService {
         observedAt: Date,
         executableLookup: (Int) -> String?,
         cwdLookup: (Int) -> String?,
-        sessionLookup: (Provider, String?, Date, Date) -> ActiveAgentSession?
+        sessionLookup: (Provider, String?, Date, Date, String?) -> ActiveAgentSession?
     ) -> [ActiveAgent] {
         let candidates: [AgentCandidate] = rows
             .compactMap { row -> AgentCandidate? in
@@ -98,7 +116,17 @@ enum ActiveAgentService {
                       !isHelperProcess(process) else { return nil }
                 let cwd = cwdLookup(row.pid)
                 let startedAt = observedAt.addingTimeInterval(-row.elapsedSeconds)
-                return AgentCandidate(row: row, provider: process.provider, cwd: cwd, startedAt: startedAt)
+                let rolloutIdentifier = codexRolloutIdentifier(
+                    from: row.command,
+                    executablePath: process.executablePath
+                )
+                return AgentCandidate(
+                    row: row,
+                    provider: process.provider,
+                    cwd: cwd,
+                    startedAt: startedAt,
+                    codexRolloutIdentifier: rolloutIdentifier
+                )
             }
         let groupCounts = Dictionary(
             grouping: candidates.compactMap { candidate -> SessionGroup? in
@@ -133,8 +161,15 @@ enum ActiveAgentService {
             .map { candidate in
                 let session = candidate.cwd.flatMap { cwd -> ActiveAgentSession? in
                     let group = SessionGroup(provider: candidate.provider, cwd: cwd)
-                    guard groupCounts[group, default: 0] <= 1 else { return nil }
-                    return sessionLookup(candidate.provider, cwd, candidate.startedAt, observedAt)
+                    guard candidate.codexRolloutIdentifier != nil
+                            || groupCounts[group, default: 0] <= 1 else { return nil }
+                    return sessionLookup(
+                        candidate.provider,
+                        cwd,
+                        candidate.startedAt,
+                        observedAt,
+                        candidate.codexRolloutIdentifier
+                    )
                 }
                 return ActiveAgent(
                     provider: candidate.provider,
@@ -206,6 +241,7 @@ enum ActiveAgentService {
         guard let provider = provider(forExecutablePath: resolvedPath) else { return nil }
         return AgentProcess(
             provider: provider,
+            executablePath: resolvedPath,
             arguments: commandArguments(row.command, executablePath: resolvedPath)
         )
     }
@@ -231,10 +267,47 @@ enum ActiveAgentService {
         case .claude:
             return arguments.contains("/usage")
         case .codex:
-            return arguments.contains("app-server")
+            if arguments.contains("app-server") { return true }
+            return process.executablePath.lowercased().contains(".app/contents/macos/codex")
         case .copilot:
             return true
         }
+    }
+
+    /// Codex Desktop's per-task sandbox includes the task's visualization root
+    /// in its command. That final UUID is also the rollout filename UUID, so it
+    /// can disambiguate multiple tasks that share a working directory.
+    static func codexRolloutIdentifier(from command: String, executablePath: String) -> String? {
+        let lowerPath = executablePath.lowercased()
+        let arguments = Set(commandArguments(command, executablePath: executablePath).map { $0.lowercased() })
+        guard lowerPath.hasSuffix(".app/contents/resources/codex"),
+              arguments.contains("sandbox") else { return nil }
+
+        let marker = "/.codex/visualizations/"
+        var remainder = command[...]
+        var identifiers = Set<String>()
+
+        while let markerRange = remainder.range(of: marker) {
+            let suffix = remainder[markerRange.upperBound...]
+            let path = suffix.prefix { character in
+                !character.isWhitespace
+                    && character != "\""
+                    && character != "'"
+                    && character != ","
+                    && character != "}"
+            }
+            let components = path.split(separator: "/", omittingEmptySubsequences: true)
+            if components.count >= 4 {
+                let candidate = String(components[3]).lowercased()
+                if UUID(uuidString: candidate) != nil {
+                    identifiers.insert(candidate)
+                }
+            }
+            remainder = suffix
+        }
+
+        guard identifiers.count == 1 else { return nil }
+        return identifiers.first
     }
 
     /// Synthetic `ps` fixtures cannot be resolved with `proc_pidpath`. Keep a
@@ -248,17 +321,27 @@ enum ActiveAgentService {
             if lower.contains("/contents/frameworks/") { return nil }
             for marker in [".app/contents/resources/codex", ".app/contents/macos/codex"] {
                 guard let range = command.range(of: marker, options: .caseInsensitive) else { continue }
+                let prefix = command[..<range.lowerBound]
+                guard !prefix.contains(where: { $0.isWhitespace }),
+                      hasCommandBoundary(in: command, after: range.upperBound) else { continue }
                 return String(command[..<range.upperBound])
             }
             return nil
         }
         if let range = command.range(
-            of: "application support/claude/claude-code/claude",
+            of: "/library/application support/claude/claude-code/claude",
             options: .caseInsensitive
         ) {
+            let prefix = command[..<range.lowerBound]
+            guard !prefix.contains(where: { $0.isWhitespace }),
+                  hasCommandBoundary(in: command, after: range.upperBound) else { return nil }
             return String(command[..<range.upperBound])
         }
         return command.split(whereSeparator: \.isWhitespace).first.map(String.init)
+    }
+
+    private static func hasCommandBoundary(in command: String, after index: String.Index) -> Bool {
+        index == command.endIndex || command[index].isWhitespace
     }
 
     private static func commandArguments(_ command: String, executablePath: String) -> [String] {
@@ -388,14 +471,29 @@ enum ActiveAgentService {
         provider: Provider,
         cwd: String?,
         startedAt: Date,
-        observedAt: Date
+        observedAt: Date,
+        codexRolloutIdentifier: String?,
+        codexRolloutFiles: [URL]
     ) -> ActiveAgentSession? {
         guard let cwd, !cwd.isEmpty else { return nil }
         switch provider {
         case .claude:
             return latestClaudeSession(cwd: cwd, startedAt: startedAt, observedAt: observedAt)
         case .codex:
-            return latestCodexSession(cwd: cwd, startedAt: startedAt, observedAt: observedAt)
+            if let codexRolloutIdentifier {
+                return identifiedCodexSession(
+                    identifier: codexRolloutIdentifier,
+                    cwd: cwd,
+                    observedAt: observedAt,
+                    rolloutFiles: codexRolloutFiles
+                )
+            }
+            return latestCodexSession(
+                cwd: cwd,
+                startedAt: startedAt,
+                observedAt: observedAt,
+                rolloutFiles: codexRolloutFiles
+            )
         case .copilot:
             return nil
         }
@@ -426,26 +524,49 @@ enum ActiveAgentService {
         )
     }
 
-    private static func latestCodexSession(cwd: String, startedAt: Date, observedAt: Date) -> ActiveAgentSession? {
+    private static func latestCodexSession(
+        cwd: String,
+        startedAt: Date,
+        observedAt: Date,
+        rolloutFiles: [URL]
+    ) -> ActiveAgentSession? {
         let candidates = sessionFiles(
-            in: CodexRolloutReader.rolloutFiles().suffix(120),
+            in: rolloutFiles.suffix(120),
             startedAt: startedAt,
             observedAt: observedAt
         )
         for candidate in candidates {
-            guard let metadata = codexMetadata(from: candidate.url),
-                  metadata.cwd == cwd else { continue }
-            return ActiveAgentSession(
-                id: metadata.sessionID,
-                projectPath: metadata.cwd,
-                projectName: projectName(for: metadata.cwd),
-                branch: nil,
-                lastUpdatedAt: candidate.modifiedAt,
-                source: "codex rollout",
-                logPath: candidate.url.path
-            )
+            if let session = codexSession(from: candidate.url, modifiedAt: candidate.modifiedAt, cwd: cwd) {
+                return session
+            }
         }
         return nil
+    }
+
+    static func identifiedCodexSession(
+        identifier: String,
+        cwd: String,
+        observedAt: Date,
+        rolloutFiles: [URL]
+    ) -> ActiveAgentSession? {
+        guard let url = rolloutFiles.first(where: {
+            $0.lastPathComponent.hasSuffix("-\(identifier).jsonl")
+        }), let modifiedAt = modificationDate(for: url),
+            modifiedAt <= observedAt.addingTimeInterval(60) else { return nil }
+        return codexSession(from: url, modifiedAt: modifiedAt, cwd: cwd)
+    }
+
+    private static func codexSession(from url: URL, modifiedAt: Date, cwd: String) -> ActiveAgentSession? {
+        guard let metadata = codexMetadata(from: url), metadata.cwd == cwd else { return nil }
+        return ActiveAgentSession(
+            id: metadata.sessionID,
+            projectPath: metadata.cwd,
+            projectName: projectName(for: metadata.cwd),
+            branch: nil,
+            lastUpdatedAt: modifiedAt,
+            source: "codex rollout",
+            logPath: url.path
+        )
     }
 
     struct SessionUsageSummary: Sendable, Equatable {
@@ -715,10 +836,12 @@ enum ActiveAgentService {
         let provider: Provider
         let cwd: String?
         let startedAt: Date
+        let codexRolloutIdentifier: String?
     }
 
     private struct AgentProcess {
         let provider: Provider
+        let executablePath: String
         let arguments: [String]
     }
 

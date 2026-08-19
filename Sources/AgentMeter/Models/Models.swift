@@ -249,6 +249,7 @@ struct ActiveAgentSession: Codable, Sendable, Equatable {
 /// One locally running interactive agent process.
 struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     private static let recentActivityWindow: TimeInterval = 120
+    private static let futureActivityTolerance: TimeInterval = 60
 
     let provider: Provider
     let pid: Int
@@ -290,8 +291,8 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
 
     var displayStatus: AgentStatusState? {
         if let status { return status }
-        guard let lastUpdatedAt = session?.lastUpdatedAt else { return nil }
-        return observedAt.timeIntervalSince(lastUpdatedAt) <= Self.recentActivityWindow ? .working : .idle
+        guard session?.lastUpdatedAt != nil else { return nil }
+        return hasRecentSessionActivity ? .working : .idle
     }
 
     var activityText: String {
@@ -304,9 +305,7 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
             return "idle · \(relativeAge(since: lastUpdatedAt))"
         case nil:
             guard let lastUpdatedAt = session?.lastUpdatedAt else { return "open now" }
-            if observedAt.timeIntervalSince(lastUpdatedAt) <= Self.recentActivityWindow {
-                return "active now"
-            }
+            if hasRecentSessionActivity { return "active now" }
             return "idle · \(relativeAge(since: lastUpdatedAt))"
         }
     }
@@ -314,6 +313,12 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     var usageDisplayText: String {
         guard let session else { return "Usage unavailable" }
         return session.usageText ?? "No usage yet"
+    }
+
+    private var hasRecentSessionActivity: Bool {
+        guard let lastUpdatedAt = session?.lastUpdatedAt else { return false }
+        let age = observedAt.timeIntervalSince(lastUpdatedAt)
+        return age >= -Self.futureActivityTolerance && age <= Self.recentActivityWindow
     }
 
     private func relativeAge(since date: Date) -> String {
