@@ -1,6 +1,15 @@
 import Foundation
 import UserNotifications
 
+@MainActor
+protocol NotificationAuthorizationCenter: AnyObject {
+    var delegate: (any UNUserNotificationCenterDelegate)? { get set }
+
+    func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool
+}
+
+extension UNUserNotificationCenter: NotificationAuthorizationCenter {}
+
 struct QuotaNotificationState: Equatable {
     var criticalNotified: Set<String> = []
     var criticalResetAt: [String: Date] = [:]
@@ -71,11 +80,26 @@ enum QuotaNotificationPolicy {
 final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationManager()
 
-    private var authorized = false
-    private var requested = false
+    private let authorizationCenter: any NotificationAuthorizationCenter
+    private let bundleIdentifier: () -> String?
+    private(set) var authorized = false
+    private(set) var requested = false
     private var notificationState = QuotaNotificationState()
 
-    private override init() { super.init() }
+    private override init() {
+        authorizationCenter = UNUserNotificationCenter.current()
+        bundleIdentifier = { Bundle.main.bundleIdentifier }
+        super.init()
+    }
+
+    init(
+        authorizationCenter: any NotificationAuthorizationCenter,
+        bundleIdentifier: @escaping () -> String?
+    ) {
+        self.authorizationCenter = authorizationCenter
+        self.bundleIdentifier = bundleIdentifier
+        super.init()
+    }
 
     private var enabled: Bool {
         UserDefaults.standard.object(forKey: "alertsEnabled") as? Bool ?? true
@@ -93,16 +117,13 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     /// UNUserNotificationCenter traps when there is no app bundle (bare `make debug`
     /// binary), so every entry point guards on a bundle identifier.
-    private var hasBundle: Bool { Bundle.main.bundleIdentifier != nil }
+    private var hasBundle: Bool { bundleIdentifier() != nil }
 
-    func requestAuthorizationIfNeeded() {
+    func requestAuthorizationIfNeeded() async {
         guard !requested, hasBundle else { return }
         requested = true
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self   // so banners show even while the app is active
-        center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, _ in
-            Task { @MainActor in self?.authorized = granted }
-        }
+        authorizationCenter.delegate = self   // so banners show even while the app is active
+        authorized = (try? await authorizationCenter.requestAuthorization(options: [.alert, .sound])) ?? false
     }
 
     /// Evaluate one provider's windows and notify on downward threshold crossings.

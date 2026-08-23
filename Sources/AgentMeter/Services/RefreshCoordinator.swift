@@ -42,7 +42,7 @@ final class RefreshCoordinator {
 
     func start() {
         Task { await PricingService.shared.refresh() }
-        NotificationManager.shared.requestAuthorizationIfNeeded()
+        Task { await NotificationManager.shared.requestAuthorizationIfNeeded() }
         seedBackgroundRefreshDates(at: Date())
         refresh(forceVisibleQuota: true)
         installWakeObservers()
