@@ -45,6 +45,9 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   `Claude Code-credentials`. Quota fallback order is `ClaudeOAuthFetcher`
   (`GET api.anthropic.com/api/oauth/usage`) → `ClaudeCLIScraper` (`claude
   /usage`) → usage-only. Reset windows require network access.
+- Claude Code may persist `expiresAt: 0` as an unknown-expiry sentinel. Keep
+  that token cached until a real HTTP 401; rate limits and transient server
+  errors must not invalidate it because the next Keychain read may prompt.
 - Usage/spend comes from `ClaudeJSONLScanner` over
   `~/.claude/projects/**/*.jsonl`, deduplicated by `message.id`.
 - An OAuth response with no quota windows is a legitimate spend-based plan

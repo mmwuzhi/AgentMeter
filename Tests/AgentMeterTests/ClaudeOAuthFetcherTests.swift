@@ -3,6 +3,16 @@ import Foundation
 import XCTest
 
 final class ClaudeOAuthFetcherTests: XCTestCase {
+    func testOnlyUnauthorizedStatusIsClassifiedAsAuthenticationFailure() {
+        XCTAssertNil(ClaudeOAuthFetcher.responseError(forStatusCode: 200))
+        XCTAssertEqual(
+            ClaudeOAuthFetcher.responseError(forStatusCode: 401),
+            .userAuthenticationRequired
+        )
+        XCTAssertEqual(ClaudeOAuthFetcher.responseError(forStatusCode: 429), .badServerResponse)
+        XCTAssertEqual(ClaudeOAuthFetcher.responseError(forStatusCode: 500), .badServerResponse)
+    }
+
     func testPlanTypeUsesExplicitOAuthField() {
         let plan = ClaudeOAuthFetcher.planType(
             in: ["plan_type": "max"],

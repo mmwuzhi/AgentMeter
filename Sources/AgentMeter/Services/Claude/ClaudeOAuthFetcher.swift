@@ -16,13 +16,25 @@ enum ClaudeOAuthFetcher {
         req.setValue("application/json", forHTTPHeaderField: "Accept")
 
         let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            throw URLError(.userAuthenticationRequired)
+        guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        if let errorCode = responseError(forStatusCode: http.statusCode) {
+            throw URLError(errorCode)
         }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw URLError(.cannotParseResponse)
         }
         return try parseSnapshot(from: obj)
+    }
+
+    static func responseError(forStatusCode statusCode: Int) -> URLError.Code? {
+        switch statusCode {
+        case 200:
+            return nil
+        case 401:
+            return .userAuthenticationRequired
+        default:
+            return .badServerResponse
+        }
     }
 
     /// Builds a `QuotaSnapshot` from an already-decoded `/api/oauth/usage` body.
