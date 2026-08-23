@@ -86,13 +86,16 @@ enum ClaudeCredentials {
     // MARK: - Parse
 
     /// Shape: { "claudeAiOauth": { "accessToken", "refreshToken", "expiresAt" (ms epoch) } }
-    private static func parse(_ data: Data) -> Token? {
+    static func parse(_ data: Data) -> Token? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let oauth = (obj["claudeAiOauth"] as? [String: Any]) ?? obj
         guard let access = oauth["accessToken"] as? String, !access.isEmpty else { return nil }
         let refresh = oauth["refreshToken"] as? String
         var expires: Date?
-        if let ms = oauth["expiresAt"] as? Double {
+        // Claude Code may persist 0 as an "unknown expiry" sentinel. Treating
+        // it as the Unix epoch makes the in-process cache miss every refresh,
+        // which repeatedly asks macOS to authorize this Keychain item.
+        if let ms = oauth["expiresAt"] as? Double, ms.isFinite, ms > 0 {
             expires = Date(timeIntervalSince1970: ms / 1000.0)
         }
         return Token(accessToken: access, refreshToken: refresh, expiresAt: expires)
