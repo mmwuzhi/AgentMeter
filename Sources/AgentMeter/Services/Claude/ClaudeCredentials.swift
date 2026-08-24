@@ -26,23 +26,32 @@ enum ClaudeCredentials {
     /// 60s refresh, ~1440/day).
     private actor Cache {
         private var token: Token?
-        /// Returns the cached token only while it is still comfortably valid.
-        func valid() -> Token? {
-            guard let token, !token.isExpired else { return nil }
-            return token
+        private var loading: Task<Token?, Never>?
+
+        /// Coalesces cache misses so overlapping refreshes cannot queue several
+        /// Keychain prompts while the user is responding to the first one.
+        func load(using loader: @escaping @Sendable () -> Token?) async -> Token? {
+            if let token, !token.isExpired { return token }
+            if let loading { return await loading.value }
+
+            let task = Task.detached(priority: .utility) { loader() }
+            loading = task
+            let fresh = await task.value
+            loading = nil
+            token = fresh
+            return fresh
         }
-        func store(_ token: Token?) { self.token = token }
+
         func clear() { token = nil }
     }
     private static let cache = Cache()
 
     /// Returns a still-valid cached token, otherwise reads from disk/Keychain
     /// and caches the result.
-    static func load() async -> Token? {
-        if let cached = await cache.valid() { return cached }
-        let fresh = loadUncached()
-        await cache.store(fresh)
-        return fresh
+    static func load(
+        using loader: @escaping @Sendable () -> Token? = { loadUncached() }
+    ) async -> Token? {
+        await cache.load(using: loader)
     }
 
     /// Drops the cached token so the next `load()` re-reads from disk/Keychain.

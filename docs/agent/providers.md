@@ -48,6 +48,8 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
 - Claude Code may persist `expiresAt: 0` as an unknown-expiry sentinel. Keep
   that token cached until a real HTTP 401; rate limits and transient server
   errors must not invalidate it because the next Keychain read may prompt.
+- Coalesce concurrent credential cache misses into one read. Sleep/wake and a
+  stalled refresh can overlap, but must never queue multiple Keychain prompts.
 - Usage/spend comes from `ClaudeJSONLScanner` over
   `~/.claude/projects/**/*.jsonl`, deduplicated by `message.id`.
 - An OAuth response with no quota windows is a legitimate spend-based plan
