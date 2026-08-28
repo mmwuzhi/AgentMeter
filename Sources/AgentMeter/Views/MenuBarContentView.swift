@@ -10,8 +10,7 @@ final class MenuBarContentView: NSView {
     private var elements: [MenuBarElement] = []
     private var showCaptions = true
 
-    /// When set, text/icon use this color instead of the menu-bar-adaptive one
-    /// (the Settings chips render on a fixed dark bar, so they force white).
+    /// When set, text/icon use this color instead of the appearance-adaptive one.
     var forcedColor: NSColor?
     /// The status item passes clicks through to its button; the chips don't.
     var passesClicksThrough = false

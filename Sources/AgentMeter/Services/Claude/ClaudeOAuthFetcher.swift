@@ -154,7 +154,7 @@ enum ClaudeOAuthFetcher {
             default:
                 continue
             }
-            // `percent` is a bare integer in live responses (62, not 62.0), so go
+            // `percent` is a bare integer in live responses, so go
             // through NSNumber instead of an `as? Double` cast that only tolerates
             // one numeric shape.
             guard !windows.contains(where: { $0.id == id }),

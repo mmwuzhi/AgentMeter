@@ -104,7 +104,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         let snapshot = try ClaudeOAuthFetcher.parseSnapshot(from: [
             "cinder_cove": [
                 "utilization": 1.5498245000000002,
-                "resets_at": "2026-09-30T04:13:36.134431+00:00",
+                "resets_at": "2025-01-15T12:00:00.123456+00:00",
                 "limit_dollars": 1000,
                 "used_dollars": 15.498245,
                 "remaining_dollars": 984.501755
@@ -122,7 +122,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
             from: [
                 "plan_type": "enterprise",
-                "cinder_cove": ["utilization": 100, "resets_at": "2026-09-30T04:13:36Z"],
+                "cinder_cove": ["utilization": 100, "resets_at": "2025-01-15T12:00:00Z"],
             ],
             captureDebugResponse: false
         )
@@ -197,22 +197,22 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         XCTAssertNil(snapshot.note)
     }
 
-    /// Mirrors a live 2026-07 response: the model-scoped weekly limit (Fable) only
+    /// Exercises a synthetic response: the model-scoped weekly limit (Fable) only
     /// exists in the `limits` array — the named model keys stay null — while the
     /// `session`/`weekly_all` entries duplicate `five_hour`/`seven_day` and must
     /// not produce a second bar.
     func testParseSnapshotSurfacesModelScopedWeeklyLimitFromLimitsArray() throws {
         let snapshot = try ClaudeOAuthFetcher.parseSnapshot(from: [
-            "five_hour": ["utilization": 72.0, "resets_at": "2026-07-10T20:29:59.570695+00:00"],
-            "seven_day": ["utilization": 38.0, "resets_at": "2026-07-14T23:59:59.570720+00:00"],
+            "five_hour": ["utilization": 74.0, "resets_at": "2025-01-03T10:00:00.123456+00:00"],
+            "seven_day": ["utilization": 42.0, "resets_at": "2025-01-07T12:00:00.123457+00:00"],
             "seven_day_opus": NSNull(),
             "limits": [
-                ["kind": "session", "group": "session", "percent": 72,
-                 "resets_at": "2026-07-10T20:29:59.570695+00:00", "is_active": true],
-                ["kind": "weekly_all", "group": "weekly", "percent": 38,
-                 "resets_at": "2026-07-14T23:59:59.570720+00:00", "is_active": false],
-                ["kind": "weekly_scoped", "group": "weekly", "percent": 62,
-                 "resets_at": "2026-07-14T23:59:59.571083+00:00",
+                ["kind": "session", "group": "session", "percent": 74,
+                 "resets_at": "2025-01-03T10:00:00.123456+00:00", "is_active": true],
+                ["kind": "weekly_all", "group": "weekly", "percent": 42,
+                 "resets_at": "2025-01-07T12:00:00.123457+00:00", "is_active": false],
+                ["kind": "weekly_scoped", "group": "weekly", "percent": 64,
+                 "resets_at": "2025-01-07T12:00:00.123458+00:00",
                  "scope": ["model": ["id": NSNull(), "display_name": "Fable"], "surface": NSNull()],
                  "is_active": false] as [String: Any]
             ]
@@ -221,7 +221,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         XCTAssertEqual(snapshot.windows.map(\.id), ["five_hour", "seven_day", "seven_day_fable"])
         let fable = try XCTUnwrap(snapshot.windows.last)
         XCTAssertEqual(fable.label, "Weekly (Fable)")
-        XCTAssertEqual(fable.usedPercent, 62)
+        XCTAssertEqual(fable.usedPercent, 64)
         XCTAssertNotNil(fable.resetsAt)
         XCTAssertFalse(fable.isOneTimeCredit ?? false)
     }
@@ -231,9 +231,9 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
             from: [
                 "limits": [
                     ["kind": "session", "percent": 41.5,
-                     "resets_at": "2026-07-10T20:29:59.570695+00:00"],
+                     "resets_at": "2025-01-03T10:00:00.123456+00:00"],
                     ["kind": "weekly_all", "percent": 12,
-                     "resets_at": "2026-07-14T23:59:59.570720+00:00"]
+                     "resets_at": "2025-01-07T12:00:00.123457+00:00"]
                 ]
             ],
             captureDebugResponse: false
@@ -252,9 +252,9 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
                     ["kind": "monthly_mystery", "percent": 50],
                     // Scoped but the response carries no model display name:
                     // there is nothing truthful to label the bar with.
-                    ["kind": "weekly_scoped", "percent": 62,
+                    ["kind": "weekly_scoped", "percent": 64,
                      "scope": ["model": ["id": NSNull(), "display_name": NSNull()]]] as [String: Any],
-                    ["kind": "weekly_scoped", "percent": 62] as [String: Any]
+                    ["kind": "weekly_scoped", "percent": 64] as [String: Any]
                 ]
             ],
             captureDebugResponse: false

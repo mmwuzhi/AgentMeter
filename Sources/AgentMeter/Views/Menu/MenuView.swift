@@ -134,18 +134,12 @@ struct ActiveAgentsSection: View {
                     .foregroundStyle(.tertiary)
             }
 
-            if groups.isEmpty {
-                Label("No local Codex or Claude sessions running", systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(spacing: 8) {
-                    ForEach(groups) { group in
-                        if group.isFlat {
-                            ActiveAgentRow(agent: group.nodes[0].agent)
-                        } else {
-                            ActiveAgentGroupRow(group: group)
-                        }
+            VStack(spacing: 8) {
+                ForEach(groups) { group in
+                    if group.isFlat {
+                        ActiveAgentRow(agent: group.nodes[0].agent)
+                    } else {
+                        ActiveAgentGroupRow(group: group)
                     }
                 }
             }

@@ -19,7 +19,8 @@ protocol LayoutEditorBacking: AnyObject {
     var isDragging: Bool { get set }
     func keys(for zone: ChipContainerView.Zone) -> [String]
     func displayName(for key: String) -> String
-    /// A pre-sized NSView drawing the chip's content (white, on the dark bar).
+    /// A pre-sized NSView drawing the chip's content (appearance-adaptive, like
+    /// the real menu bar).
     func makeContent(for key: String) -> NSView
     func emptyText(for zone: ChipContainerView.Zone) -> String
     func register(_ container: ChipContainerView, zone: ChipContainerView.Zone)
@@ -69,7 +70,7 @@ final class ChipItemView: NSView, NSDraggingSource {
     override func draw(_ dirtyRect: NSRect) {
         guard !isDraggingPlaceholder else { return }
         let bg = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 3), xRadius: 6, yRadius: 6)
-        NSColor.white.withAlphaComponent(0.10).setFill()
+        NSColor.labelColor.withAlphaComponent(0.1).setFill()
         bg.fill()
     }
 
@@ -138,12 +139,25 @@ final class ChipContainerView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 10
-        layer?.backgroundColor = NSColor(white: 0.18, alpha: 1).cgColor
+        applyBarBackground()
         registerForDraggedTypes([.agentMeterChip])
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Menu-bar-like backdrop that follows the window appearance, so chips are
+    /// previewed dark-on-light in light mode and light-on-dark in dark mode.
+    private func applyBarBackground() {
+        let isDark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        layer?.backgroundColor = NSColor(white: isDark ? 0.18 : 0.85, alpha: 1).cgColor
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyBarBackground()
+        needsDisplay = true
+    }
 
     // MARK: Population
 
@@ -208,7 +222,7 @@ final class ChipContainerView: NSView {
         let text = backing?.emptyText(for: zone) ?? ""
         let attr: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 11),
-            .foregroundColor: NSColor.white.withAlphaComponent(0.5),
+            .foregroundColor: NSColor.secondaryLabelColor,
         ]
         let str = NSAttributedString(string: text, attributes: attr)
         str.draw(at: NSPoint(x: inset + 4, y: (bounds.height - str.size().height) / 2))
@@ -356,7 +370,6 @@ final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
             return .segment(MenuBarSegment(label: names[key] ?? key, value: "—", remaining: nil, alertLevel: .none))
         }()
         let v = MenuBarContentView()
-        v.forcedColor = .white
         v.passesClicksThrough = true
         let w = MenuBarContentView.width(elements: [element], showCaptions: showCaptions)
         v.frame = CGRect(x: 0, y: 0, width: w, height: 22)

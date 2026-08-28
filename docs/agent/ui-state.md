@@ -10,12 +10,13 @@ usage presentation, cached state, or Claude live-session integration.
   quota observations, persists state through `StateCache`, and evaluates
   notifications.
 - `@AppStorage` keys are a compatibility contract. Current keys include
-  `menuBarItemsConfig`, `menuBarShowCaptions`, `popoverOrder`,
-  `popoverHiddenProviders`, `refreshIntervalSeconds`, threshold and
-  notification settings, `launchAtLogin`, and `statusHooksEnabled`.
-- `MenuBarLayout` owns ordered/visible menu-bar configuration.
-  `PopoverOrder` seeds legacy order, starts Copilot hidden by default, and
-  backfills new providers.
+  `menuBarItemsConfig` (plus per-slot `menuBarItemsConfig.<slot>` variants),
+  `menuBarSlotsConfig`, `menuBarShowCaptions`, `refreshIntervalSeconds`,
+  threshold and notification settings, `launchAtLogin`, and
+  `statusHooksEnabled`.
+- `MenuBarLayout` owns which fields each status item shows, in what order.
+  `MenuBarSlots` owns which status items exist and starts Copilot hidden by
+  default; newly-seen fields are backfilled disabled.
 - Older toggles (`menuBarProvider`, `showPercentInMenuBar`,
   `showSpendInMenuBar`, `menuBarBothProviders`, `menuBarShowIcon`) are migration
   inputs only.

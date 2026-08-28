@@ -106,6 +106,14 @@ private struct AlertSettings: View {
             }
         }
         .formStyle(.grouped)
+        // Warn must stay at or above critical. Adjust the *other* field so the
+        // one being edited keeps the typed value instead of snapping back.
+        .onChange(of: warnThresholdPercent) { _, warn in
+            if alertThresholdPercent > warn { alertThresholdPercent = warn }
+        }
+        .onChange(of: alertThresholdPercent) { _, critical in
+            if warnThresholdPercent < critical { warnThresholdPercent = critical }
+        }
     }
 
     /// A typed whole-number percent (1…99).
