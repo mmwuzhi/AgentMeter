@@ -34,6 +34,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = UpdaterController.shared
         coordinator = RefreshCoordinator(viewModel: model)
         statusController = StatusItemController(model: model, coordinator: coordinator)
+        NotificationManager.shared.activate()
+        NotificationManager.shared.onOpenProvider = { [weak self] provider in
+            self?.statusController.showPopover(for: provider)
+        }
         coordinator.start()
     }
 

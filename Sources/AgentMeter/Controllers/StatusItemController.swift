@@ -80,6 +80,16 @@ final class StatusItemController {
             controller.closePopover()
         }
     }
+
+    /// Opens the popover for a provider (notification taps). Falls back to the
+    /// first visible slot when that provider's status item is hidden, so the
+    /// tap still surfaces the app instead of doing nothing.
+    func showPopover(for provider: Provider) {
+        let slot = MenuBarSlot.allCases.first { $0.provider == provider }
+        let controller = slot.flatMap { slotControllers[$0] }
+            ?? slotOrder.first.flatMap { slotControllers[$0] }
+        controller?.showPopover()
+    }
 }
 
 @MainActor
@@ -217,17 +227,22 @@ private final class StatusItemSlotController: NSObject {
     @objc private func togglePopover() {
         if popover.isShown {
             popover.performClose(nil)
-        } else if let button = statusItem.button {
-            closeOthers(slot)
-            coordinator.setActiveAgentsVisible(true)
-            coordinator.refresh(
-                forceVisibleQuota: true,
-                forcedUsageProviders: slot.provider == .copilot ? [] : [slot.provider],
-                forceActiveAgents: true
-            )
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+        } else {
+            showPopover()
         }
+    }
+
+    func showPopover() {
+        guard !popover.isShown, let button = statusItem.button else { return }
+        closeOthers(slot)
+        coordinator.setActiveAgentsVisible(true)
+        coordinator.refresh(
+            forceVisibleQuota: true,
+            forcedUsageProviders: slot.provider == .copilot ? [] : [slot.provider],
+            forceActiveAgents: true
+        )
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
     }
 }
 

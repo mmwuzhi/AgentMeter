@@ -86,6 +86,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private(set) var requested = false
     private var notificationState = QuotaNotificationState()
 
+    /// Invoked on the main actor when the user taps a quota notification.
+    var onOpenProvider: ((Provider) -> Void)?
+
     private override init() {
         authorizationCenter = UNUserNotificationCenter.current()
         bundleIdentifier = { Bundle.main.bundleIdentifier }
@@ -118,6 +121,14 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     /// UNUserNotificationCenter traps when there is no app bundle (bare `make debug`
     /// binary), so every entry point guards on a bundle identifier.
     private var hasBundle: Bool { bundleIdentifier() != nil }
+
+    /// Become the notification-center delegate without asking for permission,
+    /// so taps on already-delivered notifications route back even before (or
+    /// without) an authorization request.
+    func activate() {
+        guard hasBundle else { return }
+        authorizationCenter.delegate = self
+    }
 
     func requestAuthorizationIfNeeded() async {
         guard !requested, hasBundle else { return }
@@ -154,6 +165,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         content.title = "\(provider.displayName) quota low"
         content.body = Self.criticalBody(for: window)
         content.sound = .default
+        content.userInfo = ["provider": provider.rawValue]
         let request = UNNotificationRequest(
             identifier: "agentmeter.\(provider.rawValue).\(window.id).\(Int(Date().timeIntervalSince1970))",
             content: content, trigger: nil)
@@ -168,6 +180,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         content.title = "\(provider.displayName) quota recovered"
         content.body = Self.recoveredBody(for: window)
         content.sound = .default
+        content.userInfo = ["provider": provider.rawValue]
         let request = UNNotificationRequest(
             identifier: "agentmeter.\(provider.rawValue).\(window.id).recovered.\(Int(Date().timeIntervalSince1970))",
             content: content, trigger: nil)
@@ -201,5 +214,24 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound])
+    }
+
+    // Tapping a quota notification opens that provider's popover instead of
+    // doing nothing.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let raw = response.actionIdentifier == UNNotificationDefaultActionIdentifier
+            ? response.notification.request.content.userInfo["provider"] as? String
+            : nil
+        completionHandler()
+        guard let raw else { return }
+        Task { @MainActor in
+            if let provider = Provider(rawValue: raw) {
+                self.onOpenProvider?(provider)
+            }
+        }
     }
 }
