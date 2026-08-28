@@ -44,7 +44,7 @@ struct MenuBarSlotItem: Codable, Identifiable, Equatable, Sendable {
 /// One configurable item inside a slot: a stable key plus whether it's shown.
 /// Order in the stored array is the left→right order inside that status item.
 struct MenuBarItem: Codable, Identifiable, Equatable, Sendable {
-    let key: String     // "q:codex:primary", "u:claude:7d", "s:codex", …
+    let key: String     // "q:codex:primary", "b:codex:primary", "u:claude:7d", "s:codex", …
     var enabled: Bool
     var id: String { key }
 }
@@ -67,10 +67,20 @@ struct MenuBarSegment: Equatable {
     let alertLevel: MenuBarAlertLevel
 }
 
-/// One thing the menu bar draws, in config order: an icon or a value column.
+/// One thing the menu bar draws, in config order: an icon, a value column, or
+/// a mini battery bar (same data as a quota column, drawn as a gauge).
 enum MenuBarElement: Equatable {
     case icon(MenuBarIcon)
     case segment(MenuBarSegment)
+    case bar(MenuBarSegment)
+
+    /// The underlying value column, when this element carries one.
+    var segment: MenuBarSegment? {
+        switch self {
+        case .icon: return nil
+        case .segment(let s), .bar(let s): return s
+        }
+    }
 }
 
 /// Data categories that deserve foreground refresh cadence because the user has
@@ -208,6 +218,7 @@ enum MenuBarLayout {
             let s = state(p, model)
             for w in s.quota.windows {
                 out.append(("q:\(p.rawValue):\(w.id)", "\(p.displayName) · \(w.label)"))
+                out.append(("b:\(p.rawValue):\(w.id)", "\(p.displayName) · \(w.label) bar"))
             }
             if p != .copilot {
                 out.append(("u:\(p.rawValue):localDay", "\(p.displayName) · local day"))
@@ -304,36 +315,37 @@ enum MenuBarLayout {
     // MARK: - Resolution / rendering
 
     private static func resolve(_ key: String, _ model: AppViewModel)
-        -> (segment: MenuBarSegment, provider: Provider)? {
+        -> (element: MenuBarElement, provider: Provider)? {
         let parts = key.split(separator: ":").map(String.init)
         guard parts.count >= 2, let p = provider(parts[1]) else { return nil }
         let s = state(p, model)
         switch parts.first {
-        case "q":
+        case "q", "b":
             guard parts.count == 3, let w = s.quota.windows.first(where: { $0.id == parts[2] }) else { return nil }
-            return (MenuBarSegment(label: w.shortLabel,
-                                   value: "\(Int(w.remainingPercent.rounded()))%",
-                                   remaining: w.remainingPercent,
-                                   alertLevel: alertLevel(forRemaining: w.remainingPercent)), p)
+            let segment = MenuBarSegment(label: w.shortLabel,
+                                         value: "\(Int(w.remainingPercent.rounded()))%",
+                                         remaining: w.remainingPercent,
+                                         alertLevel: alertLevel(forRemaining: w.remainingPercent))
+            return (parts.first == "b" ? .bar(segment) : .segment(segment), p)
         case "u":
             guard parts.count == 3, let window = UsageWindow(rawValue: parts[2]) else { return nil }
-            return (MenuBarSegment(label: window.label,
-                                   value: TokenFormat.short(tokens(in: window, usage: s.usage)),
-                                   remaining: nil,
-                                   alertLevel: .none), p)
+            return (.segment(MenuBarSegment(label: window.label,
+                                            value: TokenFormat.short(tokens(in: window, usage: s.usage)),
+                                            remaining: nil,
+                                            alertLevel: .none)), p)
         case "s":
-            return (MenuBarSegment(label: "usd",
-                                   value: String(format: "%.2f", model.todaySpendUSD(for: s)),
-                                   remaining: nil,
-                                   alertLevel: .none), p)
+            return (.segment(MenuBarSegment(label: "usd",
+                                            value: String(format: "%.2f", model.todaySpendUSD(for: s)),
+                                            remaining: nil,
+                                            alertLevel: .none)), p)
         default:
             return nil
         }
     }
 
-    /// A single item's current caption + value for the settings preview chips.
-    static func preview(_ key: String, _ model: AppViewModel, slot: MenuBarSlot) -> MenuBarSegment? {
-        resolve(key, model)?.segment
+    /// A single item's current element for the settings preview chips.
+    static func preview(_ key: String, _ model: AppViewModel, slot: MenuBarSlot) -> MenuBarElement? {
+        resolve(key, model)?.element
     }
 
     /// Enabled elements in order, resolved against the model.
@@ -348,7 +360,7 @@ enum MenuBarLayout {
                 continue
             }
             guard let r = resolve(item.key, model) else { continue }
-            out.append(.segment(r.segment))
+            out.append(r.element)
         }
         return Array(out.prefix(maxItems))
     }
@@ -363,12 +375,10 @@ enum MenuBarLayout {
         }
     }
 
-    /// The value columns only, for the alert level and accessibility text.
+    /// The value columns only (text and bar), for the alert level and
+    /// accessibility text.
     static func activeSegments(_ model: AppViewModel, slot: MenuBarSlot, limit: Int? = nil) -> [MenuBarSegment] {
-        activeElements(model, slot: slot, limit: limit).compactMap {
-            if case .segment(let s) = $0 { return s }
-            return nil
-        }
+        activeElements(model, slot: slot, limit: limit).compactMap(\.segment)
     }
 
     /// Providers/data types that should refresh at the foreground cadence. Quota
@@ -389,7 +399,7 @@ enum MenuBarLayout {
         let parts = key.split(separator: ":").map(String.init)
         guard parts.count >= 2, let p = provider(parts[1]) else { return nil }
         switch parts.first {
-        case "q":
+        case "q", "b":
             return (p, .quota)
         case "u", "s":
             return (p, .usage)

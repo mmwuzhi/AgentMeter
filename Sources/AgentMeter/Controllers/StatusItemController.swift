@@ -163,10 +163,7 @@ private final class StatusItemSlotController: NSObject {
         let showCaptions = UserDefaults.standard.object(forKey: "menuBarShowCaptions") as? Bool ?? true
         // Dim only when the item actually displays quota numbers — usage/spend
         // come from local logs and are never network-stale.
-        let showsQuota = elements.contains {
-            if case .segment(let s) = $0 { return s.remaining != nil }
-            return false
-        }
+        let showsQuota = elements.contains { $0.segment?.remaining != nil }
         let stale = showsQuota && model.staleQuotaProviders.contains(slot.provider)
         contentView.dimmed = stale
         let summary = accessibilitySummary() + (stale ? " — quota data stale, refresh failing" : "")

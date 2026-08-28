@@ -17,7 +17,8 @@ agent usage tracking.
   only when current pace would hit the window before reset.
 - **Usage heatmap**: 24-week GitHub-style grid per provider.
 - **Spend**: local-day, 7-day, and 30-day cost, computed from local logs × live pricing.
-- **Custom menu bar**: drag visible items into order, with per-window warning dots
+- **Custom menu bar**: drag visible items into order — each quota window as a
+  text % and/or a mini battery-bar gauge — with per-window warning dots
   anchored to the quota item that triggered them.
 - **Notifications**: critical quota alerts, plus optional recovery alerts after a
   previously critical window resets.

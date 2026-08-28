@@ -24,6 +24,8 @@ final class MenuBarContentView: NSView {
     static let spacing: CGFloat = 4
     static let horizontalInset: CGFloat = 0
     static let textYOffset: CGFloat = 2
+    /// Fixed gauge width for `.bar` elements (Stats-like mini bar).
+    static let barWidth: CGFloat = 26
 
     // iStat-style compact two-line readout: balanced captions and restrained values.
     static func captionFont() -> NSFont { .systemFont(ofSize: 8.5, weight: .regular) }
@@ -68,6 +70,13 @@ final class MenuBarContentView: NSView {
         return ceil(max(lw, vw)) + alertPad
     }
 
+    /// Width of one bar column: the fixed gauge, or the caption if it's wider.
+    static func barColumnWidth(_ seg: MenuBarSegment, showCaptions: Bool) -> CGFloat {
+        guard showCaptions else { return barWidth }
+        let lw = NSAttributedString(string: seg.label, attributes: [.font: captionFont()]).size().width
+        return ceil(max(lw, barWidth))
+    }
+
     /// Total width for an arrangement (icon + columns + uniform gaps).
     static func width(elements: [MenuBarElement], showCaptions: Bool) -> CGFloat {
         guard !elements.isEmpty else { return iconSize + horizontalInset * 2 }
@@ -75,6 +84,7 @@ final class MenuBarContentView: NSView {
             switch $0 {
             case .icon: return iconSize
             case .segment(let s): return columnWidth(s, showCaptions: showCaptions)
+            case .bar(let s): return barColumnWidth(s, showCaptions: showCaptions)
             }
         }
         let gaps = spacing * CGFloat(max(0, pieces.count - 1))
@@ -141,8 +151,49 @@ final class MenuBarContentView: NSView {
                     y: alertDotY
                 )
                 x += w + Self.spacing
+            case .bar(let s):
+                let w = Self.barColumnWidth(s, showCaptions: showCaptions)
+                if showCaptions {
+                    NSAttributedString(string: s.label, attributes: captionAttr)
+                        .draw(with: NSRect(x: x, y: captionY, width: w, height: captionHeight), options: [], context: nil)
+                }
+                let barHeight: CGFloat = showCaptions ? 8 : 10
+                let barY = showCaptions
+                    ? valueY + max(0, (valueHeight - barHeight) / 2)
+                    : (height - barHeight) / 2
+                let barX = x + max(0, (w - Self.barWidth) / 2)
+                drawBar(s, in: NSRect(x: barX, y: barY, width: Self.barWidth, height: barHeight), color: fg)
+                x += w + Self.spacing
             }
         }
+    }
+
+    /// A mini gauge, filled left→right by remaining %. The fill itself carries
+    /// the low-quota cue (yellow/red), battery-icon style, so bars get no
+    /// separate alert dot.
+    private func drawBar(_ segment: MenuBarSegment, in rect: NSRect, color: NSColor) {
+        let radius = rect.height / 3
+        let outline = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: radius, yRadius: radius)
+        outline.lineWidth = 1
+        color.withAlphaComponent(color.alphaComponent * 0.45).setStroke()
+        outline.stroke()
+
+        let fraction = max(0, min(1, (segment.remaining ?? 0) / 100))
+        let inner = rect.insetBy(dx: 2, dy: 2)
+        guard fraction > 0, inner.width > 0 else { return }
+        let fillWidth = max(inner.height / 2, inner.width * CGFloat(fraction))
+        let fillColor: NSColor
+        switch segment.alertLevel {
+        case .none: fillColor = color
+        case .warn: fillColor = .systemYellow
+        case .critical: fillColor = .systemRed
+        }
+        fillColor.setFill()
+        let innerRadius = max(1, radius - 1.5)
+        NSBezierPath(
+            roundedRect: NSRect(x: inner.minX, y: inner.minY, width: fillWidth, height: inner.height),
+            xRadius: innerRadius, yRadius: innerRadius
+        ).fill()
     }
 
     private func drawIcon(_ icon: MenuBarIcon, at x: CGFloat, height: CGFloat, color: NSColor) {

@@ -143,6 +143,52 @@ final class MenuBarLayoutTests: XCTestCase {
         XCTAssertNil(kinds[.claude])
     }
 
+    func testBarFieldResolvesAsQuotaGauge() {
+        let model = configuredModel()
+        MenuBarLayout.save([
+            MenuBarItem(key: "icon", enabled: false),
+            MenuBarItem(key: "b:claude:five_hour", enabled: true),
+        ], for: .claude)
+
+        let elements = MenuBarLayout.activeElements(model, slot: .claude)
+        guard case .bar(let segment)? = elements.first else {
+            return XCTFail("expected a bar element, got \(elements)")
+        }
+        XCTAssertEqual(segment.label, "5h")
+        XCTAssertEqual(segment.value, "100%")
+        XCTAssertEqual(segment.remaining, 100)
+    }
+
+    func testBarFieldCountsAsQuotaForRefreshKinds() {
+        let model = configuredModel()
+        MenuBarLayout.save([
+            MenuBarItem(key: "icon", enabled: true),
+            MenuBarItem(key: "q:claude:five_hour", enabled: false),
+            MenuBarItem(key: "b:claude:five_hour", enabled: true),
+        ], for: .claude)
+
+        XCTAssertEqual(MenuBarLayout.activeRefreshKinds(model)[.claude], [.quota])
+    }
+
+    func testBarFieldsAreOfferedButHiddenByDefault() {
+        UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.claude")
+        let model = configuredModel()
+
+        let merged = MenuBarLayout.merged(model, for: .claude)
+
+        XCTAssertEqual(merged.first { $0.item.key == "b:claude:five_hour" }?.item.enabled, false)
+        XCTAssertEqual(merged.first { $0.item.key == "b:claude:weekly" }?.item.enabled, false)
+    }
+
+    func testBarColumnUsesFixedGaugeWidth() {
+        let segment = MenuBarSegment(label: "5h", value: "69%", remaining: 69, alertLevel: .none)
+
+        XCTAssertEqual(MenuBarContentView.barColumnWidth(segment, showCaptions: false),
+                       MenuBarContentView.barWidth)
+        XCTAssertGreaterThanOrEqual(MenuBarContentView.barColumnWidth(segment, showCaptions: true),
+                                    MenuBarContentView.barWidth)
+    }
+
     func testMenuBarWidthDoesNotAddTrailingAir() {
         let segment = MenuBarSegment(label: "5h", value: "69%", remaining: 69, alertLevel: .none)
         let width = MenuBarContentView.width(

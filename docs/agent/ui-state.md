@@ -35,7 +35,8 @@ usage presentation, cached state, or Claude live-session integration.
   Resolve color from `NSAppearance.currentDrawing()` (`white` or
   `.textColor`).
 - A low-quota dot belongs beside the exact quota segment that triggered it,
-  never in a global corner.
+  never in a global corner. `.bar` elements carry the same cue in the gauge
+  fill itself (yellow/red) instead of a separate dot.
 - `QuotaWindow.shortLabel` is menu-bar-only; `QuotaRow` shows the full label.
   Format all token counts with `TokenFormat.short`.
 - `QuotaColor.forRemaining` is for popover bars and headline percentages, not

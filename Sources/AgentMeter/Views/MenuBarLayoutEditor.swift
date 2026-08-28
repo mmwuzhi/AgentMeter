@@ -366,7 +366,7 @@ final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
         let showCaptions = UserDefaults.standard.object(forKey: "menuBarShowCaptions") as? Bool ?? true
         let element: MenuBarElement = {
             if key == "icon" { return .icon(MenuBarLayout.icon(for: slot)) }
-            if let seg = MenuBarLayout.preview(key, model, slot: slot) { return .segment(seg) }
+            if let element = MenuBarLayout.preview(key, model, slot: slot) { return element }
             return .segment(MenuBarSegment(label: names[key] ?? key, value: "—", remaining: nil, alertLevel: .none))
         }()
         let v = MenuBarContentView()
