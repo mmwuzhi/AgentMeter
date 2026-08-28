@@ -7,9 +7,39 @@ enum ActiveAgentService {
 
     static func fetch() async -> [ActiveAgent] {
         await Task.detached {
-            let agents = parsePSOutput(runPS().output, observedAt: Date())
-            return attachStatus(await enrichSessionUsage(agents))
+            let payloads = AgentStatusStore.readAll()
+            let agents = parsePSOutput(runPS().output, observedAt: Date(), payloads: payloads)
+            return attachStatus(await enrichSessionUsage(agents), payloads: payloads)
         }.value
+    }
+
+    /// Newest hook payload per running agent PID. A payload is attributed to
+    /// the nearest ancestor in its recorded process chain that is a live agent
+    /// PID, so helpers spawned by a session report for their owning agent.
+    static func latestPayloadsByPID(
+        _ payloads: [AgentStatusPayload],
+        agentPIDs: Set<Int>
+    ) -> [Int: AgentStatusPayload] {
+        var byPID: [Int: AgentStatusPayload] = [:]
+        for payload in payloads {
+            if let pid = payload.processAncestry?.first(where: agentPIDs.contains),
+               payload.updatedAt > (byPID[pid]?.updatedAt ?? .distantPast) {
+                byPID[pid] = payload
+            }
+        }
+        return byPID
+    }
+
+    /// The hook payload attributable to this PID, guarded against PID reuse:
+    /// it must have been written after the process started.
+    static func hookPayload(
+        for pid: Int,
+        startedAt: Date,
+        payloadsByPID: [Int: AgentStatusPayload]
+    ) -> AgentStatusPayload? {
+        guard let payload = payloadsByPID[pid],
+              payload.updatedAt >= startedAt.addingTimeInterval(-5) else { return nil }
+        return payload
     }
 
     static func attachStatus(
@@ -17,14 +47,10 @@ enum ActiveAgentService {
         payloads: [AgentStatusPayload] = AgentStatusStore.readAll()
     ) -> [ActiveAgent] {
         let claudePIDs = Set(agents.lazy.filter { $0.provider == .claude }.map(\.pid))
-        var byPID: [Int: AgentStatusPayload] = [:]
+        let byPID = latestPayloadsByPID(payloads, agentPIDs: claudePIDs)
         var bySession: [String: AgentStatusPayload] = [:]
 
         for payload in payloads {
-            if let pid = payload.processAncestry?.first(where: claudePIDs.contains),
-               payload.updatedAt > (byPID[pid]?.updatedAt ?? .distantPast) {
-                byPID[pid] = payload
-            }
             if payload.updatedAt > (bySession[payload.sessionID]?.updatedAt ?? .distantPast) {
                 bySession[payload.sessionID] = payload
             }
@@ -32,10 +58,8 @@ enum ActiveAgentService {
 
         return agents.map { agent in
             guard agent.provider == .claude else { return agent }
-            let processPayload = byPID[agent.pid].flatMap { payload -> AgentStatusPayload? in
-                let startedAt = agent.observedAt.addingTimeInterval(-agent.elapsedSeconds)
-                return payload.updatedAt >= startedAt.addingTimeInterval(-5) ? payload : nil
-            }
+            let startedAt = agent.observedAt.addingTimeInterval(-agent.elapsedSeconds)
+            let processPayload = hookPayload(for: agent.pid, startedAt: startedAt, payloadsByPID: byPID)
             let payload = processPayload ?? agent.session.flatMap { bySession[$0.id] }
             guard let payload else { return agent }
             var agent = agent
@@ -44,7 +68,11 @@ enum ActiveAgentService {
         }
     }
 
-    static func parsePSOutput(_ output: String, observedAt: Date) -> [ActiveAgent] {
+    static func parsePSOutput(
+        _ output: String,
+        observedAt: Date,
+        payloads: [AgentStatusPayload] = []
+    ) -> [ActiveAgent] {
         let rows = processRows(from: output)
         let executableByPID = executablePathMap(for: rows)
         let pids = agentPIDs(in: rows, executableByPID: executableByPID)
@@ -55,6 +83,13 @@ enum ActiveAgentService {
             return process.provider == .codex
         }
         let codexRolloutFiles = hasCodexAgent ? CodexRolloutReader.rolloutFiles() : []
+        let claudePIDs = Set(rows.compactMap { row -> Int? in
+            guard pids.contains(row.pid),
+                  let process = agentProcess(row, executablePath: executableByPID[row.pid]),
+                  process.provider == .claude else { return nil }
+            return row.pid
+        })
+        let payloadsByPID = latestPayloadsByPID(payloads, agentPIDs: claudePIDs)
         return parseProcessRows(
             rows,
             observedAt: observedAt,
@@ -68,6 +103,15 @@ enum ActiveAgentService {
                     observedAt: observedAt,
                     codexRolloutIdentifier: rolloutIdentifier,
                     codexRolloutFiles: codexRolloutFiles
+                )
+            },
+            claudeSessionByHook: { pid, startedAt, processCwd in
+                guard let payload = hookPayload(for: pid, startedAt: startedAt, payloadsByPID: payloadsByPID),
+                      let cwd = payload.cwd ?? processCwd else { return nil }
+                return identifiedClaudeSession(
+                    sessionID: payload.sessionID,
+                    cwd: cwd,
+                    observedAt: observedAt
                 )
             }
         )
@@ -99,7 +143,8 @@ enum ActiveAgentService {
             cwdLookup: cwdLookup,
             sessionLookup: { provider, cwd, startedAt, observedAt, _ in
                 sessionLookup(provider, cwd, startedAt, observedAt)
-            }
+            },
+            claudeSessionByHook: { _, _, _ in nil }
         )
     }
 
@@ -108,7 +153,8 @@ enum ActiveAgentService {
         observedAt: Date,
         executableLookup: (Int) -> String?,
         cwdLookup: (Int) -> String?,
-        sessionLookup: (Provider, String?, Date, Date, String?) -> ActiveAgentSession?
+        sessionLookup: (Provider, String?, Date, Date, String?) -> ActiveAgentSession?,
+        claudeSessionByHook: (Int, Date, String?) -> ActiveAgentSession?
     ) -> [ActiveAgent] {
         let candidates: [AgentCandidate] = rows
             .compactMap { row -> AgentCandidate? in
@@ -159,7 +205,13 @@ enum ActiveAgentService {
 
         return candidates
             .map { candidate in
-                let session = candidate.cwd.flatMap { cwd -> ActiveAgentSession? in
+                // A hook-reported session ID pins this PID to its exact
+                // transcript, so it beats the newest-file heuristic and stays
+                // usable when several agents share a working directory.
+                let hookSession = candidate.provider == .claude
+                    ? claudeSessionByHook(candidate.row.pid, candidate.startedAt, candidate.cwd)
+                    : nil
+                let session = hookSession ?? candidate.cwd.flatMap { cwd -> ActiveAgentSession? in
                     let group = SessionGroup(provider: candidate.provider, cwd: cwd)
                     guard candidate.codexRolloutIdentifier != nil
                             || groupCounts[group, default: 0] <= 1 else { return nil }
@@ -496,6 +548,40 @@ enum ActiveAgentService {
             )
         case .copilot:
             return nil
+        }
+    }
+
+    /// Exact transcript lookup for a hook-reported session ID. The ID becomes a
+    /// filename, so anything that could escape the project directory is refused.
+    static func identifiedClaudeSession(
+        sessionID: String,
+        cwd: String,
+        observedAt: Date,
+        projectsRoot: URL? = nil
+    ) -> ActiveAgentSession? {
+        guard isSafeSessionFilename(sessionID) else { return nil }
+        let root = (projectsRoot ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects", isDirectory: true))
+            .appendingPathComponent(claudeProjectKey(for: cwd), isDirectory: true)
+            .resolvingSymlinksInPath()
+        let url = root.appendingPathComponent("\(sessionID).jsonl", isDirectory: false)
+        guard let modifiedAt = modificationDate(for: url),
+              modifiedAt <= observedAt.addingTimeInterval(60) else { return nil }
+        let metadata = claudeMetadata(from: url)
+        return ActiveAgentSession(
+            id: metadata.sessionID ?? sessionID,
+            projectPath: metadata.cwd ?? cwd,
+            projectName: projectName(for: metadata.cwd ?? cwd),
+            branch: metadata.branch,
+            lastUpdatedAt: modifiedAt,
+            source: "claude jsonl",
+            logPath: url.path
+        )
+    }
+
+    private static func isSafeSessionFilename(_ id: String) -> Bool {
+        !id.isEmpty && id.count <= 128 && id.unicodeScalars.allSatisfy {
+            CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_"
         }
     }
 

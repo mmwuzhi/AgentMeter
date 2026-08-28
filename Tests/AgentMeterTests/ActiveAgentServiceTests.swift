@@ -314,6 +314,99 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertTrue(agents.allSatisfy { $0.session == nil })
     }
 
+    func testIdentifiedClaudeSessionResolvesExactTranscript() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentmeter-projects-\(UUID().uuidString)", isDirectory: true)
+        tempDirs.append(root)
+        let projectDir = root.appendingPathComponent("-Users-me-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        let sessionID = "11111111-2222-3333-4444-555555555555"
+        let line = #"{"sessionId":"\#(sessionID)","cwd":"/Users/me/project","gitBranch":"main"}"#
+        try line.write(
+            to: projectDir.appendingPathComponent("\(sessionID).jsonl"),
+            atomically: true, encoding: .utf8
+        )
+
+        let session = ActiveAgentService.identifiedClaudeSession(
+            sessionID: sessionID,
+            cwd: "/Users/me/project",
+            observedAt: Date(),
+            projectsRoot: root
+        )
+
+        XCTAssertEqual(session?.id, sessionID)
+        XCTAssertEqual(session?.branch, "main")
+        XCTAssertEqual(session?.displayProject, "project")
+        XCTAssertEqual(session?.logPath?.hasSuffix("\(sessionID).jsonl"), true)
+
+        XCTAssertNil(ActiveAgentService.identifiedClaudeSession(
+            sessionID: "99999999-0000-0000-0000-000000000000",
+            cwd: "/Users/me/project",
+            observedAt: Date(),
+            projectsRoot: root
+        ), "a session ID with no transcript on disk must not resolve")
+    }
+
+    func testIdentifiedClaudeSessionRejectsPathEscapingSessionID() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentmeter-projects-\(UUID().uuidString)", isDirectory: true)
+        tempDirs.append(root)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("-Users-me-project", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        // A real file at the traversal target proves the guard rejects the ID
+        // rather than just failing to find a file.
+        try #"{"sessionId":"escape"}"#.write(
+            to: root.appendingPathComponent("escape.jsonl"),
+            atomically: true, encoding: .utf8
+        )
+
+        XCTAssertNil(ActiveAgentService.identifiedClaudeSession(
+            sessionID: "../escape",
+            cwd: "/Users/me/project",
+            observedAt: Date(),
+            projectsRoot: root
+        ))
+    }
+
+    func testHookPayloadRequiresCurrentPIDLifetime() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let payload = AgentStatusPayload(
+            state: .working, sessionID: "s", processAncestry: [100], updatedAt: now)
+        let byPID = [100: payload]
+
+        XCTAssertEqual(
+            ActiveAgentService.hookPayload(
+                for: 100, startedAt: now.addingTimeInterval(-60), payloadsByPID: byPID)?.sessionID,
+            "s"
+        )
+        XCTAssertNil(
+            ActiveAgentService.hookPayload(
+                for: 100, startedAt: now.addingTimeInterval(60), payloadsByPID: byPID),
+            "a payload from before the process started belongs to a recycled PID"
+        )
+        XCTAssertNil(ActiveAgentService.hookPayload(
+            for: 200, startedAt: now, payloadsByPID: byPID))
+    }
+
+    func testLatestPayloadsByPIDKeepsNewestPerPID() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let payloads = [
+            AgentStatusPayload(state: .idle, sessionID: "old",
+                               processAncestry: [501, 100], updatedAt: now.addingTimeInterval(-30)),
+            AgentStatusPayload(state: .working, sessionID: "new",
+                               processAncestry: [502, 100], updatedAt: now),
+            AgentStatusPayload(state: .working, sessionID: "unrelated",
+                               processAncestry: [900], updatedAt: now),
+        ]
+
+        let byPID = ActiveAgentService.latestPayloadsByPID(payloads, agentPIDs: [100])
+
+        XCTAssertEqual(byPID.count, 1)
+        XCTAssertEqual(byPID[100]?.sessionID, "new")
+    }
+
     func testParsePSOutputAssociatesIdentifiedCodexSandboxesInSameDirectory() {
         let output = """
           PID  PPID     ELAPSED COMMAND

@@ -74,3 +74,9 @@ usage presentation, cached state, or Claude live-session integration.
 - The bundled helper writes bounded per-session JSON through
   `AgentStatusCore`. Process ancestry distinguishes sessions that share a
   directory.
+- Hook-reported session IDs pin a PID to its exact transcript
+  (`identifiedClaudeSession`), so per-session usage stays correct when several
+  agents share a working directory. Without a hook payload, the newest-file
+  heuristic applies only to a directory's single agent; ambiguous processes get
+  no session rather than a guessed one. Session IDs become filenames — keep the
+  charset guard.
