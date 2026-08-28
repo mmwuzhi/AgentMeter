@@ -34,8 +34,36 @@ struct QuotaRow: View {
                 Text(runway.message)
                     .font(.caption2)
                     .foregroundStyle(.red)
+            } else if let pace = Self.pace(runway) {
+                Text(pace.text)
+                    .font(.caption2)
+                    .foregroundStyle(pace.overBudget ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.tertiary))
+                    .help("Current drain vs the even-spread rate that would exactly last until reset.")
             }
         }
+    }
+
+    struct PaceLine: Equatable {
+        let text: String
+        let overBudget: Bool
+    }
+
+    /// Always-visible pace readout: observed drain rate vs the "budget" rate
+    /// (remaining % spread evenly over the time left until reset). Nil when
+    /// either rate is unknown, so the row stays clean on first launch or for
+    /// windows without a reset date.
+    nonisolated static func pace(_ runway: QuotaRunway?) -> PaceLine? {
+        guard let runway,
+              let rate = runway.percentPerHour,
+              let budget = runway.safePercentPerHour,
+              budget > 0 else { return nil }
+        let text = "pace \(trimRate(rate))%/h · budget \(trimRate(budget))%/h"
+        return PaceLine(text: text, overBudget: rate > budget)
+    }
+
+    nonisolated private static func trimRate(_ value: Double) -> String {
+        let s = String(format: "%.1f", value)
+        return s.hasSuffix(".0") ? String(s.dropLast(2)) : s
     }
 
     nonisolated static func shouldShowRunwayAlert(_ runway: QuotaRunway, now: Date = Date()) -> Bool {

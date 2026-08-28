@@ -13,8 +13,9 @@ agent usage tracking.
 
 ## Features
 
-- **Quota battery bar**: remaining % per window with reset countdowns and risk text
-  only when current pace would hit the window before reset.
+- **Quota battery bar**: remaining % per window with reset countdowns, an
+  always-visible pace-vs-budget readout, and risk text only when current pace
+  would hit the window before reset.
 - **Usage heatmap**: 24-week GitHub-style grid per provider.
 - **Spend**: local-day, 7-day, and 30-day cost, computed from local logs × live pricing.
 - **Custom menu bar**: drag visible items into order — each quota window as a

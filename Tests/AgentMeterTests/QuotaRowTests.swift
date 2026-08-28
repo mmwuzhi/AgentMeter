@@ -107,4 +107,37 @@ final class QuotaRowTests: XCTestCase {
         XCTAssertFalse(QuotaRow.shouldShowRunwayAlert(watch, now: now))
         XCTAssertFalse(QuotaRow.shouldShowRunwayAlert(missingDate, now: now))
     }
+
+    func testPaceComparesDrainRateAgainstBudgetRate() {
+        let over = QuotaRow.pace(runway(percentPerHour: 6.07, safePercentPerHour: 4.4))
+        XCTAssertEqual(over?.text, "pace 6.1%/h · budget 4.4%/h")
+        XCTAssertEqual(over?.overBudget, true)
+
+        let under = QuotaRow.pace(runway(percentPerHour: 2, safePercentPerHour: 4.4))
+        XCTAssertEqual(under?.text, "pace 2%/h · budget 4.4%/h")
+        XCTAssertEqual(under?.overBudget, false)
+
+        let idle = QuotaRow.pace(runway(percentPerHour: 0, safePercentPerHour: 5))
+        XCTAssertEqual(idle?.text, "pace 0%/h · budget 5%/h")
+        XCTAssertEqual(idle?.overBudget, false)
+    }
+
+    func testPaceHiddenWithoutBothRates() {
+        XCTAssertNil(QuotaRow.pace(nil))
+        XCTAssertNil(QuotaRow.pace(runway(percentPerHour: nil, safePercentPerHour: 4)))
+        XCTAssertNil(QuotaRow.pace(runway(percentPerHour: 2, safePercentPerHour: nil)))
+        XCTAssertNil(QuotaRow.pace(runway(percentPerHour: 2, safePercentPerHour: 0)))
+    }
+
+    private func runway(percentPerHour: Double?, safePercentPerHour: Double?) -> QuotaRunway {
+        QuotaRunway(
+            provider: .claude,
+            windowID: "five_hour",
+            status: .watch,
+            percentPerHour: percentPerHour,
+            estimatedDepletionAt: nil,
+            safePercentPerHour: safePercentPerHour,
+            message: ""
+        )
+    }
 }
