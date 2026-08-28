@@ -34,7 +34,7 @@ struct QuotaRow: View {
                 Text(runway.message)
                     .font(.caption2)
                     .foregroundStyle(.red)
-            } else if let pace = Self.pace(runway, resetsAt: window.resetsAt) {
+            } else if let pace = Self.pace(runway) {
                 Text(pace.text)
                     .font(.caption2)
                     .foregroundStyle(pace.overBudget ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.tertiary))
@@ -49,37 +49,32 @@ struct QuotaRow: View {
         let help: String
     }
 
-    /// Always-visible pace readout. Windows resetting within
-    /// `QuotaTrendTracker.longWindowHorizon` show the observed drain rate vs the
-    /// "budget" rate (remaining % spread evenly over the time left until reset)
-    /// and turn orange when pace exceeds budget. Longer windows show pace alone:
-    /// their even-spread rate sits below any active use, so a raw comparison
-    /// would be orange whenever the user is working at all — instead they turn
-    /// orange only when the runway projection (with its burst-evidence and
-    /// shorter-window guards) says the window would run out before reset. Nil
-    /// when the rate or reset date is unknown, so the row stays clean on first
-    /// launch or for windows without a reset date.
-    nonisolated static func pace(
-        _ runway: QuotaRunway?,
-        resetsAt: Date?,
-        now: Date = Date()
-    ) -> PaceLine? {
-        guard let runway,
-              let rate = runway.percentPerHour,
-              let resetsAt else { return nil }
-        if resetsAt.timeIntervalSince(now) > QuotaTrendTracker.longWindowHorizon {
+    /// Always-visible pace readout, rendered per the runway's `paceStyle`
+    /// (decided by `QuotaTrendTracker`): short windows compare the observed
+    /// drain rate against the even-spread "budget" rate and turn orange when
+    /// pace exceeds budget; long-horizon windows show pace alone and turn
+    /// orange only on an at-risk runway, because their even-spread rate sits
+    /// below any active use. Nil when the rate or budget is unknown, so the
+    /// row stays clean on first launch or for windows without a reset date.
+    nonisolated static func pace(_ runway: QuotaRunway?) -> PaceLine? {
+        guard let runway, let rate = runway.percentPerHour else { return nil }
+        switch runway.paceStyle {
+        case .hidden:
+            return nil
+        case .paceOnly:
             return PaceLine(
                 text: "pace \(trimRate(rate))%/h",
                 overBudget: runway.status == .atRisk,
                 help: "Current drain rate. Turns orange only if this window is projected to run out before it resets."
             )
+        case .paceVersusBudget:
+            guard let budget = runway.safePercentPerHour, budget > 0 else { return nil }
+            return PaceLine(
+                text: "pace \(trimRate(rate))%/h · budget \(trimRate(budget))%/h",
+                overBudget: rate > budget,
+                help: "Current drain vs the even-spread rate that would exactly last until reset."
+            )
         }
-        guard let budget = runway.safePercentPerHour, budget > 0 else { return nil }
-        return PaceLine(
-            text: "pace \(trimRate(rate))%/h · budget \(trimRate(budget))%/h",
-            overBudget: rate > budget,
-            help: "Current drain vs the even-spread rate that would exactly last until reset."
-        )
     }
 
     nonisolated private static func trimRate(_ value: Double) -> String {

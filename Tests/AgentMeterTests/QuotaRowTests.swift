@@ -67,6 +67,7 @@ final class QuotaRowTests: XCTestCase {
             percentPerHour: 10,
             estimatedDepletionAt: now.addingTimeInterval(29 * 60),
             safePercentPerHour: 5,
+            paceStyle: .paceVersusBudget,
             message: "would run out in 29m"
         )
         let far = QuotaRunway(
@@ -76,6 +77,7 @@ final class QuotaRowTests: XCTestCase {
             percentPerHour: 10,
             estimatedDepletionAt: now.addingTimeInterval(31 * 60),
             safePercentPerHour: 5,
+            paceStyle: .paceVersusBudget,
             message: "would run out in 31m"
         )
 
@@ -92,6 +94,7 @@ final class QuotaRowTests: XCTestCase {
             percentPerHour: 10,
             estimatedDepletionAt: now.addingTimeInterval(10 * 60),
             safePercentPerHour: 5,
+            paceStyle: .paceVersusBudget,
             message: "using 10%/h"
         )
         let missingDate = QuotaRunway(
@@ -101,6 +104,7 @@ final class QuotaRowTests: XCTestCase {
             percentPerHour: 10,
             estimatedDepletionAt: nil,
             safePercentPerHour: 5,
+            paceStyle: .paceVersusBudget,
             message: "would run out soon"
         )
 
@@ -108,22 +112,16 @@ final class QuotaRowTests: XCTestCase {
         XCTAssertFalse(QuotaRow.shouldShowRunwayAlert(missingDate, now: now))
     }
 
-    private static let paceNow = Date(timeIntervalSince1970: 1_000)
-    /// Resets within `longWindowHorizon` — the short-window (5-hour style) branch.
-    private static let shortReset = paceNow.addingTimeInterval(3 * 3600)
-    /// Resets beyond `longWindowHorizon` — the long-window (weekly style) branch.
-    private static let longReset = paceNow.addingTimeInterval(6 * 24 * 3600)
-
     func testPaceComparesDrainRateAgainstBudgetRateForShortWindows() {
-        let over = pace(runway(percentPerHour: 6.07, safePercentPerHour: 4.4), resetsAt: Self.shortReset)
+        let over = pace(runway(percentPerHour: 6.07, safePercentPerHour: 4.4))
         XCTAssertEqual(over?.text, "pace 6.1%/h · budget 4.4%/h")
         XCTAssertEqual(over?.overBudget, true)
 
-        let under = pace(runway(percentPerHour: 2, safePercentPerHour: 4.4), resetsAt: Self.shortReset)
+        let under = pace(runway(percentPerHour: 2, safePercentPerHour: 4.4))
         XCTAssertEqual(under?.text, "pace 2%/h · budget 4.4%/h")
         XCTAssertEqual(under?.overBudget, false)
 
-        let idle = pace(runway(percentPerHour: 0, safePercentPerHour: 5), resetsAt: Self.shortReset)
+        let idle = pace(runway(percentPerHour: 0, safePercentPerHour: 5))
         XCTAssertEqual(idle?.text, "pace 0%/h · budget 5%/h")
         XCTAssertEqual(idle?.overBudget, false)
     }
@@ -131,41 +129,60 @@ final class QuotaRowTests: XCTestCase {
     func testPaceOnLongWindowsOmitsBudgetAndIgnoresRawComparison() {
         // Weekly-style scenario: any active use dwarfs the even-spread rate, so
         // the raw pace > budget comparison must not color the line.
-        let bursting = pace(runway(percentPerHour: 6.2, safePercentPerHour: 0.6), resetsAt: Self.longReset)
+        let bursting = pace(runway(percentPerHour: 6.2, safePercentPerHour: 0.6, paceStyle: .paceOnly))
         XCTAssertEqual(bursting?.text, "pace 6.2%/h")
         XCTAssertEqual(bursting?.overBudget, false)
     }
 
     func testPaceOnLongWindowsTurnsOrangeOnlyWhenAtRisk() {
         let atRisk = pace(
-            runway(percentPerHour: 6.2, safePercentPerHour: 0.6, status: .atRisk),
-            resetsAt: Self.longReset
+            runway(percentPerHour: 6.2, safePercentPerHour: 0.6, status: .atRisk, paceStyle: .paceOnly)
         )
         XCTAssertEqual(atRisk?.text, "pace 6.2%/h")
         XCTAssertEqual(atRisk?.overBudget, true)
     }
 
     func testPaceOnLongWindowsShowsWithoutBudgetRate() {
-        let line = pace(runway(percentPerHour: 2, safePercentPerHour: nil), resetsAt: Self.longReset)
+        let line = pace(runway(percentPerHour: 2, safePercentPerHour: nil, paceStyle: .paceOnly))
         XCTAssertEqual(line?.text, "pace 2%/h")
     }
 
     func testPaceHiddenWithoutRateBudgetOrResetDate() {
-        XCTAssertNil(pace(nil, resetsAt: Self.shortReset))
-        XCTAssertNil(pace(runway(percentPerHour: nil, safePercentPerHour: 4), resetsAt: Self.shortReset))
-        XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: nil), resetsAt: Self.shortReset))
-        XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: 0), resetsAt: Self.shortReset))
-        XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: 4), resetsAt: nil))
+        XCTAssertNil(pace(nil))
+        XCTAssertNil(pace(runway(percentPerHour: nil, safePercentPerHour: 4)))
+        XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: nil)))
+        XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: 0)))
+        XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: 4, paceStyle: .hidden)))
     }
 
-    private func pace(_ runway: QuotaRunway?, resetsAt: Date?) -> QuotaRow.PaceLine? {
-        QuotaRow.pace(runway, resetsAt: resetsAt, now: Self.paceNow)
+    func testTrackerClassifiesPaceStyleByResetHorizon() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(QuotaTrendTracker.paceStyle(resetsAt: nil, now: now), .hidden)
+        XCTAssertEqual(
+            QuotaTrendTracker.paceStyle(resetsAt: now.addingTimeInterval(3 * 3600), now: now),
+            .paceVersusBudget
+        )
+        XCTAssertEqual(
+            QuotaTrendTracker.paceStyle(
+                resetsAt: now.addingTimeInterval(QuotaTrendTracker.longWindowHorizon), now: now),
+            .paceVersusBudget,
+            "exactly at the horizon still counts as a short window"
+        )
+        XCTAssertEqual(
+            QuotaTrendTracker.paceStyle(resetsAt: now.addingTimeInterval(6 * 24 * 3600), now: now),
+            .paceOnly
+        )
+    }
+
+    private func pace(_ runway: QuotaRunway?) -> QuotaRow.PaceLine? {
+        QuotaRow.pace(runway)
     }
 
     private func runway(
         percentPerHour: Double?,
         safePercentPerHour: Double?,
-        status: QuotaRunwayStatus = .watch
+        status: QuotaRunwayStatus = .watch,
+        paceStyle: QuotaPaceStyle = .paceVersusBudget
     ) -> QuotaRunway {
         QuotaRunway(
             provider: .claude,
@@ -174,6 +191,7 @@ final class QuotaRowTests: XCTestCase {
             percentPerHour: percentPerHour,
             estimatedDepletionAt: nil,
             safePercentPerHour: safePercentPerHour,
+            paceStyle: paceStyle,
             message: ""
         )
     }

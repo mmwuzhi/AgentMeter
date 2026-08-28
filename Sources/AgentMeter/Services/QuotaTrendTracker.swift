@@ -82,6 +82,7 @@ enum QuotaTrendTracker {
                 percentPerHour: nil,
                 estimatedDepletionAt: nil,
                 safePercentPerHour: safePercentPerHour(window: window, now: now),
+                paceStyle: paceStyle(resetsAt: window.resetsAt, now: now),
                 message: "needs another refresh"
             )
         }
@@ -95,6 +96,7 @@ enum QuotaTrendTracker {
                 percentPerHour: 0,
                 estimatedDepletionAt: nil,
                 safePercentPerHour: safePercentPerHour(window: window, now: now),
+                paceStyle: paceStyle(resetsAt: window.resetsAt, now: now),
                 message: "pace steady"
             )
         }
@@ -110,6 +112,7 @@ enum QuotaTrendTracker {
                 percentPerHour: 0,
                 estimatedDepletionAt: nil,
                 safePercentPerHour: safePercentPerHour(window: window, now: now),
+                paceStyle: paceStyle(resetsAt: window.resetsAt, now: now),
                 message: "pace steady"
             )
         }
@@ -138,6 +141,7 @@ enum QuotaTrendTracker {
             percentPerHour: percentPerHour,
             estimatedDepletionAt: reportedDepletion,
             safePercentPerHour: safeRate,
+            paceStyle: paceStyle(resetsAt: window.resetsAt, now: now),
             message: message(for: status, depletion: depletion, percentPerHour: percentPerHour, now: now)
         )
         return constrainedByShorterWindow(
@@ -208,8 +212,17 @@ enum QuotaTrendTracker {
             percentPerHour: raw.percentPerHour,
             estimatedDepletionAt: nil,
             safePercentPerHour: raw.safePercentPerHour,
+            paceStyle: raw.paceStyle,
             message: "\(blocker.0.label) limit hits first"
         )
+    }
+
+    /// Decides how the pace line reads a window. Lives here — beside
+    /// `longWindowHorizon` and the at-risk downgrade rules — so views never
+    /// re-derive window-horizon semantics from reset dates.
+    static func paceStyle(resetsAt: Date?, now: Date) -> QuotaPaceStyle {
+        guard let resetsAt else { return .hidden }
+        return resetsAt.timeIntervalSince(now) > longWindowHorizon ? .paceOnly : .paceVersusBudget
     }
 
     /// Signal for the average drain rate plus the span of sustained drain evidence.

@@ -63,6 +63,20 @@ enum QuotaRunwayStatus: String, Codable, Sendable, Equatable {
     case atRisk
 }
 
+/// How the popover's pace line reads a window. Decided by
+/// `QuotaTrendTracker` — the one owner of window-horizon semantics — so views
+/// never re-derive it from reset dates.
+enum QuotaPaceStyle: String, Codable, Sendable {
+    /// No reset date: no even-spread budget exists, show no pace line.
+    case hidden
+    /// Resets soon: remaining% spread over the hours left is a real spending
+    /// guide — show "pace · budget", orange when pace exceeds budget.
+    case paceVersusBudget
+    /// Long-horizon window: the even-spread rate sits below any active use,
+    /// so show pace alone, orange only on an at-risk runway.
+    case paceOnly
+}
+
 /// Derived prediction for one quota window, based on observed percent drain.
 struct QuotaRunway: Codable, Sendable, Equatable {
     let provider: Provider
@@ -71,6 +85,7 @@ struct QuotaRunway: Codable, Sendable, Equatable {
     let percentPerHour: Double?
     let estimatedDepletionAt: Date?
     let safePercentPerHour: Double?
+    let paceStyle: QuotaPaceStyle
     let message: String
 
     var isAtRisk: Bool { status == .atRisk }

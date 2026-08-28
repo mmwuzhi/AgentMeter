@@ -42,11 +42,13 @@ usage presentation, cached state, or Claude live-session integration.
   Format all token counts with `TokenFormat.short`.
 - `QuotaColor.forRemaining` is for popover bars and headline percentages, not
   the menu bar.
-- The pace line compares drain vs the even-spread budget only for windows
-  resetting within `QuotaTrendTracker.longWindowHorizon`. Longer windows show
-  pace alone and turn orange only on an `.atRisk` runway — a weekly window's
-  even-spread rate sits below any active use, so a raw pace > budget check
-  would stay orange whenever the user is working at all.
+- The pace line renders per `QuotaRunway.paceStyle`, which only
+  `QuotaTrendTracker` decides (windows resetting within `longWindowHorizon`
+  compare drain vs the even-spread budget; longer ones show pace alone and turn
+  orange only on an `.atRisk` runway — a weekly window's even-spread rate sits
+  below any active use, so a raw pace > budget check would stay orange whenever
+  the user is working at all). Views must not re-derive window-horizon
+  semantics from reset dates.
 - Accessory apps can open Settings inactive, making Toggle/Picker states look
   identical. Keep `SettingsView.onAppear` activation and
   `makeKeyAndOrderFront`; gray traffic lights indicate a non-key window.
