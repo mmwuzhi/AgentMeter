@@ -183,9 +183,9 @@ private struct ActiveAgentGroupRow: View {
             if expanded {
                 VStack(spacing: 6) {
                     ForEach(group.nodes) { node in
-                        ActiveAgentRow(agent: node.agent)
+                        ActiveAgentRow(agent: node.agent, showsProjectTitle: false)
                         ForEach(node.children) { child in
-                            ActiveAgentRow(agent: child)
+                            ActiveAgentRow(agent: child, showsProjectTitle: false)
                                 .padding(.leading, 14)
                         }
                     }
@@ -198,6 +198,8 @@ private struct ActiveAgentGroupRow: View {
 
 private struct ActiveAgentRow: View {
     let agent: ActiveAgent
+    /// False for rows under a group header, which already names the project.
+    var showsProjectTitle = true
     @State private var hovering = false
 
     var body: some View {
@@ -227,9 +229,9 @@ private struct ActiveAgentRow: View {
                 .frame(width: 7, height: 7)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
-                    Text(agent.displayTitle)
+                    Text(showsProjectTitle ? agent.displayTitle : agent.inGroupTitle)
                         .font(.caption.weight(.semibold))
-                    if let branch = agent.session?.branch, branch != "HEAD" {
+                    if showsProjectTitle, let branch = agent.session?.branch, branch != "HEAD" {
                         Text(branch)
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
@@ -237,17 +239,19 @@ private struct ActiveAgentRow: View {
                 }
                 .lineLimit(1)
                 .truncationMode(.middle)
-                Text("\(agent.sourceLabel) · \(agent.activityText)")
+                Text(agent.subtitleText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            Text(agent.usageDisplayText)
-                .font(.caption2.monospacedDigit().weight(.medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+            if let usage = agent.usageDisplayText {
+                Text(usage)
+                    .font(.caption2.monospacedDigit().weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
         }
     }
 }

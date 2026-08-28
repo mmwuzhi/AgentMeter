@@ -310,9 +310,26 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
         }
     }
 
-    var usageDisplayText: String {
-        guard let session else { return "Usage unavailable" }
+    /// nil when no transcript could be attributed to this process — rendering
+    /// nothing beats a wall of "Usage unavailable" rows.
+    var usageDisplayText: String? {
+        guard let session else { return nil }
         return session.usageText ?? "No usage yet"
+    }
+
+    /// Title for a row under a project-group header, where repeating the
+    /// project name carries no information. Prefer what distinguishes the
+    /// session: branch, then terminal, then PID.
+    var inGroupTitle: String {
+        if let branch = session?.branch, !branch.isEmpty, branch != "HEAD" { return branch }
+        if let tty { return tty }
+        return "PID \(pid)"
+    }
+
+    /// Row subtitle. The provider is implied by the surrounding popover
+    /// section, so only the less common Desktop origin is called out.
+    var subtitleText: String {
+        sourceLabel.hasSuffix("Desktop") ? "Desktop · \(activityText)" : activityText
     }
 
     private var hasRecentSessionActivity: Bool {

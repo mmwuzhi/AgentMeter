@@ -281,9 +281,33 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(idle.displayStatus, .idle)
         XCTAssertEqual(idle.activityText, "idle · 8m ago")
         XCTAssertEqual(unresolved.activityText, "open now")
-        XCTAssertEqual(unresolved.usageDisplayText, "Usage unavailable")
+        XCTAssertNil(unresolved.usageDisplayText, "unattributed processes render no usage text")
         XCTAssertEqual(farFuture.displayStatus, .idle)
         XCTAssertEqual(farFuture.activityText, "idle · 0s ago")
+    }
+
+    func testInGroupRowTextPrefersDistinguishingDetails() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let withBranch = ActiveAgent(
+            provider: .claude, pid: 100, parentPID: 1, command: "claude",
+            elapsedSeconds: 10, observedAt: now, tty: "ttys001",
+            session: ActiveAgentSession(
+                id: "s-100", projectPath: "/p", projectName: "p", branch: "feature/x",
+                lastUpdatedAt: now, source: "test"))
+        let withTTY = ActiveAgent(
+            provider: .claude, pid: 101, parentPID: 1, command: "claude",
+            elapsedSeconds: 10, observedAt: now, tty: "ttys002")
+        let bare = ActiveAgent(
+            provider: .claude, pid: 102, parentPID: 1,
+            command: "/Users/me/Library/Application Support/Claude/claude-code/claude",
+            elapsedSeconds: 10, observedAt: now)
+
+        XCTAssertEqual(withBranch.inGroupTitle, "feature/x")
+        XCTAssertEqual(withTTY.inGroupTitle, "ttys002")
+        XCTAssertEqual(bare.inGroupTitle, "PID 102")
+
+        XCTAssertEqual(withTTY.subtitleText, "open now", "provider prefix is implied by the section")
+        XCTAssertEqual(bare.subtitleText, "Desktop · open now")
     }
 
     func testParsePSOutputDoesNotGuessSessionForDuplicateProviderCWD() {
