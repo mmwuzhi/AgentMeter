@@ -29,6 +29,7 @@ struct MenuView: View {
                         codexResetCredits: p == .codex ? model.codexResetCreditState.credits : [],
                         providerStatus: model.providerStatus[p],
                         isQuotaStale: model.staleQuotaProviders.contains(p),
+                        showsKeychainPrimer: p == .claude && model.claudeKeychainPrimerNeeded,
                         runway: { provider, window in
                             model.runway(for: provider, window: window)
                         }
@@ -312,6 +313,9 @@ struct ProviderSection: View {
     /// True when the shown quota was kept from an older fetch because the last
     /// refresh for this provider failed.
     var isQuotaStale: Bool = false
+    /// Claude-only, until the first successful OAuth read: warns that macOS is
+    /// about to ask for Keychain access and what to answer.
+    var showsKeychainPrimer: Bool = false
     var runway: (Provider, QuotaWindow) -> QuotaRunway
     @State private var showHeatmap = false
 
@@ -329,6 +333,13 @@ struct ProviderSection: View {
                 }
                 Spacer()
                 Text(sourceLabel).font(.caption2).foregroundStyle(.tertiary)
+            }
+
+            if showsKeychainPrimer {
+                Label("Reads Claude Code's credential from the Keychain — choose Always Allow when macOS asks.",
+                      systemImage: "key")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             if state.quota.windows.isEmpty {

@@ -139,6 +139,16 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     /// Evaluate one provider's windows and notify on downward threshold crossings.
     func evaluate(provider: Provider, windows: [QuotaWindow]) {
+        // Ask for permission at the moment the first alert would actually fire,
+        // instead of ambushing the user at launch. Denial sets `requested`, so
+        // this runs at most once.
+        if !requested, hasBundle, wouldNotify(provider: provider, windows: windows) {
+            Task { @MainActor in
+                await requestAuthorizationIfNeeded()
+                self.evaluate(provider: provider, windows: windows)
+            }
+            return
+        }
         let events = QuotaNotificationPolicy.evaluate(
             provider: provider,
             windows: windows,
@@ -156,6 +166,21 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 postRecovered(provider: provider, window: window)
             }
         }
+    }
+
+    /// Dry-runs the policy on a copy of the dedup state: would this evaluation
+    /// deliver anything if permission were already granted?
+    private func wouldNotify(provider: Provider, windows: [QuotaWindow]) -> Bool {
+        var stateCopy = notificationState
+        return !QuotaNotificationPolicy.evaluate(
+            provider: provider,
+            windows: windows,
+            threshold: threshold,
+            alertsEnabled: enabled,
+            recoveryEnabled: recoveryEnabled,
+            canDeliver: true,
+            state: &stateCopy
+        ).isEmpty
     }
 
     @discardableResult

@@ -25,6 +25,10 @@ final class AppViewModel {
     /// being shown (`preservingLiveQuota`). Not persisted — the first refresh
     /// after launch settles it either way.
     var staleQuotaProviders: Set<Provider> = []
+    /// True until Claude's OAuth read has succeeded once on this machine.
+    /// Drives the popover primer shown before macOS's first Keychain prompt,
+    /// so "choose Always Allow" guidance no longer lives only in the README.
+    var claudeKeychainPrimerNeeded = !UserDefaults.standard.bool(forKey: "claudeOAuthSucceededOnce")
 
     init() {
         let storedLifetimeSpend = LifetimeSpendStore.load() ?? []
@@ -33,6 +37,12 @@ final class AppViewModel {
             codex = snap.codex
             claude = snap.claude
             copilot = snap.copilot
+            // Installs that predate the flag: any cached live Claude snapshot
+            // proves quota already flows (OAuth answered, or CLI scraping —
+            // which never needs the Keychain prompt).
+            if claude.quota.source != .unavailable {
+                claudeKeychainPrimerNeeded = false
+            }
             quotaObservations = snap.quotaObservations
             codexResetCreditState = snap.codexResetCreditState
             lifetimeSpend = storedLifetimeSpend.isEmpty ? snap.lifetimeSpend : storedLifetimeSpend

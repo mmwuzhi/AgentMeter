@@ -12,8 +12,9 @@ usage presentation, cached state, or Claude live-session integration.
 - `@AppStorage` keys are a compatibility contract. Current keys include
   `menuBarItemsConfig` (plus per-slot `menuBarItemsConfig.<slot>` variants),
   `menuBarSlotsConfig`, `menuBarShowCaptions`, `refreshIntervalSeconds`,
-  threshold and notification settings, `launchAtLogin`, and
-  `statusHooksEnabled`.
+  threshold and notification settings, `launchAtLogin`,
+  `statusHooksEnabled`, and `claudeOAuthSucceededOnce` (gates the one-time
+  Keychain primer in the popover).
 - `MenuBarLayout` owns which fields each status item shows, in what order.
   `MenuBarSlots` owns which status items exist and starts Copilot hidden by
   default; newly-seen fields are backfilled disabled.

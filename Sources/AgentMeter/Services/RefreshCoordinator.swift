@@ -42,7 +42,8 @@ final class RefreshCoordinator {
 
     func start() {
         Task { await PricingService.shared.refresh() }
-        Task { await NotificationManager.shared.requestAuthorizationIfNeeded() }
+        // Notification permission is requested lazily by NotificationManager
+        // the first time an alert actually needs to fire, not at launch.
         seedBackgroundRefreshDates(at: Date())
         refresh(forceVisibleQuota: true)
         installWakeObservers()
@@ -161,6 +162,12 @@ final class RefreshCoordinator {
                 : cp
             viewModel.activeAgents = agents
             updateQuotaStaleness(plan: plan, rawResults: [.codex: c, .claude: cl, .copilot: cp])
+            // Any successful Claude quota source retires the Keychain primer:
+            // OAuth means the prompt was answered, CLI never needs it.
+            if viewModel.claudeKeychainPrimerNeeded, viewModel.claude.quota.source != .unavailable {
+                viewModel.claudeKeychainPrimerNeeded = false
+                UserDefaults.standard.set(true, forKey: "claudeOAuthSucceededOnce")
+            }
             markRefresh(plan: plan, at: startedAt)
             let quotaStates = [
                 plan.refreshQuota.contains(.codex) ? viewModel.codex : nil,
