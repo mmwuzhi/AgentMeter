@@ -48,6 +48,14 @@ usage presentation, cached state, or Claude live-session integration.
 - `ProviderSection` shows the red triangle only when
   `quota.source == .unavailable`. A successful source with no windows uses the
   neutral info icon.
+- The popover's provider sections live in a `ScrollView` capped to the screen's
+  visible height (`MenuView.maxSectionsHeight`); header and footer stay fixed.
+  Never let popover content grow the window past the screen.
+- Session groups start collapsed behind a summary (count · top status ·
+  aggregated usage). Groups and subagent disclosures auto-expand only for
+  waiting/error — surfacing sessions that need the user is the list's job, so
+  keep that exception when changing disclosure logic. Expansion memory is
+  per-run (`SessionDisclosureMemory`), deliberately not persisted.
 
 ## Spend and usage
 

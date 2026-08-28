@@ -15,32 +15,54 @@ struct MenuView: View {
     var scope: MenuViewScope
     var onRefresh: () -> Void
     var onQuit: () -> Void
+    @State private var sectionsHeight: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(visibleProviders, id: \.self) { p in
-                    ProviderSection(
-                        state: PopoverOrder.state(p, model),
-                        activeAgents: model.activeAgents.filter { $0.provider == p },
-                        tint: PopoverOrder.tint(p),
-                        codexResetCredits: p == .codex ? model.codexResetCreditState.credits : [],
-                        providerStatus: model.providerStatus[p],
-                        isQuotaStale: model.staleQuotaProviders.contains(p),
-                        showsKeychainPrimer: p == .claude && model.claudeKeychainPrimerNeeded,
-                        runway: { provider, window in
-                            model.runway(for: provider, window: window)
-                        }
-                    )
-                }
+            ScrollView(.vertical) {
+                sections
+                    .background(GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: SectionsHeightKey.self, value: proxy.size.height)
+                    })
             }
-            .padding(12)
+            .scrollBounceBehavior(.basedOnSize)
+            .onPreferenceChange(SectionsHeightKey.self) { sectionsHeight = $0 }
+            .frame(height: sectionsHeight > 0 ? min(sectionsHeight, Self.maxSectionsHeight) : nil)
             Divider()
             footer
         }
         .frame(width: 340)
+    }
+
+    private var sections: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(visibleProviders, id: \.self) { p in
+                ProviderSection(
+                    state: PopoverOrder.state(p, model),
+                    activeAgents: model.activeAgents.filter { $0.provider == p },
+                    tint: PopoverOrder.tint(p),
+                    codexResetCredits: p == .codex ? model.codexResetCreditState.credits : [],
+                    providerStatus: model.providerStatus[p],
+                    isQuotaStale: model.staleQuotaProviders.contains(p),
+                    showsKeychainPrimer: p == .claude && model.claudeKeychainPrimerNeeded,
+                    runway: { provider, window in
+                        model.runway(for: provider, window: window)
+                    }
+                )
+            }
+        }
+        .padding(12)
+    }
+
+    /// Sizes to content, but never past the screen: long session lists or an
+    /// expanded heatmap scroll inside the popover instead of running off it.
+    @MainActor
+    private static var maxSectionsHeight: CGFloat {
+        // Roughly header + footer + popover chrome + a little breathing room.
+        max(200, (NSScreen.main?.visibleFrame.height ?? 800) - 140)
     }
 
     private var visibleProviders: [Provider] {
@@ -332,6 +354,13 @@ private func statusColor(_ status: AgentStatusState?, provider: Provider) -> Col
     case .working: return .green
     case .idle: return .gray
     case nil: return PopoverOrder.tint(provider)
+    }
+}
+
+private struct SectionsHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
