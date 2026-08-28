@@ -162,6 +162,8 @@ final class RefreshCoordinator {
                 ? cp.preservingLiveQuota(from: previousCopilotQuota, at: now)
                 : cp
             viewModel.activeAgents = agents
+            viewModel.pruneSessionDisclosure(
+                keeping: ActiveAgentGrouping.disclosureKeys(for: ActiveAgentGrouping.group(agents)))
             updateQuotaStaleness(plan: plan, rawResults: [.codex: c, .claude: cl, .copilot: cp])
             // Any successful Claude quota source retires the Keychain primer:
             // OAuth means the prompt was answered, CLI never needs it.

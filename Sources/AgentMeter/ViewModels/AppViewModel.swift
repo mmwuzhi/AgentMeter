@@ -25,6 +25,17 @@ final class AppViewModel {
     /// consecutive times while older live data is still being shown
     /// (`preservingLiveQuota`). Not persisted — refreshes after launch settle it.
     var staleQuotaProviders: Set<Provider> = []
+    /// Explicit user choices for session-group and subagent disclosures this
+    /// run, keyed by `ActiveAgentGroup.id` / `ActiveAgentNode.disclosureKey`.
+    /// An absent key means automatic: expanded only while attention is needed.
+    /// Not persisted — groups come and go with the processes behind them — and
+    /// pruned as groups disappear, so a stale toggle can't override a
+    /// recreated group's automatic behavior.
+    var sessionDisclosure: [String: Bool] = [:]
+    /// visibleFrame height of the screen hosting the open popover, set by the
+    /// status item controller each time a popover opens; nil until the first
+    /// open, when views fall back to the main screen.
+    var popoverScreenVisibleHeight: CGFloat?
     /// True until Claude's OAuth read has succeeded once on this machine.
     /// Drives the popover primer shown before macOS's first Keychain prompt,
     /// so "choose Always Allow" guidance no longer lives only in the README.
@@ -99,6 +110,10 @@ final class AppViewModel {
             now: now,
             peerWindows: peerWindows
         )
+    }
+
+    func pruneSessionDisclosure(keeping valid: Set<String>) {
+        sessionDisclosure = sessionDisclosure.filter { valid.contains($0.key) }
     }
 
 }

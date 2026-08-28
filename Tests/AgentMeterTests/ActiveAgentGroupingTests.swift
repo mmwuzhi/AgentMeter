@@ -150,6 +150,22 @@ final class ActiveAgentGroupingTests: XCTestCase {
         XCTAssertEqual(groups.count, 2)
     }
 
+    func testDisclosureKeysCoverGroupsAndOnlyParentsWithChildren() {
+        let groups = ActiveAgentGrouping.group([
+            agent(pid: 100, cwd: "/Users/me/alpha"),
+            agent(pid: 101, cwd: "/Users/me/alpha", parentAgentPID: 100),
+            agent(pid: 200, cwd: "/Users/me/beta"),
+        ])
+
+        let keys = ActiveAgentGrouping.disclosureKeys(for: groups)
+
+        XCTAssertTrue(keys.contains("claude:/Users/me/alpha"))
+        XCTAssertTrue(keys.contains("claude:/Users/me/beta"))
+        let parent = groups.first { $0.projectName == "alpha" }!.nodes[0]
+        XCTAssertTrue(keys.contains(parent.disclosureKey))
+        XCTAssertEqual(keys.count, 3, "childless nodes get no subagent key")
+    }
+
     func testInvalidParentCycleDoesNotHideAgents() {
         let groups = ActiveAgentGrouping.group([
             agent(pid: 100, cwd: "/tmp/a", parentAgentPID: 101),

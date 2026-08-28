@@ -240,6 +240,9 @@ private final class StatusItemSlotController: NSObject {
 
     func showPopover() {
         guard !popover.isShown, let button = statusItem.button else { return }
+        // The popover opens on the button's screen; record its height so the
+        // popover caps itself to that screen, not whichever one is "main".
+        model.popoverScreenVisibleHeight = button.window?.screen?.visibleFrame.height
         closeOthers(slot)
         coordinator.setActiveAgentsVisible(true)
         coordinator.refresh(

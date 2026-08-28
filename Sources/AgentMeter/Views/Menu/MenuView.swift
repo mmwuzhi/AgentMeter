@@ -30,11 +30,12 @@ struct MenuView: View {
             }
             .scrollBounceBehavior(.basedOnSize)
             .onPreferenceChange(SectionsHeightKey.self) { sectionsHeight = $0 }
-            .frame(height: sectionsHeight > 0 ? min(sectionsHeight, Self.maxSectionsHeight) : nil)
+            .frame(height: sectionsHeight > 0 ? min(sectionsHeight, maxSectionsHeight) : nil)
             Divider()
             footer
         }
         .frame(width: 340)
+        .environment(model)
     }
 
     private var sections: some View {
@@ -57,12 +58,19 @@ struct MenuView: View {
         .padding(12)
     }
 
-    /// Sizes to content, but never past the screen: long session lists or an
-    /// expanded heatmap scroll inside the popover instead of running off it.
-    @MainActor
-    private static var maxSectionsHeight: CGFloat {
-        // Roughly header + footer + popover chrome + a little breathing room.
-        max(200, (NSScreen.main?.visibleFrame.height ?? 800) - 140)
+    /// Sizes to content, but never past the hosting screen: long session lists
+    /// or an expanded heatmap scroll inside the popover instead of running off
+    /// it. The controller records the popover's own screen on each open, so a
+    /// smaller secondary display gets the smaller cap; `NSScreen.main` is only
+    /// the pre-first-open fallback.
+    private var maxSectionsHeight: CGFloat {
+        Self.sectionsCap(screenVisibleHeight:
+            model.popoverScreenVisibleHeight ?? NSScreen.main?.visibleFrame.height)
+    }
+
+    /// Roughly header + footer + popover chrome + a little breathing room.
+    nonisolated static func sectionsCap(screenVisibleHeight: CGFloat?) -> CGFloat {
+        max(200, (screenVisibleHeight ?? 800) - 140)
     }
 
     private var visibleProviders: [Provider] {
@@ -173,29 +181,23 @@ struct ActiveAgentsSection: View {
     }
 }
 
-/// Which session groups the user expanded, remembered for this app run so the
-/// popover reopens the way they left it. Not persisted: session groups come
-/// and go with the processes behind them.
-@MainActor
-private enum SessionDisclosureMemory {
-    static var expandedByGroupID: [String: Bool] = [:]
-}
-
 private struct ActiveAgentGroupRow: View {
     let group: ActiveAgentGroup
-    @State private var expanded: Bool
+    @Environment(AppViewModel.self) private var model
 
-    init(group: ActiveAgentGroup) {
-        self.group = group
-        _expanded = State(initialValue:
-            SessionDisclosureMemory.expandedByGroupID[group.id] ?? group.needsAttention)
+    /// Automatic until the user toggles: open exactly while the group needs
+    /// the user, so a session that starts waiting mid-run surfaces itself.
+    /// An explicit choice is remembered on the model for this app run.
+    private var expanded: Bool {
+        model.sessionDisclosure[group.id] ?? group.needsAttention
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
-                SessionDisclosureMemory.expandedByGroupID[group.id] = expanded
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    model.sessionDisclosure[group.id] = !expanded
+                }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
@@ -234,18 +236,20 @@ private struct ActiveAgentGroupRow: View {
 /// small disclosure unless one of them needs the user.
 private struct ActiveAgentNodeRows: View {
     let node: ActiveAgentNode
-    @State private var showsChildren: Bool
+    @Environment(AppViewModel.self) private var model
 
-    init(node: ActiveAgentNode) {
-        self.node = node
-        _showsChildren = State(initialValue: node.childrenNeedAttention)
+    /// Same automatic-until-toggled behavior as the group disclosure.
+    private var showsChildren: Bool {
+        model.sessionDisclosure[node.disclosureKey] ?? node.childrenNeedAttention
     }
 
     var body: some View {
         ActiveAgentRow(agent: node.agent, showsProjectTitle: false)
         if !node.children.isEmpty {
             Button {
-                withAnimation(.easeInOut(duration: 0.18)) { showsChildren.toggle() }
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    model.sessionDisclosure[node.disclosureKey] = !showsChildren
+                }
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.right")

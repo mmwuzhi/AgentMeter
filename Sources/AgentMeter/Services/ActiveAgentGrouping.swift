@@ -67,9 +67,25 @@ extension ActiveAgentNode {
     var childrenNeedAttention: Bool {
         children.contains { ($0.displayStatus?.priority ?? -1) >= AgentStatusState.waiting.priority }
     }
+
+    /// Key under which the user's subagent-disclosure choice is remembered in
+    /// `AppViewModel.sessionDisclosure`, distinct from group IDs.
+    var disclosureKey: String { "subagents:\(agent.id)" }
 }
 
 enum ActiveAgentGrouping {
+    /// Every disclosure key the current group list can legitimately remember a
+    /// choice for; `AppViewModel.sessionDisclosure` is pruned against this.
+    static func disclosureKeys(for groups: [ActiveAgentGroup]) -> Set<String> {
+        var keys = Set(groups.map(\.id))
+        for group in groups {
+            for node in group.nodes where !node.children.isEmpty {
+                keys.insert(node.disclosureKey)
+            }
+        }
+        return keys
+    }
+
     static func group(_ agents: [ActiveAgent]) -> [ActiveAgentGroup] {
         let byPID = Dictionary(agents.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
 
