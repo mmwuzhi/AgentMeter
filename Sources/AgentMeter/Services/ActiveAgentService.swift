@@ -42,9 +42,12 @@ enum ActiveAgentService {
         return payload
     }
 
+    /// `payloads` is required (no default) so every caller visibly shares one
+    /// store snapshot with `parsePSOutput` — status and session identity must
+    /// never be attributed from two different reads.
     static func attachStatus(
         _ agents: [ActiveAgent],
-        payloads: [AgentStatusPayload] = AgentStatusStore.readAll()
+        payloads: [AgentStatusPayload]
     ) -> [ActiveAgent] {
         let claudePIDs = Set(agents.lazy.filter { $0.provider == .claude }.map(\.pid))
         let byPID = latestPayloadsByPID(payloads, agentPIDs: claudePIDs)
@@ -71,7 +74,7 @@ enum ActiveAgentService {
     static func parsePSOutput(
         _ output: String,
         observedAt: Date,
-        payloads: [AgentStatusPayload] = []
+        payloads: [AgentStatusPayload]
     ) -> [ActiveAgent] {
         let rows = processRows(from: output)
         let executableByPID = executablePathMap(for: rows)
@@ -95,26 +98,58 @@ enum ActiveAgentService {
             observedAt: observedAt,
             executableLookup: { executableByPID[$0] },
             cwdLookup: { cwdByPID[$0] },
-            sessionLookup: { provider, cwd, startedAt, observedAt, rolloutIdentifier in
-                currentSession(
-                    provider: provider,
-                    cwd: cwd,
-                    startedAt: startedAt,
-                    observedAt: observedAt,
-                    codexRolloutIdentifier: rolloutIdentifier,
-                    codexRolloutFiles: codexRolloutFiles
-                )
-            },
-            claudeSessionByHook: { pid, startedAt, processCwd in
-                guard let payload = hookPayload(for: pid, startedAt: startedAt, payloadsByPID: payloadsByPID),
-                      let cwd = payload.cwd ?? processCwd else { return nil }
-                return identifiedClaudeSession(
-                    sessionID: payload.sessionID,
-                    cwd: cwd,
-                    observedAt: observedAt
-                )
-            }
+            resolveSession: sessionResolver(
+                payloadsByPID: payloadsByPID,
+                identified: { identifiedClaudeSession(sessionID: $0, cwd: $1, observedAt: $2) },
+                heuristic: { query, cwd in
+                    currentSession(
+                        provider: query.provider,
+                        cwd: cwd,
+                        startedAt: query.startedAt,
+                        observedAt: query.observedAt,
+                        codexRolloutIdentifier: query.codexRolloutIdentifier,
+                        codexRolloutFiles: codexRolloutFiles
+                    )
+                }
+            )
         )
+    }
+
+    /// Everything the session-resolution strategy may consider for one process.
+    struct SessionQuery {
+        let provider: Provider
+        let pid: Int
+        let cwd: String?
+        let startedAt: Date
+        let observedAt: Date
+        let codexRolloutIdentifier: String?
+        /// False when several same-provider agents share this cwd — the
+        /// newest-file heuristic must not guess between them.
+        let isSoleAgentForCWD: Bool
+    }
+
+    /// The one session-resolution strategy: a hook-reported session ID pins a
+    /// Claude PID to its exact transcript and beats the newest-file heuristic
+    /// (it stays usable when several agents share a working directory); the
+    /// heuristic itself runs only for a directory's single agent or an
+    /// identified Codex rollout. Tests inject this same shape with fake leaf
+    /// lookups, so the precedence they exercise is the production one.
+    static func sessionResolver(
+        payloadsByPID: [Int: AgentStatusPayload],
+        identified: @escaping (String, String, Date) -> ActiveAgentSession?,
+        heuristic: @escaping (SessionQuery, String) -> ActiveAgentSession?
+    ) -> (SessionQuery) -> ActiveAgentSession? {
+        { query in
+            if query.provider == .claude,
+               let payload = hookPayload(for: query.pid, startedAt: query.startedAt, payloadsByPID: payloadsByPID),
+               let cwd = payload.cwd ?? query.cwd,
+               let session = identified(payload.sessionID, cwd, query.observedAt) {
+                return session
+            }
+            guard let cwd = query.cwd,
+                  query.codexRolloutIdentifier != nil || query.isSoleAgentForCWD else { return nil }
+            return heuristic(query, cwd)
+        }
     }
 
     private static func processRows(from output: String) -> [ProcessRow] {
@@ -134,17 +169,14 @@ enum ActiveAgentService {
         _ output: String,
         observedAt: Date,
         cwdLookup: (Int) -> String?,
-        sessionLookup: (Provider, String?, Date, Date) -> ActiveAgentSession?
+        resolveSession: (SessionQuery) -> ActiveAgentSession?
     ) -> [ActiveAgent] {
         parseProcessRows(
             processRows(from: output),
             observedAt: observedAt,
             executableLookup: { _ in nil },
             cwdLookup: cwdLookup,
-            sessionLookup: { provider, cwd, startedAt, observedAt, _ in
-                sessionLookup(provider, cwd, startedAt, observedAt)
-            },
-            claudeSessionByHook: { _, _, _ in nil }
+            resolveSession: resolveSession
         )
     }
 
@@ -153,8 +185,7 @@ enum ActiveAgentService {
         observedAt: Date,
         executableLookup: (Int) -> String?,
         cwdLookup: (Int) -> String?,
-        sessionLookup: (Provider, String?, Date, Date, String?) -> ActiveAgentSession?,
-        claudeSessionByHook: (Int, Date, String?) -> ActiveAgentSession?
+        resolveSession: (SessionQuery) -> ActiveAgentSession?
     ) -> [ActiveAgent] {
         let candidates: [AgentCandidate] = rows
             .compactMap { row -> AgentCandidate? in
@@ -205,24 +236,18 @@ enum ActiveAgentService {
 
         return candidates
             .map { candidate in
-                // A hook-reported session ID pins this PID to its exact
-                // transcript, so it beats the newest-file heuristic and stays
-                // usable when several agents share a working directory.
-                let hookSession = candidate.provider == .claude
-                    ? claudeSessionByHook(candidate.row.pid, candidate.startedAt, candidate.cwd)
-                    : nil
-                let session = hookSession ?? candidate.cwd.flatMap { cwd -> ActiveAgentSession? in
-                    let group = SessionGroup(provider: candidate.provider, cwd: cwd)
-                    guard candidate.codexRolloutIdentifier != nil
-                            || groupCounts[group, default: 0] <= 1 else { return nil }
-                    return sessionLookup(
-                        candidate.provider,
-                        cwd,
-                        candidate.startedAt,
-                        observedAt,
-                        candidate.codexRolloutIdentifier
-                    )
-                }
+                let soleForCWD = candidate.cwd.map { cwd in
+                    groupCounts[SessionGroup(provider: candidate.provider, cwd: cwd), default: 0] <= 1
+                } ?? false
+                let session = resolveSession(SessionQuery(
+                    provider: candidate.provider,
+                    pid: candidate.row.pid,
+                    cwd: candidate.cwd,
+                    startedAt: candidate.startedAt,
+                    observedAt: observedAt,
+                    codexRolloutIdentifier: candidate.codexRolloutIdentifier,
+                    isSoleAgentForCWD: soleForCWD
+                ))
                 return ActiveAgent(
                     provider: candidate.provider,
                     pid: candidate.row.pid,

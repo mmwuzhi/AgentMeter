@@ -14,6 +14,57 @@ final class ActiveAgentServiceTests: XCTestCase {
         super.tearDown()
     }
 
+    /// Builds the production session-resolution strategy with injectable leaf
+    /// lookups, so tests exercise the same hook-beats-heuristic precedence and
+    /// sole-agent guard the app ships with.
+    private func resolver(
+        payloadsByPID: [Int: AgentStatusPayload] = [:],
+        identified: @escaping (String, String, Date) -> ActiveAgentSession? = { _, _, _ in nil },
+        _ heuristic: @escaping (Provider, String, Date, Date) -> ActiveAgentSession?
+    ) -> (ActiveAgentService.SessionQuery) -> ActiveAgentSession? {
+        ActiveAgentService.sessionResolver(
+            payloadsByPID: payloadsByPID,
+            identified: identified,
+            heuristic: { query, cwd in heuristic(query.provider, cwd, query.startedAt, query.observedAt) }
+        )
+    }
+
+    func testSessionResolverPrefersHookPinnedTranscriptOverHeuristic() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let output = """
+          PID  PPID     ELAPSED COMMAND
+        10004 99999       00:10 claude --resume
+        10005 99999       00:20 claude --resume
+        """
+        let payload = AgentStatusPayload(
+            state: .working, sessionID: "hook-session", processAncestry: [10004], updatedAt: now)
+        let hooked = ActiveAgentSession(
+            id: "hook-session", projectPath: "/Users/me/project", projectName: "project",
+            branch: nil, lastUpdatedAt: now, source: "test")
+
+        let agents = ActiveAgentService.parsePSOutput(
+            output,
+            observedAt: now,
+            cwdLookup: { _ in "/Users/me/project" },
+            resolveSession: resolver(
+                payloadsByPID: [10004: payload],
+                identified: { sessionID, cwd, _ in
+                    XCTAssertEqual(sessionID, "hook-session")
+                    XCTAssertEqual(cwd, "/Users/me/project")
+                    return hooked
+                }
+            ) { _, _, _, _ in
+                XCTFail("hook-pinned or ambiguous processes must not reach the heuristic")
+                return nil
+            }
+        )
+
+        XCTAssertEqual(agents.count, 2)
+        XCTAssertEqual(agents.first { $0.pid == 10004 }?.session?.id, "hook-session")
+        XCTAssertNil(agents.first { $0.pid == 10005 }?.session,
+                     "the unhooked twin in the same directory stays unattributed")
+    }
+
     func testParsePSOutputFindsInteractiveAgents() {
         let output = """
           PID  PPID     ELAPSED COMMAND
@@ -26,7 +77,7 @@ final class ActiveAgentServiceTests: XCTestCase {
             output,
             observedAt: Date(timeIntervalSince1970: 0),
             cwdLookup: { _ in nil },
-            sessionLookup: { _, _, _, _ in nil }
+            resolveSession: resolver { _, _, _, _ in nil }
         )
 
         XCTAssertEqual(agents.map(\.provider), [.claude, .claude, .codex])
@@ -45,7 +96,7 @@ final class ActiveAgentServiceTests: XCTestCase {
             output,
             observedAt: Date(timeIntervalSince1970: 100),
             cwdLookup: { _ in "/Users/me/project" },
-            sessionLookup: { _, _, _, _ in nil }
+            resolveSession: resolver { _, _, _, _ in nil }
         )
 
         XCTAssertEqual(agents.map(\.tty), ["ttys001", "ttys001"])
@@ -107,7 +158,7 @@ final class ActiveAgentServiceTests: XCTestCase {
             output,
             observedAt: Date(timeIntervalSince1970: 0),
             cwdLookup: { _ in nil },
-            sessionLookup: { _, _, _, _ in nil }
+            resolveSession: resolver { _, _, _, _ in nil }
         )
 
         XCTAssertEqual(agents.map(\.pid), [10004])
@@ -130,7 +181,7 @@ final class ActiveAgentServiceTests: XCTestCase {
             output,
             observedAt: Date(timeIntervalSince1970: 10_000),
             cwdLookup: { pid in pid == 10004 ? "/Users/me/project" : "/" },
-            sessionLookup: { provider, cwd, _, _ in
+            resolveSession: resolver { provider, cwd, _, _ in
                 guard provider == .codex, cwd == "/Users/me/project" else { return nil }
                 return ActiveAgentSession(
                     id: "session-10004",
@@ -157,7 +208,7 @@ final class ActiveAgentServiceTests: XCTestCase {
             output,
             observedAt: Date(timeIntervalSince1970: 0),
             cwdLookup: { _ in nil },
-            sessionLookup: { _, _, _, _ in nil }
+            resolveSession: resolver { _, _, _, _ in nil }
         )
 
         XCTAssertTrue(agents.isEmpty)
@@ -173,7 +224,7 @@ final class ActiveAgentServiceTests: XCTestCase {
             output,
             observedAt: Date(timeIntervalSince1970: 0),
             cwdLookup: { _ in nil },
-            sessionLookup: { _, _, _, _ in nil }
+            resolveSession: resolver { _, _, _, _ in nil }
         )
 
         XCTAssertEqual(agents.map(\.pid), [10002])
@@ -192,7 +243,7 @@ final class ActiveAgentServiceTests: XCTestCase {
             cwdLookup: { pid in
                 pid == 10004 ? "/Users/me/project" : nil
             },
-            sessionLookup: { provider, cwd, startedAt, _ in
+            resolveSession: resolver { provider, cwd, startedAt, _ in
                 XCTAssertEqual(provider, .claude)
                 XCTAssertEqual(cwd, "/Users/me/project")
                 XCTAssertEqual(startedAt, Date(timeIntervalSince1970: 90))
@@ -321,7 +372,7 @@ final class ActiveAgentServiceTests: XCTestCase {
             output,
             observedAt: Date(timeIntervalSince1970: 100),
             cwdLookup: { _ in "/Users/me/project" },
-            sessionLookup: { _, _, _, _ in
+            resolveSession: resolver { _, _, _, _ in
                 XCTFail("Ambiguous same-provider sessions should not be guessed")
                 return ActiveAgentSession(
                     id: "abcdef12-3456",
@@ -493,7 +544,7 @@ final class ActiveAgentServiceTests: XCTestCase {
             output,
             observedAt: Date(timeIntervalSince1970: 100),
             cwdLookup: { _ in "/Users/me/project" },
-            sessionLookup: { _, cwd, startedAt, _ in
+            resolveSession: resolver { _, cwd, startedAt, _ in
                 ActiveAgentSession(
                     id: String(Int(startedAt.timeIntervalSince1970)),
                     projectPath: cwd,
