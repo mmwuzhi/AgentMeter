@@ -21,9 +21,9 @@ final class AppViewModel {
     /// Not persisted (like `activeAgents`) — a stale "outage" shown from a launch
     /// days ago would be misleading, so this starts empty and fills in on first refresh.
     var providerStatus: [Provider: ProviderStatusResult] = [:]
-    /// Providers whose last quota fetch failed while older live data is still
-    /// being shown (`preservingLiveQuota`). Not persisted — the first refresh
-    /// after launch settles it either way.
+    /// Providers whose quota fetch failed at least `staleQuotaFailureThreshold`
+    /// consecutive times while older live data is still being shown
+    /// (`preservingLiveQuota`). Not persisted — refreshes after launch settle it.
     var staleQuotaProviders: Set<Provider> = []
     /// True until Claude's OAuth read has succeeded once on this machine.
     /// Drives the popover primer shown before macOS's first Keychain prompt,

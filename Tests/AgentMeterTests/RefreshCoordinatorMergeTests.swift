@@ -179,4 +179,28 @@ final class RefreshCoordinatorMergeTests: XCTestCase {
         // Nothing preserved: the UI already shows "unavailable" explicitly.
         XCTAssertFalse(RefreshCoordinator.isQuotaStale(rawSource: .unavailable, shownSource: .unavailable))
     }
+
+    func testFailureStreakCountsConsecutiveStaleCycles() {
+        var streak = RefreshCoordinator.nextQuotaFailureStreak(
+            previous: 0, rawSource: .unavailable, shownSource: .oauth)
+        XCTAssertEqual(streak, 1)
+        XCTAssertLessThan(streak, RefreshCoordinator.staleQuotaFailureThreshold,
+                          "a single transient failure must not trigger the stale warning")
+        streak = RefreshCoordinator.nextQuotaFailureStreak(
+            previous: streak, rawSource: .unavailable, shownSource: .oauth)
+        XCTAssertGreaterThanOrEqual(streak, RefreshCoordinator.staleQuotaFailureThreshold)
+    }
+
+    func testFailureStreakResetsOnAnySuccessfulFetch() {
+        XCTAssertEqual(RefreshCoordinator.nextQuotaFailureStreak(
+            previous: 5, rawSource: .oauth, shownSource: .oauth), 0)
+        XCTAssertEqual(RefreshCoordinator.nextQuotaFailureStreak(
+            previous: 5, rawSource: .cli, shownSource: .cli), 0)
+    }
+
+    func testFailureStreakDoesNotCountGenuineUnavailability() {
+        // No preserved data on screen — the section shows "unavailable" itself.
+        XCTAssertEqual(RefreshCoordinator.nextQuotaFailureStreak(
+            previous: 1, rawSource: .unavailable, shownSource: .unavailable), 0)
+    }
 }

@@ -29,6 +29,7 @@ final class RefreshCoordinator {
     private var lastProviderStatusRefresh: Date?
     private var activeAgentsVisibleCount = 0
     private var pendingRefreshRequest = ProviderRefreshRequest()
+    private var quotaFailureStreaks: [Provider: Int] = [:]
 
     init(viewModel: AppViewModel) {
         self.viewModel = viewModel
@@ -352,12 +353,30 @@ final class RefreshCoordinator {
             case .claude: shown = viewModel.claude
             case .copilot: shown = viewModel.copilot
             }
-            if Self.isQuotaStale(rawSource: raw.quota.source, shownSource: shown.quota.source) {
+            let streak = Self.nextQuotaFailureStreak(
+                previous: quotaFailureStreaks[provider] ?? 0,
+                rawSource: raw.quota.source,
+                shownSource: shown.quota.source
+            )
+            quotaFailureStreaks[provider] = streak
+            if streak >= Self.staleQuotaFailureThreshold {
                 viewModel.staleQuotaProviders.insert(provider)
             } else {
                 viewModel.staleQuotaProviders.remove(provider)
             }
         }
+    }
+
+    /// A single failed cycle is usually a transient blip (proxy hiccup, timeout,
+    /// rate limit); only consecutive failures warrant the stale warning.
+    nonisolated static let staleQuotaFailureThreshold = 2
+
+    nonisolated static func nextQuotaFailureStreak(
+        previous: Int,
+        rawSource: QuotaSnapshot.SourceKind,
+        shownSource: QuotaSnapshot.SourceKind
+    ) -> Int {
+        isQuotaStale(rawSource: rawSource, shownSource: shownSource) ? previous + 1 : 0
     }
 
     /// Stale = the fresh fetch came back unavailable but the UI is showing a
