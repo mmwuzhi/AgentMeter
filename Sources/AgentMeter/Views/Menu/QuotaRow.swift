@@ -34,11 +34,11 @@ struct QuotaRow: View {
                 Text(runway.message)
                     .font(.caption2)
                     .foregroundStyle(.red)
-            } else if let pace = Self.pace(runway) {
+            } else if let pace = Self.pace(runway, resetsAt: window.resetsAt) {
                 Text(pace.text)
                     .font(.caption2)
                     .foregroundStyle(pace.overBudget ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.tertiary))
-                    .help("Current drain vs the even-spread rate that would exactly last until reset.")
+                    .help(pace.help)
             }
         }
     }
@@ -46,19 +46,40 @@ struct QuotaRow: View {
     struct PaceLine: Equatable {
         let text: String
         let overBudget: Bool
+        let help: String
     }
 
-    /// Always-visible pace readout: observed drain rate vs the "budget" rate
-    /// (remaining % spread evenly over the time left until reset). Nil when
-    /// either rate is unknown, so the row stays clean on first launch or for
-    /// windows without a reset date.
-    nonisolated static func pace(_ runway: QuotaRunway?) -> PaceLine? {
+    /// Always-visible pace readout. Windows resetting within
+    /// `QuotaTrendTracker.longWindowHorizon` show the observed drain rate vs the
+    /// "budget" rate (remaining % spread evenly over the time left until reset)
+    /// and turn orange when pace exceeds budget. Longer windows show pace alone:
+    /// their even-spread rate sits below any active use, so a raw comparison
+    /// would be orange whenever the user is working at all — instead they turn
+    /// orange only when the runway projection (with its burst-evidence and
+    /// shorter-window guards) says the window would run out before reset. Nil
+    /// when the rate or reset date is unknown, so the row stays clean on first
+    /// launch or for windows without a reset date.
+    nonisolated static func pace(
+        _ runway: QuotaRunway?,
+        resetsAt: Date?,
+        now: Date = Date()
+    ) -> PaceLine? {
         guard let runway,
               let rate = runway.percentPerHour,
-              let budget = runway.safePercentPerHour,
-              budget > 0 else { return nil }
-        let text = "pace \(trimRate(rate))%/h · budget \(trimRate(budget))%/h"
-        return PaceLine(text: text, overBudget: rate > budget)
+              let resetsAt else { return nil }
+        if resetsAt.timeIntervalSince(now) > QuotaTrendTracker.longWindowHorizon {
+            return PaceLine(
+                text: "pace \(trimRate(rate))%/h",
+                overBudget: runway.status == .atRisk,
+                help: "Current drain rate. Turns orange only if this window is projected to run out before it resets."
+            )
+        }
+        guard let budget = runway.safePercentPerHour, budget > 0 else { return nil }
+        return PaceLine(
+            text: "pace \(trimRate(rate))%/h · budget \(trimRate(budget))%/h",
+            overBudget: rate > budget,
+            help: "Current drain vs the even-spread rate that would exactly last until reset."
+        )
     }
 
     nonisolated private static func trimRate(_ value: Double) -> String {

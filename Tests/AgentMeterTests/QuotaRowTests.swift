@@ -108,32 +108,69 @@ final class QuotaRowTests: XCTestCase {
         XCTAssertFalse(QuotaRow.shouldShowRunwayAlert(missingDate, now: now))
     }
 
-    func testPaceComparesDrainRateAgainstBudgetRate() {
-        let over = QuotaRow.pace(runway(percentPerHour: 6.07, safePercentPerHour: 4.4))
+    private static let paceNow = Date(timeIntervalSince1970: 1_000)
+    /// Resets within `longWindowHorizon` — the short-window (5-hour style) branch.
+    private static let shortReset = paceNow.addingTimeInterval(3 * 3600)
+    /// Resets beyond `longWindowHorizon` — the long-window (weekly style) branch.
+    private static let longReset = paceNow.addingTimeInterval(6 * 24 * 3600)
+
+    func testPaceComparesDrainRateAgainstBudgetRateForShortWindows() {
+        let over = pace(runway(percentPerHour: 6.07, safePercentPerHour: 4.4), resetsAt: Self.shortReset)
         XCTAssertEqual(over?.text, "pace 6.1%/h · budget 4.4%/h")
         XCTAssertEqual(over?.overBudget, true)
 
-        let under = QuotaRow.pace(runway(percentPerHour: 2, safePercentPerHour: 4.4))
+        let under = pace(runway(percentPerHour: 2, safePercentPerHour: 4.4), resetsAt: Self.shortReset)
         XCTAssertEqual(under?.text, "pace 2%/h · budget 4.4%/h")
         XCTAssertEqual(under?.overBudget, false)
 
-        let idle = QuotaRow.pace(runway(percentPerHour: 0, safePercentPerHour: 5))
+        let idle = pace(runway(percentPerHour: 0, safePercentPerHour: 5), resetsAt: Self.shortReset)
         XCTAssertEqual(idle?.text, "pace 0%/h · budget 5%/h")
         XCTAssertEqual(idle?.overBudget, false)
     }
 
-    func testPaceHiddenWithoutBothRates() {
-        XCTAssertNil(QuotaRow.pace(nil))
-        XCTAssertNil(QuotaRow.pace(runway(percentPerHour: nil, safePercentPerHour: 4)))
-        XCTAssertNil(QuotaRow.pace(runway(percentPerHour: 2, safePercentPerHour: nil)))
-        XCTAssertNil(QuotaRow.pace(runway(percentPerHour: 2, safePercentPerHour: 0)))
+    func testPaceOnLongWindowsOmitsBudgetAndIgnoresRawComparison() {
+        // Weekly-style scenario: any active use dwarfs the even-spread rate, so
+        // the raw pace > budget comparison must not color the line.
+        let bursting = pace(runway(percentPerHour: 6.2, safePercentPerHour: 0.6), resetsAt: Self.longReset)
+        XCTAssertEqual(bursting?.text, "pace 6.2%/h")
+        XCTAssertEqual(bursting?.overBudget, false)
     }
 
-    private func runway(percentPerHour: Double?, safePercentPerHour: Double?) -> QuotaRunway {
+    func testPaceOnLongWindowsTurnsOrangeOnlyWhenAtRisk() {
+        let atRisk = pace(
+            runway(percentPerHour: 6.2, safePercentPerHour: 0.6, status: .atRisk),
+            resetsAt: Self.longReset
+        )
+        XCTAssertEqual(atRisk?.text, "pace 6.2%/h")
+        XCTAssertEqual(atRisk?.overBudget, true)
+    }
+
+    func testPaceOnLongWindowsShowsWithoutBudgetRate() {
+        let line = pace(runway(percentPerHour: 2, safePercentPerHour: nil), resetsAt: Self.longReset)
+        XCTAssertEqual(line?.text, "pace 2%/h")
+    }
+
+    func testPaceHiddenWithoutRateBudgetOrResetDate() {
+        XCTAssertNil(pace(nil, resetsAt: Self.shortReset))
+        XCTAssertNil(pace(runway(percentPerHour: nil, safePercentPerHour: 4), resetsAt: Self.shortReset))
+        XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: nil), resetsAt: Self.shortReset))
+        XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: 0), resetsAt: Self.shortReset))
+        XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: 4), resetsAt: nil))
+    }
+
+    private func pace(_ runway: QuotaRunway?, resetsAt: Date?) -> QuotaRow.PaceLine? {
+        QuotaRow.pace(runway, resetsAt: resetsAt, now: Self.paceNow)
+    }
+
+    private func runway(
+        percentPerHour: Double?,
+        safePercentPerHour: Double?,
+        status: QuotaRunwayStatus = .watch
+    ) -> QuotaRunway {
         QuotaRunway(
             provider: .claude,
             windowID: "five_hour",
-            status: .watch,
+            status: status,
             percentPerHour: percentPerHour,
             estimatedDepletionAt: nil,
             safePercentPerHour: safePercentPerHour,
