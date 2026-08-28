@@ -72,6 +72,55 @@ final class ActiveAgentGroupingTests: XCTestCase {
         XCTAssertEqual(groups[0].topStatus, .error)
     }
 
+    func testCollapsedSummaryCountsStatusAndAggregatesUsage() {
+        let updated = Date(timeIntervalSince1970: 990)
+        var busy = agent(pid: 1, cwd: "/Users/me/alpha", status: .working, lastUpdatedAt: updated)
+        busy.session?.tokenCount = 2_000_000
+        busy.session?.estimatedCostUSD = 1.10
+        var second = agent(pid: 2, cwd: "/Users/me/alpha", status: .working, lastUpdatedAt: updated)
+        second.session?.tokenCount = 500_000
+        second.session?.estimatedCostUSD = 0.10
+        let idle = agent(pid: 3, cwd: "/Users/me/alpha", status: .idle)
+
+        let group = ActiveAgentGrouping.group([busy, second, idle])[0]
+
+        XCTAssertEqual(group.collapsedSummary, "3 · 2 working · 2.5M · $1.20")
+    }
+
+    func testCollapsedSummaryOmitsIdleStatusAndUnknownUsage() {
+        let group = ActiveAgentGrouping.group([
+            agent(pid: 1, cwd: "/Users/me/alpha", status: .idle),
+            agent(pid: 2, cwd: "/Users/me/alpha"),
+        ])[0]
+
+        XCTAssertEqual(group.collapsedSummary, "2")
+    }
+
+    func testGroupNeedsAttentionOnlyForWaitingOrError() {
+        func group(_ status: AgentStatusState?) -> ActiveAgentGroup {
+            ActiveAgentGrouping.group([agent(pid: 1, cwd: "/Users/me/alpha", status: status)])[0]
+        }
+        XCTAssertFalse(group(nil).needsAttention)
+        XCTAssertFalse(group(.idle).needsAttention)
+        XCTAssertFalse(group(.working).needsAttention)
+        XCTAssertTrue(group(.waiting).needsAttention)
+        XCTAssertTrue(group(.error).needsAttention)
+    }
+
+    func testChildrenNeedAttentionFlagsWaitingSubagent() {
+        let calm = ActiveAgentGrouping.group([
+            agent(pid: 100, cwd: "/Users/me/alpha", status: .working),
+            agent(pid: 101, cwd: "/Users/me/alpha", parentAgentPID: 100, status: .working),
+        ])[0].nodes[0]
+        let urgent = ActiveAgentGrouping.group([
+            agent(pid: 100, cwd: "/Users/me/alpha", status: .working),
+            agent(pid: 101, cwd: "/Users/me/alpha", parentAgentPID: 100, status: .waiting),
+        ])[0].nodes[0]
+
+        XCTAssertFalse(calm.childrenNeedAttention)
+        XCTAssertTrue(urgent.childrenNeedAttention)
+    }
+
     func testRecentActivityPromotesGroupAndSessionOrder() {
         let groups = ActiveAgentGrouping.group([
             agent(pid: 100, cwd: "/Users/me/alpha", elapsed: 500),

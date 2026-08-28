@@ -26,6 +26,47 @@ struct ActiveAgentGroup: Identifiable, Sendable, Equatable {
         nodes.compactMap(\.topStatus).max { $0.priority < $1.priority }
     }
     var statusRank: Int { topStatus?.priority ?? -1 }
+
+    var allAgents: [ActiveAgent] { nodes.flatMap { [$0.agent] + $0.children } }
+
+    /// Groups whose sessions want the user (waiting/error) start expanded;
+    /// merely working or idle ones stay collapsed behind their summary.
+    var needsAttention: Bool {
+        (topStatus?.priority ?? -1) >= AgentStatusState.waiting.priority
+    }
+
+    /// Header line shown while the group is collapsed: total count, the most
+    /// urgent status with how many sessions are in it, aggregated usage.
+    var collapsedSummary: String {
+        var parts = ["\(agentCount)"]
+        if let status = topStatus, status != .idle {
+            let count = allAgents.filter { $0.displayStatus == status }.count
+            parts.append("\(count) \(status.rawValue)")
+        }
+        if let usage = aggregatedUsageText {
+            parts.append(usage)
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Combined usage across every attributed session in the group, in the
+    /// same format as a single row's usage text. nil when nothing is known.
+    var aggregatedUsageText: String? {
+        let sessions = allAgents.compactMap(\.session)
+        let tokens = sessions.compactMap(\.tokenCount).reduce(0, +)
+        guard tokens > 0 else { return nil }
+        let cost = sessions.compactMap(\.estimatedCostUSD).reduce(0, +)
+        guard cost >= 0.005 else { return TokenFormat.short(tokens) }
+        return "\(TokenFormat.short(tokens)) · $\(String(format: "%.2f", cost))"
+    }
+}
+
+extension ActiveAgentNode {
+    /// Subagents stay hidden behind their parent row unless one of them is
+    /// waiting for input or erroring.
+    var childrenNeedAttention: Bool {
+        children.contains { ($0.displayStatus?.priority ?? -1) >= AgentStatusState.waiting.priority }
+    }
 }
 
 enum ActiveAgentGrouping {

@@ -151,14 +151,29 @@ struct ActiveAgentsSection: View {
     }
 }
 
+/// Which session groups the user expanded, remembered for this app run so the
+/// popover reopens the way they left it. Not persisted: session groups come
+/// and go with the processes behind them.
+@MainActor
+private enum SessionDisclosureMemory {
+    static var expandedByGroupID: [String: Bool] = [:]
+}
+
 private struct ActiveAgentGroupRow: View {
     let group: ActiveAgentGroup
-    @State private var expanded = true
+    @State private var expanded: Bool
+
+    init(group: ActiveAgentGroup) {
+        self.group = group
+        _expanded = State(initialValue:
+            SessionDisclosureMemory.expandedByGroupID[group.id] ?? group.needsAttention)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
+                SessionDisclosureMemory.expandedByGroupID[group.id] = expanded
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
@@ -172,25 +187,61 @@ private struct ActiveAgentGroupRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 8)
-                    Text("\(group.agentCount)")
+                    Text(expanded ? "\(group.agentCount)" : group.collapsedSummary)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             if expanded {
-                VStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: 6) {
                     ForEach(group.nodes) { node in
-                        ActiveAgentRow(agent: node.agent, showsProjectTitle: false)
-                        ForEach(node.children) { child in
-                            ActiveAgentRow(agent: child, showsProjectTitle: false)
-                                .padding(.leading, 14)
-                        }
+                        ActiveAgentNodeRows(node: node)
                     }
                 }
                 .padding(.leading, 8)
+            }
+        }
+    }
+}
+
+/// A top-level session row plus its subagents, which stay collapsed behind a
+/// small disclosure unless one of them needs the user.
+private struct ActiveAgentNodeRows: View {
+    let node: ActiveAgentNode
+    @State private var showsChildren: Bool
+
+    init(node: ActiveAgentNode) {
+        self.node = node
+        _showsChildren = State(initialValue: node.childrenNeedAttention)
+    }
+
+    var body: some View {
+        ActiveAgentRow(agent: node.agent, showsProjectTitle: false)
+        if !node.children.isEmpty {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { showsChildren.toggle() }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .rotationEffect(.degrees(showsChildren ? 90 : 0))
+                    Text(node.children.count == 1 ? "1 subagent" : "\(node.children.count) subagents")
+                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 14)
+            if showsChildren {
+                ForEach(node.children) { child in
+                    ActiveAgentRow(agent: child, showsProjectTitle: false)
+                        .padding(.leading, 14)
+                }
             }
         }
     }
