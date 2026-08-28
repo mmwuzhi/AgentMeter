@@ -394,6 +394,57 @@ final class ActiveAgentServiceTests: XCTestCase {
         ))
     }
 
+    func testIdentifiedClaudeSessionRejectsRelativeOrEscapingCWD() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentmeter-base-\(UUID().uuidString)", isDirectory: true)
+        tempDirs.append(base)
+        let root = base.appendingPathComponent("projects", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let sessionID = "11111111-2222-3333-4444-555555555555"
+        // A real transcript one level above the projects root proves the guard
+        // rejects the cwd rather than just failing to find a file: a cwd of
+        // ".." maps to a ".." path component that would resolve to this file.
+        try #"{"sessionId":"\#(sessionID)"}"#.write(
+            to: base.appendingPathComponent("\(sessionID).jsonl"),
+            atomically: true, encoding: .utf8
+        )
+
+        for cwd in ["..", ".", "relative/path", ""] {
+            XCTAssertNil(ActiveAgentService.identifiedClaudeSession(
+                sessionID: sessionID,
+                cwd: cwd,
+                observedAt: Date(),
+                projectsRoot: root
+            ), "non-absolute cwd \(cwd.debugDescription) must be refused")
+        }
+    }
+
+    func testIdentifiedClaudeSessionRejectsSymlinkedProjectDirOutsideRoot() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentmeter-base-\(UUID().uuidString)", isDirectory: true)
+        tempDirs.append(base)
+        let root = base.appendingPathComponent("projects", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let sessionID = "11111111-2222-3333-4444-555555555555"
+        try #"{"sessionId":"\#(sessionID)"}"#.write(
+            to: outside.appendingPathComponent("\(sessionID).jsonl"),
+            atomically: true, encoding: .utf8
+        )
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("-Users-me-project", isDirectory: true),
+            withDestinationURL: outside
+        )
+
+        XCTAssertNil(ActiveAgentService.identifiedClaudeSession(
+            sessionID: sessionID,
+            cwd: "/Users/me/project",
+            observedAt: Date(),
+            projectsRoot: root
+        ), "a project dir symlinked outside the projects root must be refused")
+    }
+
     func testHookPayloadRequiresCurrentPIDLifetime() {
         let now = Date(timeIntervalSince1970: 10_000)
         let payload = AgentStatusPayload(

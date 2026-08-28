@@ -551,19 +551,25 @@ enum ActiveAgentService {
         }
     }
 
-    /// Exact transcript lookup for a hook-reported session ID. The ID becomes a
-    /// filename, so anything that could escape the project directory is refused.
+    /// Exact transcript lookup for a hook-reported session ID. Both inputs are
+    /// untrusted (they come from hook payloads) and both become path
+    /// components, so anything that could escape the projects root is refused:
+    /// the ID by charset, the cwd by requiring an absolute path and confirming
+    /// the resolved directory still sits under the projects root.
     static func identifiedClaudeSession(
         sessionID: String,
         cwd: String,
         observedAt: Date,
         projectsRoot: URL? = nil
     ) -> ActiveAgentSession? {
-        guard isSafeSessionFilename(sessionID) else { return nil }
-        let root = (projectsRoot ?? FileManager.default.homeDirectoryForCurrentUser
+        guard isSafeSessionFilename(sessionID), cwd.hasPrefix("/") else { return nil }
+        let base = (projectsRoot ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects", isDirectory: true))
+            .resolvingSymlinksInPath()
+        let root = base
             .appendingPathComponent(claudeProjectKey(for: cwd), isDirectory: true)
             .resolvingSymlinksInPath()
+        guard root.path.hasPrefix(base.path + "/") else { return nil }
         let url = root.appendingPathComponent("\(sessionID).jsonl", isDirectory: false)
         guard let modifiedAt = modificationDate(for: url),
               modifiedAt <= observedAt.addingTimeInterval(60) else { return nil }
