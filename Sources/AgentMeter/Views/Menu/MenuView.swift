@@ -28,6 +28,7 @@ struct MenuView: View {
                         tint: PopoverOrder.tint(p),
                         codexResetCredits: p == .codex ? model.codexResetCreditState.credits : [],
                         providerStatus: model.providerStatus[p],
+                        isQuotaStale: model.staleQuotaProviders.contains(p),
                         runway: { provider, window in
                             model.runway(for: provider, window: window)
                         }
@@ -308,6 +309,9 @@ struct ProviderSection: View {
     var codexResetCredits: [CodexResetCreditExpiry] = []
     /// This provider's public status-page reading, when the last poll succeeded.
     var providerStatus: ProviderStatusResult? = nil
+    /// True when the shown quota was kept from an older fetch because the last
+    /// refresh for this provider failed.
+    var isQuotaStale: Bool = false
     var runway: (Provider, QuotaWindow) -> QuotaRunway
     @State private var showHeatmap = false
 
@@ -336,6 +340,12 @@ struct ProviderSection: View {
                     ForEach(state.quota.windows) { w in
                         QuotaRow(window: w, runway: runway(state.provider, w))
                     }
+                }
+                if isQuotaStale {
+                    Label("Data from \(QuotaRow.age(state.quota.fetchedAt)) — refresh failing",
+                          systemImage: "clock.arrow.circlepath")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
                 }
                 resetCreditsSection
                 if let statusBanner {

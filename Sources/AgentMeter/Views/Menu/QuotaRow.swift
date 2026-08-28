@@ -102,4 +102,15 @@ struct QuotaRow: View {
         return prefixed ? "in \(duration)" : duration
     }
 
+    /// Past-tense counterpart of `relative`, for stale-data captions.
+    nonisolated static func age(_ date: Date, now: Date = Date()) -> String {
+        let interval = now.timeIntervalSince(date)
+        if interval < 60 { return "just now" }
+        let f = DateComponentsFormatter()
+        f.allowedUnits = [.day, .hour, .minute]
+        f.maximumUnitCount = 2
+        f.unitsStyle = .abbreviated
+        return (f.string(from: interval) ?? "?") + " ago"
+    }
+
 }

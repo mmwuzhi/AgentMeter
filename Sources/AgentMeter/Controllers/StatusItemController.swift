@@ -61,6 +61,7 @@ final class StatusItemController {
             _ = model.codex
             _ = model.claude
             _ = model.copilot
+            _ = model.staleQuotaProviders
         } onChange: { [weak self] in
             Task { @MainActor in
                 self?.observeModel()
@@ -160,7 +161,15 @@ private final class StatusItemSlotController: NSObject {
         guard let button = statusItem.button else { return }
         let elements = MenuBarLayout.activeElements(model, slot: slot)
         let showCaptions = UserDefaults.standard.object(forKey: "menuBarShowCaptions") as? Bool ?? true
-        let summary = accessibilitySummary()
+        // Dim only when the item actually displays quota numbers — usage/spend
+        // come from local logs and are never network-stale.
+        let showsQuota = elements.contains {
+            if case .segment(let s) = $0 { return s.remaining != nil }
+            return false
+        }
+        let stale = showsQuota && model.staleQuotaProviders.contains(slot.provider)
+        contentView.dimmed = stale
+        let summary = accessibilitySummary() + (stale ? " — quota data stale, refresh failing" : "")
         button.toolTip = summary
         button.setAccessibilityLabel(summary)
 

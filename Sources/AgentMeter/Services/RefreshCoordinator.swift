@@ -160,6 +160,7 @@ final class RefreshCoordinator {
                 ? cp.preservingLiveQuota(from: previousCopilotQuota, at: now)
                 : cp
             viewModel.activeAgents = agents
+            updateQuotaStaleness(plan: plan, rawResults: [.codex: c, .claude: cl, .copilot: cp])
             markRefresh(plan: plan, at: startedAt)
             let quotaStates = [
                 plan.refreshQuota.contains(.codex) ? viewModel.codex : nil,
@@ -331,6 +332,36 @@ final class RefreshCoordinator {
     private func fetchProviderStatus(plan: ProviderRefreshPlan) async -> [Provider: ProviderStatusResult]? {
         guard plan.refreshProviderStatus else { return nil }
         return await ProviderStatusService.fetchAll()
+    }
+
+    /// Marks providers whose fetch failed this cycle while the UI kept showing
+    /// the previously fetched live quota, and clears the mark on success. Only
+    /// providers whose quota was actually attempted this cycle change state.
+    private func updateQuotaStaleness(plan: ProviderRefreshPlan, rawResults: [Provider: ProviderState]) {
+        for (provider, raw) in rawResults where plan.refreshQuota.contains(provider) {
+            let shown: ProviderState
+            switch provider {
+            case .codex: shown = viewModel.codex
+            case .claude: shown = viewModel.claude
+            case .copilot: shown = viewModel.copilot
+            }
+            if Self.isQuotaStale(rawSource: raw.quota.source, shownSource: shown.quota.source) {
+                viewModel.staleQuotaProviders.insert(provider)
+            } else {
+                viewModel.staleQuotaProviders.remove(provider)
+            }
+        }
+    }
+
+    /// Stale = the fresh fetch came back unavailable but the UI is showing a
+    /// usable (older) snapshot preserved by `preservingLiveQuota`. A provider
+    /// that is genuinely unavailable (nothing preserved) is not stale — the UI
+    /// already says "unavailable" explicitly there.
+    nonisolated static func isQuotaStale(
+        rawSource: QuotaSnapshot.SourceKind,
+        shownSource: QuotaSnapshot.SourceKind
+    ) -> Bool {
+        rawSource == .unavailable && shownSource != .unavailable
     }
 
     /// Merges this cycle's results into the existing map instead of replacing it

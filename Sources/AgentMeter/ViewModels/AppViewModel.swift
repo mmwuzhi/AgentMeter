@@ -21,6 +21,10 @@ final class AppViewModel {
     /// Not persisted (like `activeAgents`) — a stale "outage" shown from a launch
     /// days ago would be misleading, so this starts empty and fills in on first refresh.
     var providerStatus: [Provider: ProviderStatusResult] = [:]
+    /// Providers whose last quota fetch failed while older live data is still
+    /// being shown (`preservingLiveQuota`). Not persisted — the first refresh
+    /// after launch settles it either way.
+    var staleQuotaProviders: Set<Provider> = []
 
     init() {
         let storedLifetimeSpend = LifetimeSpendStore.load() ?? []

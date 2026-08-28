@@ -164,4 +164,19 @@ final class RefreshCoordinatorMergeTests: XCTestCase {
         XCTAssertEqual(merged.count, 1)
         XCTAssertEqual(merged[.codex]?.level, .operational)
     }
+
+    func testQuotaStaleWhenFetchFailedButOlderLiveDataIsShown() {
+        XCTAssertTrue(RefreshCoordinator.isQuotaStale(rawSource: .unavailable, shownSource: .oauth))
+        XCTAssertTrue(RefreshCoordinator.isQuotaStale(rawSource: .unavailable, shownSource: .appServer))
+    }
+
+    func testQuotaNotStaleOnSuccessfulFetch() {
+        XCTAssertFalse(RefreshCoordinator.isQuotaStale(rawSource: .oauth, shownSource: .oauth))
+        XCTAssertFalse(RefreshCoordinator.isQuotaStale(rawSource: .cli, shownSource: .cli))
+    }
+
+    func testQuotaNotStaleWhenGenuinelyUnavailable() {
+        // Nothing preserved: the UI already shows "unavailable" explicitly.
+        XCTAssertFalse(RefreshCoordinator.isQuotaStale(rawSource: .unavailable, shownSource: .unavailable))
+    }
 }

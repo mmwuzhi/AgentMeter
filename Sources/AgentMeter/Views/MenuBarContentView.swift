@@ -14,6 +14,10 @@ final class MenuBarContentView: NSView {
     var forcedColor: NSColor?
     /// The status item passes clicks through to its button; the chips don't.
     var passesClicksThrough = false
+    /// Dims the whole item as a stale-data cue (quota kept from an older fetch).
+    var dimmed = false {
+        didSet { if dimmed != oldValue { needsDisplay = true } }
+    }
 
     // Layout constants (Stats-like horizontal columns).
     static let iconSize: CGFloat = 15
@@ -40,14 +44,19 @@ final class MenuBarContentView: NSView {
     }
 
     private var foreground: NSColor {
-        if let forcedColor { return forcedColor }
-        switch NSAppearance.currentDrawing().name {
-        case .darkAqua, .vibrantDark,
-             .accessibilityHighContrastDarkAqua, .accessibilityHighContrastVibrantDark:
-            return .white
-        default:
-            return .textColor
+        let base: NSColor
+        if let forcedColor {
+            base = forcedColor
+        } else {
+            switch NSAppearance.currentDrawing().name {
+            case .darkAqua, .vibrantDark,
+                 .accessibilityHighContrastDarkAqua, .accessibilityHighContrastVibrantDark:
+                base = .white
+            default:
+                base = .textColor
+            }
         }
+        return dimmed ? base.withAlphaComponent(0.45) : base
     }
 
     /// Width of one value column (sizing only; color-independent).
