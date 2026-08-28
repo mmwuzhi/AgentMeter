@@ -124,8 +124,9 @@ private final class StatusItemSlotController: NSObject {
 
     private func configureButton() {
         guard let button = statusItem.button else { return }
-        button.action = #selector(togglePopover)
+        button.action = #selector(statusItemClicked)
         button.target = self
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.image = NSImage()
         button.imagePosition = .imageOnly
         contentView.passesClicksThrough = true
@@ -167,6 +168,50 @@ private final class StatusItemSlotController: NSObject {
         let rows = MenuBarLayout.activeSegments(model, slot: slot)
         guard !rows.isEmpty else { return "AgentMeter \(slot.displayName) — no items shown" }
         return "AgentMeter \(slot.displayName) — " + rows.map { "\($0.label) \($0.value)" }.joined(separator: ", ")
+    }
+
+    @objc private func statusItemClicked() {
+        if let event = NSApp.currentEvent,
+           event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+            showContextMenu()
+        } else {
+            togglePopover()
+        }
+    }
+
+    /// Right-click quick actions, so refresh/settings/quit don't require
+    /// opening the popover first.
+    private func showContextMenu() {
+        closePopover()
+        let menu = NSMenu()
+        let refresh = NSMenuItem(title: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "")
+        refresh.target = self
+        menu.addItem(refresh)
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
+        settings.target = self
+        menu.addItem(settings)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quit AgentMeter", action: #selector(quitApp), keyEquivalent: "")
+        quit.target = self
+        menu.addItem(quit)
+
+        // Menu tracking inside performClick is synchronous; clearing the menu
+        // afterwards restores the popover behavior for the next left click.
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    @objc private func refreshNow() {
+        coordinator.refresh(forceAll: true)
+    }
+
+    @objc private func openSettings() {
+        SettingsOpener.open()
+    }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
 
     @objc private func togglePopover() {
