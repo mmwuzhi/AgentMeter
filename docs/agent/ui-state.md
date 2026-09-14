@@ -49,7 +49,10 @@ usage presentation, cached state, or Claude live-session integration.
   line for every `.atRisk` runway carrying a depletion date, red inside
   `alertLeadTime` (30 min) and orange beyond it. Gating the estimate on the
   lead time hid exactly the question the user was asking — "how long at this
-  pace" is needed well before the last half hour.
+  pace" is needed well before the last half hour. When `QuotaRunway.pacedBy`
+  is set the tracker floored the date at what a shorter limit allows; the line
+  reads the same and only the tooltip says so, since the view never re-derives
+  that decision.
 - The pace line colors on `now` (falling back to `avg`) versus budget, not on
   `avg`: a burst that just started is still under the 20-minute average, and
   after the user stops, the average keeps nagging for 20 more minutes.

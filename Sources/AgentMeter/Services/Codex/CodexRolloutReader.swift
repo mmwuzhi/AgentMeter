@@ -106,7 +106,15 @@ enum CodexRolloutReader {
         let used = (d["used_percent"] as? Double) ?? 0
         let minutes = (d["window_minutes"] as? Double) ?? 0
         let resets = (d["resets_at"] as? Double).map { Date(timeIntervalSince1970: $0) }
-        return QuotaWindow(id: id, label: Self.label(forMinutes: minutes), usedPercent: used, resetsAt: resets)
+        return QuotaWindow(id: id, label: Self.label(forMinutes: minutes), usedPercent: used, resetsAt: resets,
+                           cycle: Self.cycle(forMinutes: minutes))
+    }
+
+    /// The window's refill cycle in seconds; nil when the payload stated no
+    /// duration — the same case `label(forMinutes:)` reads as "Quota" — so the
+    /// trend tracker never paces a longer window against a guessed cadence.
+    static func cycle(forMinutes minutes: Double) -> TimeInterval? {
+        minutes > 0 ? minutes * 60 : nil
     }
 
     static func label(forMinutes minutes: Double) -> String {

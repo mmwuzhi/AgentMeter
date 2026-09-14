@@ -98,7 +98,8 @@ enum ClaudeCLIScraper {
             else if lower.contains("current week") || lower.contains("weekly") { id = "seven_day"; label = "Weekly" }
             else { id = nil; label = nil }
             if let id, let label, let pct = percent(in: line), !windows.contains(where: { $0.id == id }) {
-                windows.append(QuotaWindow(id: id, label: label, usedPercent: pct, resetsAt: nil))
+                windows.append(QuotaWindow(id: id, label: label, usedPercent: pct, resetsAt: nil,
+                                           cycle: ClaudeOAuthFetcher.cycle(forWindowID: id)))
             }
         }
         return windows

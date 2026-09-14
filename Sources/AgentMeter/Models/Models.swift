@@ -27,6 +27,14 @@ struct QuotaWindow: Identifiable, Codable, Sendable, Equatable {
     /// cached `QuotaWindow` JSON without this key still decodes; nil/false
     /// means `resetsAt` is a recurring reset like the 5-hour/weekly windows.
     var isOneTimeCredit: Bool? = nil
+    /// Length of one refill cycle (five hours, seven days) when the provider
+    /// states it or the window key implies it; nil for Copilot's allowances
+    /// and anything else that names no cadence. `resetsAt` says when the
+    /// window next refills, not how often, and the trend tracker needs the
+    /// latter to know how much a shorter peer can hand a longer window per
+    /// refill. Optional so cached `QuotaWindow` JSON written before this key
+    /// still decodes.
+    var cycle: TimeInterval? = nil
 
     var remainingPercent: Double { max(0, min(100, 100 - usedPercent)) }
 
@@ -114,6 +122,11 @@ struct QuotaRunway: Codable, Sendable, Equatable {
     var avgSpan: TimeInterval? = nil
     /// How `nowSpan` was chosen; nil whenever `nowPercentPerHour` is.
     var nowAnchor: QuotaNowAnchor? = nil
+    /// Label of the shorter peer window whose refill capacity set
+    /// `estimatedDepletionAt` (or, for `.safe`, ruled depletion out before
+    /// the reset) in place of the `avg` projection. Nil when the estimate is
+    /// the plain average-pace projection. The view only puts words to it.
+    var pacedBy: String? = nil
 
     var isAtRisk: Bool { status == .atRisk }
 }

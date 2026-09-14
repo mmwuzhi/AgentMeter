@@ -27,6 +27,18 @@ final class StateCacheTests: XCTestCase {
         XCTAssertTrue(decoded.codexResetCreditState.credits.isEmpty)
     }
 
+    /// `last-state.json` written before windows carried a cycle must keep
+    /// decoding; the field is simply unknown for those rows.
+    func testQuotaWindowDecodesWithoutACycleKey() throws {
+        let data = Data(#"{"id":"five_hour","label":"5-hour","usedPercent":10}"#.utf8)
+
+        let window = try JSONDecoder().decode(QuotaWindow.self, from: data)
+
+        XCTAssertNil(window.cycle)
+        XCTAssertNil(window.resetsAt)
+        XCTAssertEqual(window.remainingPercent, 90)
+    }
+
     func testSnapshotPreservesCodexResetCreditState() throws {
         let now = Date(timeIntervalSince1970: 1_782_000_000)
         let state = CodexResetCreditState(

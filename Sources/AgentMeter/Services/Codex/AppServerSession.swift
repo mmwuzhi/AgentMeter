@@ -103,7 +103,8 @@ final class AppServerSession {
             let resets = ((d["resetsAt"] as? Double) ?? (d["resets_at"] as? Double))
                 .map { Date(timeIntervalSince1970: $0) }
             windows.append(QuotaWindow(id: id, label: CodexRolloutReader.label(forMinutes: mins),
-                                       usedPercent: used, resetsAt: resets))
+                                       usedPercent: used, resetsAt: resets,
+                                       cycle: CodexRolloutReader.cycle(forMinutes: mins)))
         }
         add("primary", rl["primary"] as? [String: Any])
         add("secondary", rl["secondary"] as? [String: Any])

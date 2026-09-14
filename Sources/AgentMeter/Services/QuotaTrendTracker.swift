@@ -84,6 +84,18 @@ enum QuotaTrendTracker {
     static let longWindowMinimumAtRiskEvidence: TimeInterval = 30 * 60
     static let longWindowHorizon: TimeInterval = 24 * 60 * 60
 
+    // MARK: Peer capacity
+
+    /// A shorter peer window refills on a cycle, so it caps how fast a longer
+    /// window counting the same tokens can drain: at most the drain ratio ×
+    /// 100 points per peer cycle. Reading that ratio needs both windows to
+    /// have moved by whole points. A long window's step is a large slice of
+    /// its pool, so three of them bound the quantisation error to ~±33% (the
+    /// `nowTriggerPercent` argument); ten peer points keep the denominator's
+    /// own rounding under ±10%. Small changes make the ratio unstable.
+    static let capacityMinimumWindowDrain: Double = 3
+    static let capacityMinimumPeerDrain: Double = 10
+
     private struct WindowKey: Hashable {
         let provider: Provider
         let windowID: String
@@ -257,7 +269,7 @@ enum QuotaTrendTracker {
             depletion: reportedDepletion,
             message: message(for: status, depletion: depletion, percentPerHour: average.percentPerHour, now: now)
         )
-        return constrainedByShorterWindow(
+        return pacedByShorterWindow(
             raw,
             provider: provider,
             window: window,
@@ -318,19 +330,164 @@ enum QuotaTrendTracker {
             .min { $0.1 < $1.1 }
 
         guard let blocker else { return raw }
-        return QuotaRunway(
+        return reverdict(raw, status: .safe, depletion: nil, message: "\(blocker.0.label) limit hits first")
+    }
+
+    /// Floors an at-risk projection at the pace a shorter peer window can
+    /// physically allow. Both windows count the same tokens, so their drains
+    /// keep a near-constant ratio `r` (per plan; per model mix for a
+    /// model-scoped weekly): the peer hands this window at most
+    /// `r × peer.remainingPercent` before the peer's reset and `r × 100` per
+    /// peer cycle after it. An `avg` projection sooner than that is a pace the
+    /// user cannot hold — the peer's limit would stop them first — so the
+    /// estimate becomes the floor: the even-pace reading of the peer refilling
+    /// and draining fully, cycle after cycle. A floor landing at or past this
+    /// window's own reset means it cannot run out at all, hence `.safe`. When the floor does
+    /// not bite, or no peer has the evidence for one, the older "hits first"
+    /// rule still applies.
+    private static func pacedByShorterWindow(
+        _ raw: QuotaRunway,
+        provider: Provider,
+        window: QuotaWindow,
+        observations: [QuotaObservation],
+        now: Date,
+        peerWindows: [QuotaWindow]
+    ) -> QuotaRunway {
+        guard raw.status == .atRisk,
+              let rawDepletion = raw.estimatedDepletionAt,
+              let reset = window.resetsAt else {
+            return raw
+        }
+
+        let floor = peerWindows
+            .compactMap { peer -> (QuotaWindow, Date)? in
+                // A peer already past its reset is stale data, and one sharing
+                // this window's reset (the all-model and model-scoped weeklies)
+                // refills together with it rather than pacing it.
+                guard peer.id != window.id,
+                      let peerReset = peer.resetsAt,
+                      peerReset > now,
+                      peerReset < reset,
+                      !sameResetEpoch(peerReset, reset),
+                      let cycle = peer.cycle, cycle > 0,
+                      let ratio = drainRatio(of: window, per: peer, provider: provider, observations: observations)
+                else { return nil }
+                let beforePeerReset = ratio * peer.remainingPercent
+                // The peer can still hand over enough to empty this window
+                // inside the current cycle, so it paces nothing.
+                guard beforePeerReset < window.remainingPercent else { return nil }
+                let ceilingPerHour = ratio * 100 / (cycle / 3600)
+                let hoursAfterPeerReset = (window.remainingPercent - beforePeerReset) / ceilingPerHour
+                return (peer, peerReset.addingTimeInterval(hoursAfterPeerReset * 3600))
+            }
+            .max { $0.1 < $1.1 }
+
+        guard let floor, floor.1 > rawDepletion else {
+            return constrainedByShorterWindow(
+                raw,
+                provider: provider,
+                window: window,
+                observations: observations,
+                now: now,
+                peerWindows: peerWindows
+            )
+        }
+        if floor.1 >= reset {
+            return reverdict(
+                raw,
+                status: .safe,
+                depletion: nil,
+                message: "\(floor.0.label) limit paces this window",
+                pacedBy: floor.0.label
+            )
+        }
+        return reverdict(
+            raw,
+            status: .atRisk,
+            depletion: floor.1,
+            message: message(for: .atRisk, depletion: floor.1, percentPerHour: raw.percentPerHour ?? 0, now: now),
+            pacedBy: floor.0.label
+        )
+    }
+
+    /// Points this window loses per point `peer` loses, summed over every pair
+    /// of consecutive peer samples in which neither window rose. A rise is a
+    /// reset, and a reset inside a sampling gap hides the peer's drain on that
+    /// pair while this window's stays visible, so such pairs are skipped rather
+    /// than let one gap tilt the ratio. Reads the raw per-window history —
+    /// every epoch, not the current pool — because the peer's own epoch is at
+    /// most a few hours old and would starve the evidence right after each
+    /// reset. Nil until both windows have moved enough whole points
+    /// (`capacityMinimumWindowDrain`, `capacityMinimumPeerDrain`) for integer
+    /// quantisation to stop dominating.
+    static func drainRatio(
+        of window: QuotaWindow,
+        per peer: QuotaWindow,
+        provider: Provider,
+        observations: [QuotaObservation]
+    ) -> Double? {
+        let peerSamples = observations
+            .filter { $0.provider == provider && $0.windowID == peer.id }
+            .sorted { $0.observedAt < $1.observedAt }
+        let windowSamples = observations
+            .filter { $0.provider == provider && $0.windowID == window.id }
+            .sorted { $0.observedAt < $1.observedAt }
+        guard peerSamples.count >= 2, !windowSamples.isEmpty else { return nil }
+
+        // Both histories are sampled on the same refreshes, so this window's
+        // carry-forward value at each peer sample is found by walking forward
+        // once rather than searching from the start for every pair.
+        var windowIndex = 0
+        func windowValue(atOrBefore date: Date) -> Double? {
+            while windowIndex + 1 < windowSamples.count,
+                  windowSamples[windowIndex + 1].observedAt <= date {
+                windowIndex += 1
+            }
+            let sample = windowSamples[windowIndex]
+            return sample.observedAt <= date ? sample.remainingPercent : nil
+        }
+
+        var peerDrain = 0.0
+        var windowDrain = 0.0
+        var previous = windowValue(atOrBefore: peerSamples[0].observedAt)
+        for (earlier, later) in zip(peerSamples, peerSamples.dropFirst()) {
+            let current = windowValue(atOrBefore: later.observedAt)
+            if let previous, let current,
+               later.remainingPercent <= earlier.remainingPercent + 0.1,
+               current <= previous + 0.1 {
+                peerDrain += earlier.remainingPercent - later.remainingPercent
+                windowDrain += previous - current
+            }
+            previous = current
+        }
+        guard windowDrain >= capacityMinimumWindowDrain,
+              peerDrain >= capacityMinimumPeerDrain else { return nil }
+        return windowDrain / peerDrain
+    }
+
+    /// `raw` under a different verdict; the rates and the spans they were read
+    /// over are the readings they were and travel unchanged.
+    private static func reverdict(
+        _ raw: QuotaRunway,
+        status: QuotaRunwayStatus,
+        depletion: Date?,
+        message: String,
+        pacedBy: String? = nil
+    ) -> QuotaRunway {
+        QuotaRunway(
             provider: raw.provider,
             windowID: raw.windowID,
-            status: .safe,
+            status: status,
             percentPerHour: raw.percentPerHour,
-            estimatedDepletionAt: nil,
+            estimatedDepletionAt: depletion,
             safePercentPerHour: raw.safePercentPerHour,
             paceStyle: raw.paceStyle,
-            message: "\(blocker.0.label) limit hits first",
+            message: message,
             nowPercentPerHour: raw.nowPercentPerHour,
             nowSpan: raw.nowSpan,
             avgSpan: raw.avgSpan,
-            nowAnchor: raw.nowAnchor
+            nowAnchor: raw.nowAnchor,
+            pacedBy: pacedBy
         )
     }
 

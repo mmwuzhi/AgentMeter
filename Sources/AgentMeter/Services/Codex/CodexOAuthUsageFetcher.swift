@@ -65,7 +65,8 @@ enum CodexOAuthUsageFetcher {
             let resets = ((d["reset_at"] as? Double) ?? (d["reset_at"] as? Int).map(Double.init))
                 .map { Date(timeIntervalSince1970: $0) }
             windows.append(QuotaWindow(id: id, label: CodexRolloutReader.label(forMinutes: minutes),
-                                       usedPercent: used, resetsAt: resets))
+                                       usedPercent: used, resetsAt: resets,
+                                       cycle: CodexRolloutReader.cycle(forMinutes: minutes)))
         }
         add("primary", rateLimit["primary_window"] as? [String: Any])
         add("secondary", rateLimit["secondary_window"] as? [String: Any])

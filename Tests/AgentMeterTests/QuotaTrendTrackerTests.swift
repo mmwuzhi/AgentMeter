@@ -180,6 +180,219 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertEqual(constrained.message, "5-hour limit hits first")
     }
 
+    /// Replays the report that motivated the floor: a weekly at 43% draining
+    /// 8%/h read "would run out in 5h 22m" while the 5-hour window, which
+    /// hands it about 23 points per cycle, had 38% left and 24 minutes to its
+    /// reset. The even-pace floor lands about 7h 43m out instead.
+    func testLongWindowRunOutIsFlooredByShortWindowCapacity() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let peerReset = now.addingTimeInterval(24 * 60)
+        let reset = now.addingTimeInterval(91 * 3600)
+        let peer = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 62, resetsAt: peerReset, cycle: 5 * 3600)
+        let window = QuotaWindow(
+            id: "seven_day_fable", label: "Weekly (Fable)", usedPercent: 57, resetsAt: reset, cycle: 7 * 24 * 3600
+        )
+        let observations = staircase("seven_day_fable", from: 57, to: 43, steps: 14, overMinutes: 105, now: now, resetsAt: reset)
+            + staircase("five_hour", from: 98, to: 38, steps: 15, overMinutes: 105, now: now, resetsAt: peerReset)
+
+        let unconstrained = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now
+        )
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [peer, window]
+        )
+
+        // avg 8%/h over 1h 45m: 43 / 8 = 5h 22m 30s.
+        XCTAssertEqual(unconstrained.status, .atRisk)
+        XCTAssertEqual(unconstrained.estimatedDepletionAt!.timeIntervalSince(now), 5.375 * 3600, accuracy: 1)
+        XCTAssertNil(unconstrained.pacedBy)
+
+        // r = 14/60: the 38 peer points hand over 8.87 before the reset, then
+        // 23.3 per 5-hour cycle = 4.67%/h, so 24 min + 34.13 / 4.67 h = 7h 42m 51s.
+        XCTAssertEqual(paced.status, .atRisk)
+        XCTAssertEqual(paced.percentPerHour!, 8, accuracy: 0.01)
+        XCTAssertEqual(paced.estimatedDepletionAt!.timeIntervalSince(now), 7.7143 * 3600, accuracy: 60)
+        XCTAssertEqual(paced.pacedBy, "5-hour")
+        XCTAssertTrue(paced.message.hasPrefix("would run out in 7h 4"), paced.message)
+    }
+
+    /// Thursday night: the weekly has 20% and six hours left, the user is
+    /// bursting at 12%/h, and the 5-hour window has 10% left with an hour to
+    /// its reset. Even a whole 5-hour refill hands the weekly ~13 points, so it
+    /// cannot run out before its own reset, whatever the avg projection says.
+    func testLongWindowIsSafeWhenShortWindowCapacityCannotReachItsReset() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let peerReset = now.addingTimeInterval(3600)
+        let reset = now.addingTimeInterval(6 * 3600)
+        let peer = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 90, resetsAt: peerReset, cycle: 5 * 3600)
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 80, resetsAt: reset, cycle: 7 * 24 * 3600)
+        let observations = staircase("seven_day", from: 32, to: 20, steps: 6, overMinutes: 60, now: now, resetsAt: reset)
+            + staircase("five_hour", from: 100, to: 10, steps: 6, overMinutes: 60, now: now, resetsAt: peerReset)
+
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [peer, window]
+        )
+
+        // r = 12/90: 1.3 points before the peer reset, then 13.3 per cycle =
+        // 2.67%/h, so the remaining 20 take 1h + 7h — past the 6-hour reset.
+        XCTAssertEqual(paced.status, .safe)
+        XCTAssertNil(paced.estimatedDepletionAt)
+        XCTAssertEqual(paced.message, "5-hour limit paces this window")
+        XCTAssertEqual(paced.pacedBy, "5-hour")
+        XCTAssertEqual(paced.percentPerHour!, 12, accuracy: 0.01)
+    }
+
+    /// Two weekly points say nothing about the ratio yet, so the raw
+    /// projection stands until a third lands — the same three-tick argument
+    /// `nowTriggerPercent` makes.
+    func testCapacityFloorNeedsThreeWindowPointsOfEvidence() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let peerReset = now.addingTimeInterval(24 * 60)
+        let reset = now.addingTimeInterval(91 * 3600)
+        let peer = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 62, resetsAt: peerReset, cycle: 5 * 3600)
+        let window = QuotaWindow(
+            id: "seven_day_fable", label: "Weekly (Fable)", usedPercent: 95, resetsAt: reset, cycle: 7 * 24 * 3600
+        )
+        let observations = staircase("seven_day_fable", from: 7, to: 5, steps: 2, overMinutes: 60, now: now, resetsAt: reset)
+            + staircase("five_hour", from: 98, to: 38, steps: 15, overMinutes: 60, now: now, resetsAt: peerReset)
+
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [peer, window]
+        )
+
+        // 2%/h over the hour: 5 / 2 = 2h 30m, and no floor to move it.
+        XCTAssertEqual(paced.status, .atRisk)
+        XCTAssertEqual(paced.estimatedDepletionAt!.timeIntervalSince(now), 2.5 * 3600, accuracy: 1)
+        XCTAssertNil(paced.pacedBy)
+        XCTAssertEqual(paced.message, "would run out in 2h 30m")
+    }
+
+    func testDrainRatioNeedsThreeWindowAndTenPeerPoints() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let peer = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 50, resetsAt: nil)
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 50, resetsAt: nil)
+        func ratio(windowPoints: Double, peerPoints: Double) -> Double? {
+            QuotaTrendTracker.drainRatio(
+                of: window,
+                per: peer,
+                provider: .claude,
+                observations: staircase("seven_day", from: 50 + windowPoints, to: 50, steps: 1, overMinutes: 60, now: now, resetsAt: nil)
+                    + staircase("five_hour", from: 50 + peerPoints, to: 50, steps: 1, overMinutes: 60, now: now, resetsAt: nil)
+            )
+        }
+
+        XCTAssertNil(ratio(windowPoints: 2, peerPoints: 60))
+        XCTAssertNil(ratio(windowPoints: 3, peerPoints: 9))
+        XCTAssertEqual(ratio(windowPoints: 3, peerPoints: 10)!, 0.3, accuracy: 1e-9)
+    }
+
+    /// A rise is a reset. Across a sampling gap the peer may have drained,
+    /// reset and drained again while the weekly only shows the sum, so a pair
+    /// in which either window rose is left out instead of tilting the ratio.
+    func testDrainRatioSkipsPairsWhereEitherWindowRose() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let peer = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 25, resetsAt: nil)
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 54, resetsAt: nil)
+        func series(_ windowID: String, _ values: [Double]) -> [QuotaObservation] {
+            values.enumerated().map { index, value in
+                observation(windowID, remaining: value, minutesAgo: Double(values.count - 1 - index) * 30, from: now)
+            }
+        }
+
+        // Peer 100→60→20, then a reset seen as 20→95 across a gap, then 95→75.
+        // The weekly over the same instants: 80→72→64→50→46 — its 14-point
+        // drop beside the peer's rise is the invisible drain and must not count.
+        let peerReset = series("five_hour", [100, 60, 20, 95, 75]) + series("seven_day", [80, 72, 64, 50, 46])
+        XCTAssertEqual(
+            QuotaTrendTracker.drainRatio(of: window, per: peer, provider: .claude, observations: peerReset)!,
+            20.0 / 100.0,
+            accuracy: 1e-9
+        )
+
+        // The weekly's own reset, 64→90, while the peer kept draining 60→40.
+        let windowReset = series("five_hour", [100, 80, 60, 40, 20]) + series("seven_day", [80, 72, 64, 90, 86])
+        XCTAssertEqual(
+            QuotaTrendTracker.drainRatio(of: window, per: peer, provider: .claude, observations: windowReset)!,
+            20.0 / 60.0,
+            accuracy: 1e-9
+        )
+    }
+
+    /// The floor only bites when the recent pace outruns what the peer can
+    /// hand over across refills. A peer draining 16%/h — under its own 20%/h
+    /// refill pace — leaves the avg projection exactly as it was.
+    func testCapacityFloorLeavesASlowerAveragePaceAlone() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let peerReset = now.addingTimeInterval(24 * 60)
+        let reset = now.addingTimeInterval(91 * 3600)
+        let peer = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 30, resetsAt: peerReset, cycle: 5 * 3600)
+        let window = QuotaWindow(
+            id: "seven_day_fable", label: "Weekly (Fable)", usedPercent: 57, resetsAt: reset, cycle: 7 * 24 * 3600
+        )
+        let observations = staircase("seven_day_fable", from: 57, to: 43, steps: 14, overMinutes: 105, now: now, resetsAt: reset)
+            + staircase("five_hour", from: 98, to: 70, steps: 14, overMinutes: 105, now: now, resetsAt: peerReset)
+
+        let unconstrained = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now
+        )
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [peer, window]
+        )
+
+        // r = 14/28: 35 points before the peer reset, then 50 per cycle, so the
+        // floor sits 1h 12m out — well inside the 5h 22m projection.
+        XCTAssertEqual(paced, unconstrained)
+        XCTAssertEqual(paced.status, .atRisk)
+        XCTAssertNil(paced.pacedBy)
+    }
+
+    /// Without a stated cycle the peer's refill capacity is unknown, so it
+    /// cannot floor anything; the older rules decide as before.
+    func testCapacityFloorIgnoresPeersWithoutACycle() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let peerReset = now.addingTimeInterval(24 * 60)
+        let reset = now.addingTimeInterval(91 * 3600)
+        let peer = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 62, resetsAt: peerReset)
+        let window = QuotaWindow(
+            id: "seven_day_fable", label: "Weekly (Fable)", usedPercent: 57, resetsAt: reset, cycle: 7 * 24 * 3600
+        )
+        let observations = staircase("seven_day_fable", from: 57, to: 43, steps: 14, overMinutes: 105, now: now, resetsAt: reset)
+            + staircase("five_hour", from: 98, to: 38, steps: 15, overMinutes: 105, now: now, resetsAt: peerReset)
+
+        let unconstrained = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now
+        )
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [peer, window]
+        )
+
+        XCTAssertEqual(paced, unconstrained)
+        XCTAssertEqual(paced.estimatedDepletionAt!.timeIntervalSince(now), 5.375 * 3600, accuracy: 1)
+        XCTAssertNil(paced.pacedBy)
+    }
+
+    /// The all-model and model-scoped weeklies reset together (live responses
+    /// put them a second apart), so neither paces the other even when one
+    /// drains faster in percent.
+    func testCapacityFloorIgnoresPeersSharingTheReset() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(91 * 3600)
+        let peerReset = reset.addingTimeInterval(-0.5)
+        let peer = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 60, resetsAt: peerReset, cycle: 7 * 24 * 3600)
+        let window = QuotaWindow(
+            id: "seven_day_fable", label: "Weekly (Fable)", usedPercent: 57, resetsAt: reset, cycle: 7 * 24 * 3600
+        )
+        let observations = staircase("seven_day_fable", from: 57, to: 43, steps: 14, overMinutes: 105, now: now, resetsAt: reset)
+            + staircase("seven_day", from: 66, to: 40, steps: 13, overMinutes: 105, now: now, resetsAt: peerReset)
+
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [peer, window]
+        )
+
+        XCTAssertNil(paced.pacedBy)
+        XCTAssertNotEqual(paced.message, "Weekly limit paces this window")
+    }
+
     func testRunwayDoesNotMixResetEpochs() {
         let now = Date(timeIntervalSince1970: 1_000)
         let oldReset = now.addingTimeInterval(3600)
@@ -1114,6 +1327,30 @@ final class QuotaTrendTrackerTests: XCTestCase {
         resetsAt: Date? = nil
     ) -> QuotaObservation {
         observation(windowID, remaining: remaining, secondsAgo: minutesAgo * 60, from: now, resetsAt: resetsAt)
+    }
+
+    /// Whole-point staircase the way live utilization arrives: `steps` equal
+    /// drops from `start` to `end`, spread evenly across `minutes` and ending
+    /// at `now`. Pick `steps` so each drop is a whole number of points.
+    private func staircase(
+        _ windowID: String,
+        from start: Double,
+        to end: Double,
+        steps: Int,
+        overMinutes minutes: Double,
+        now: Date,
+        resetsAt: Date?
+    ) -> [QuotaObservation] {
+        (0...steps).map { step in
+            let fraction = Double(step) / Double(steps)
+            return observation(
+                windowID,
+                remaining: start - (start - end) * fraction,
+                minutesAgo: minutes * (1 - fraction),
+                from: now,
+                resetsAt: resetsAt
+            )
+        }
     }
 
     private func observation(

@@ -47,6 +47,18 @@ final class CodexQuotaParsingTests: XCTestCase {
         XCTAssertEqual(snapshot.resetCreditsExpiresAt, Date(timeIntervalSince1970: 1_783_436_871.0))
     }
 
+    func testAppServerQuotaStatesTheWindowCycleFromItsDuration() throws {
+        let snapshot = try AppServerSession.parseQuota([
+            "rateLimits": [
+                "primary": ["usedPercent": 15.0, "windowDurationMins": 300.0, "resetsAt": 1_782_968_577.0],
+                "secondary": ["usedPercent": 52.0, "windowDurationMins": 10_080.0, "resetsAt": 1_783_436_871.0]
+            ]
+        ])
+
+        XCTAssertEqual(snapshot.windows.first(where: { $0.id == "primary" })?.cycle, 5 * 3_600)
+        XCTAssertEqual(snapshot.windows.first(where: { $0.id == "secondary" })?.cycle, 7 * 24 * 3_600)
+    }
+
     func testResetCreditsSummaryUsesSingular() {
         let snapshot = QuotaSnapshot(
             provider: .codex,

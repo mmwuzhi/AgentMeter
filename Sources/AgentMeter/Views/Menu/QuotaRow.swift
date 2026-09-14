@@ -151,14 +151,23 @@ struct QuotaRow: View {
     /// Run-out line: shown for every at-risk runway that carries a depletion
     /// date, red inside `alertLeadTime` and orange beyond it. Nil for `.watch`
     /// (pace shown without a date) and for runways a shorter window constrains.
+    /// When the tracker floored the date at what a shorter limit allows
+    /// (`pacedBy`), the line reads the same and only the tooltip says so — the
+    /// decision is the tracker's, the view just puts words to it.
     nonisolated static func alertLine(_ runway: QuotaRunway, now: Date = Date()) -> AlertLine? {
         guard runway.status == .atRisk,
               let depletion = runway.estimatedDepletionAt else { return nil }
-        let avgSpan = runway.avgSpan.map { " over the last \(spanText($0))" } ?? ""
+        let basis: String
+        if let peer = runway.pacedBy {
+            basis = "No sooner than the \(peer) limit allows; the avg drain alone would read sooner."
+        } else {
+            let avgSpan = runway.avgSpan.map { " over the last \(spanText($0))" } ?? ""
+            basis = "Projected from the avg drain\(avgSpan)."
+        }
         return AlertLine(
             text: runway.message,
             urgent: depletion.timeIntervalSince(now) <= alertLeadTime,
-            help: "Projected from the avg drain\(avgSpan). Red inside the last 30 minutes."
+            help: "\(basis) Red inside the last 30 minutes."
         )
     }
 

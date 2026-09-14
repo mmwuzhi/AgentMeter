@@ -98,6 +98,23 @@ final class QuotaRowTests: XCTestCase {
         XCTAssertNil(QuotaRow.alertLine(missingDate, now: now))
     }
 
+    func testRunwayAlertHelpNamesTheShortWindowThatPacesTheEstimate() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        var paced = alertRunway(in: 7 * 3600, from: now, message: "would run out in 7h")
+        paced.pacedBy = "5-hour"
+        let projected = alertRunway(in: 5 * 3600, from: now, message: "would run out in 5h")
+
+        // Same line, different footing: the tracker decided the floor, the
+        // view only says where the date came from.
+        XCTAssertEqual(QuotaRow.alertLine(paced, now: now)?.text, "would run out in 7h")
+        XCTAssertTrue(
+            QuotaRow.alertLine(paced, now: now)?.help.contains("No sooner than the 5-hour limit allows") ?? false
+        )
+        XCTAssertTrue(
+            QuotaRow.alertLine(projected, now: now)?.help.hasPrefix("Projected from the avg drain") ?? false
+        )
+    }
+
     func testPaceComparesDrainRateAgainstBudgetRateForShortWindows() {
         let over = pace(runway(percentPerHour: 6.07, safePercentPerHour: 4.4))
         XCTAssertEqual(over?.text, "avg 6.1%/h · budget 4.4%/h")

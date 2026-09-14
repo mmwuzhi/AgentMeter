@@ -226,6 +226,31 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         XCTAssertFalse(fable.isOneTimeCredit ?? false)
     }
 
+    /// The usage API states no window duration, so the cycle the trend tracker
+    /// paces against comes from the key — for the model-scoped weeklies too,
+    /// which only exist in `limits`. The one-time credit has none.
+    func testParseSnapshotStatesTheRefillCycleFromTheWindowKey() throws {
+        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(from: [
+            "five_hour": ["utilization": 74.0],
+            "seven_day": ["utilization": 42.0],
+            "cinder_cove": ["utilization": 1.5],
+            "limits": [
+                ["kind": "weekly_scoped", "group": "weekly", "percent": 64,
+                 "scope": ["model": ["id": NSNull(), "display_name": "Fable"], "surface": NSNull()],
+                 "is_active": false] as [String: Any]
+            ]
+        ])
+        func cycle(_ id: String) -> TimeInterval? {
+            snapshot.windows.first(where: { $0.id == id })?.cycle
+        }
+
+        XCTAssertEqual(snapshot.windows.map(\.id), ["five_hour", "seven_day", "cinder_cove", "seven_day_fable"])
+        XCTAssertEqual(cycle("five_hour"), 5 * 3600)
+        XCTAssertEqual(cycle("seven_day"), 7 * 24 * 3600)
+        XCTAssertEqual(cycle("seven_day_fable"), 7 * 24 * 3600)
+        XCTAssertNil(cycle("cinder_cove"))
+    }
+
     func testParseSnapshotBuildsNamedWindowsFromLimitsWhenNamedKeysAbsent() throws {
         let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
             from: [

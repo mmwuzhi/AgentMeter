@@ -33,6 +33,19 @@ final class CodexOAuthUsageFetcherTests: XCTestCase {
         XCTAssertEqual(snapshot.windows.first?.resetsAt?.timeIntervalSince1970 ?? 0, resetAt, accuracy: 0.01)
     }
 
+    func testLimitWindowSecondsBecomesTheWindowCycle() throws {
+        let snapshot = try XCTUnwrap(CodexOAuthUsageFetcher.parseQuota([
+            "rate_limit": [
+                "primary_window": ["used_percent": 0, "reset_at": 0, "limit_window_seconds": 5 * 3_600],
+                "secondary_window": ["used_percent": 0, "reset_at": 0]
+            ]
+        ]))
+
+        XCTAssertEqual(snapshot.windows.first(where: { $0.id == "primary" })?.cycle, 5 * 3_600)
+        // No duration stated: the trend tracker must not pace against a guess.
+        XCTAssertNil(snapshot.windows.first(where: { $0.id == "secondary" })?.cycle)
+    }
+
     func testMissingSecondaryWindowStillReturnsPrimaryOnly() throws {
         let snapshot = try XCTUnwrap(CodexOAuthUsageFetcher.parseQuota([
             "rate_limit": [

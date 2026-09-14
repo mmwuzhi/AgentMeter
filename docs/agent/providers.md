@@ -200,6 +200,18 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
 - Show runway only when the current pace would exhaust that same window before
   reset. Suppress a longer-window projection when a shorter hard limit would
   stop usage first.
+- A shorter peer with a known `QuotaWindow.cycle` also floors the estimate:
+  both windows count the same tokens, so the longer one can lose at most the
+  measured drain ratio × the peer's remaining points before the peer refills
+  and ratio × 100 per peer cycle after — an `avg` projection sooner than that
+  even-pace floor is replaced by it (`QuotaRunway.pacedBy` names the peer), or
+  by `.safe` when the floor lands past the window's own reset. The ratio is
+  read over the raw per-window histories, skipping pairs where either window
+  rose, and needs 3 window points and 10 peer points before integer
+  quantisation stops dominating (measured: the weekly drains ~0.13 and the
+  Fable weekly ~0.24 points per 5-hour point). Codex fills `cycle` from
+  `limit_window_seconds` / `windowDurationMins`, Claude from the window key,
+  Copilot leaves it nil.
 - Extrapolation is trusted only up to `maxExtrapolationMultiplier` (6x) the
   observed span, and a window resetting beyond `longWindowHorizon` also needs
   `longWindowMinimumAtRiskEvidence` (30 min) of history. Failing either
