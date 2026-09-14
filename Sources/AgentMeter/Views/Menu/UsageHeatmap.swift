@@ -3,7 +3,7 @@ import SwiftUI
 /// Compact daily-token sparkline for the collapsed "Activity" row (last N days).
 /// One bar per day; hovering a bar shows that day's tokens + spend.
 struct MiniSparkline: View {
-    let buckets: [UsageBucket]
+    let points: [UsageDayPoint]
     var tint: Color
     var days: Int = 21
 
@@ -18,10 +18,10 @@ struct MiniSparkline: View {
         let cal = Calendar.current
         var byDay: [Date: Int] = [:]
         var byDayCost: [Date: Double] = [:]
-        for b in buckets {
-            let key = cal.startOfDay(for: b.day)
-            byDay[key, default: 0] += b.totalTokens
-            byDayCost[key, default: 0] += b.costUSD
+        for p in points {
+            let key = cal.startOfDay(for: p.day)
+            byDay[key, default: 0] += p.tokens
+            byDayCost[key, default: 0] += p.costUSD
         }
         let today = cal.startOfDay(for: Date())
         return (0..<days).reversed().compactMap { offset in
@@ -61,14 +61,14 @@ struct MiniSparkline: View {
 
 /// GitHub-style usage heatmap: weeks × 7 days, opacity by daily token volume.
 struct UsageHeatmap: View {
-    let buckets: [UsageBucket]
+    let points: [UsageDayPoint]
     var weeks: Int = 24
     var tint: Color = .blue
 
     private let cellHeight: CGFloat = 10
     private let cellSpacing: CGFloat = 2
 
-    private struct Cell: Identifiable {
+    struct Cell: Identifiable {
         let id: Int
         let day: Date
         let tokens: Int
@@ -76,17 +76,16 @@ struct UsageHeatmap: View {
     }
 
     // Map day -> tokens/cost, then build a week-aligned grid ending today.
-    private var grid: [[Cell?]] {
-        let cal = Calendar.current
+    nonisolated static func grid(points: [UsageDayPoint], weeks: Int, today: Date,
+                                 calendar cal: Calendar) -> [[Cell?]] {
         var byDay: [Date: Int] = [:]
         var byDayCost: [Date: Double] = [:]
-        for b in buckets {
-            let key = cal.startOfDay(for: b.day)
-            byDay[key, default: 0] += b.totalTokens
-            byDayCost[key, default: 0] += b.costUSD
+        for p in points {
+            let key = cal.startOfDay(for: p.day)
+            byDay[key, default: 0] += p.tokens
+            byDayCost[key, default: 0] += p.costUSD
         }
 
-        let today = cal.startOfDay(for: Date())
         // Start from the Sunday `weeks-1` weeks ago.
         let weekday = cal.component(.weekday, from: today) - 1 // 0=Sun
         guard let gridEndStart = cal.date(byAdding: .day, value: -weekday, to: today),
@@ -113,17 +112,18 @@ struct UsageHeatmap: View {
         return columns
     }
 
-    private var maxTokens: Int {
-        max(1, buckets.map(\.totalTokens).max() ?? 1)
-    }
-
     var body: some View {
-        let cols = grid
+        let cal = Calendar.current
+        let cols = Self.grid(points: points, weeks: weeks,
+                             today: cal.startOfDay(for: Date()), calendar: cal)
+        // Scale to what is actually drawn. Points outside the grid — the ledger
+        // reaches further back than `weeks` — must not dim every visible cell.
+        let maxTokens = max(1, cols.lazy.joined().compactMap { $0?.tokens }.max() ?? 1)
         HStack(alignment: .top, spacing: cellSpacing) {
             ForEach(Array(cols.enumerated()), id: \.offset) { _, col in
                 VStack(spacing: cellSpacing) {
                     ForEach(0..<7, id: \.self) { d in
-                        cellView(col[d])
+                        cellView(col[d], maxTokens: maxTokens)
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -133,7 +133,7 @@ struct UsageHeatmap: View {
     }
 
     @ViewBuilder
-    private func cellView(_ cell: Cell?) -> some View {
+    private func cellView(_ cell: Cell?, maxTokens: Int) -> some View {
         if let cell {
             let frac = Double(cell.tokens) / Double(maxTokens)
             RoundedRectangle(cornerRadius: 2)

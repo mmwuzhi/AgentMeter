@@ -194,6 +194,17 @@ struct UsageBucket: Identifiable, Codable, Sendable, Equatable {
     var totalTokens: Int { inputTokens + outputTokens + cacheWrite5m + cacheWrite1h + cacheRead }
 }
 
+/// One day of activity for the heatmap and sparkline: tokens and spend only.
+/// Recent days come from `UsageReport.buckets`; older ones come from the
+/// persisted lifetime ledger, which reaches back past the scanner's file window
+/// and therefore carries no token split.
+struct UsageDayPoint: Identifiable, Sendable, Equatable {
+    var id: Date { day }
+    let day: Date               // start-of-day (local)
+    let tokens: Int
+    let costUSD: Double
+}
+
 /// Rolling-window spend + tokens attributed to one model.
 struct ModelSpend: Identifiable, Codable, Sendable, Equatable {
     var id: String { model }

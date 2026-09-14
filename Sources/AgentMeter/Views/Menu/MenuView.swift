@@ -41,8 +41,11 @@ struct MenuView: View {
     private var sections: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(visibleProviders, id: \.self) { p in
+                let providerState = PopoverOrder.state(p, model)
                 ProviderSection(
-                    state: PopoverOrder.state(p, model),
+                    state: providerState,
+                    historyPoints: LifetimeSpendTracker.dayPoints(
+                        ledger: model.lifetimeSpend, report: providerState.usage),
                     activeAgents: model.activeAgents.filter { $0.provider == p },
                     tint: PopoverOrder.tint(p),
                     codexResetCredits: p == .codex ? model.codexResetCreditState.credits : [],
@@ -391,6 +394,10 @@ enum PopoverOrder {
 /// One provider's grouped panel: title, quota windows, spend, collapsible activity.
 struct ProviderSection: View {
     let state: ProviderState
+    /// Daily activity for the sparkline and heatmap. Merged from the persisted
+    /// lifetime ledger and this refresh's report, so the heatmap keeps days whose
+    /// log files have aged out of the scanner's window.
+    let historyPoints: [UsageDayPoint]
     let activeAgents: [ActiveAgent]
     var tint: Color
     /// Codex-only real (or locally inferred, when the live fetch is unavailable)
@@ -463,8 +470,12 @@ struct ProviderSection: View {
             }
 
             // Copilot is flat-rate (no token spend), so skip the spend block for
-            // providers with no usage history.
-            if !state.usage.buckets.isEmpty {
+            // providers with no usage history. Gate on the merged history, not
+            // this refresh's buckets: a provider idle longer than the scanner's
+            // file window has empty buckets but real ledger days, and gating on
+            // buckets made the section appear after the launch scan and vanish
+            // again on the next windowed refresh.
+            if !historyPoints.isEmpty {
                 SpendSummary(usage: state.usage)
                 activitySection
             }
@@ -491,7 +502,7 @@ struct ProviderSection: View {
                     if !showHeatmap {
                         // Fill the rest of the row: the old fixed width made
                         // 21 days of activity hard to read.
-                        MiniSparkline(buckets: state.usage.buckets, tint: tint)
+                        MiniSparkline(points: historyPoints, tint: tint)
                             .frame(height: 20)
                             .frame(maxWidth: .infinity)
                             .transition(.opacity)
@@ -505,7 +516,7 @@ struct ProviderSection: View {
                 VStack(alignment: .leading, spacing: 10) {
                     SpendBreakdownGrid(usage: state.usage)
                     ModelBreakdown(usage: state.usage)
-                    UsageHeatmap(buckets: state.usage.buckets, tint: tint)
+                    UsageHeatmap(points: historyPoints, tint: tint)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
