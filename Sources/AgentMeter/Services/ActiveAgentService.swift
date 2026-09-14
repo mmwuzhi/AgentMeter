@@ -737,31 +737,169 @@ enum ActiveAgentService {
         let title: String?
     }
 
-    private static func enrichSessionUsage(_ agents: [ActiveAgent]) async -> [ActiveAgent] {
+    static func enrichSessionUsage(_ agents: [ActiveAgent]) async -> [ActiveAgent] {
         await PricingService.shared.ensureLoaded()
         // Forget sessions that are no longer running. The cached parse state
-        // carries a per-session dedup set, so keeping entries for every
+        // carries a per-file dedup set, so keeping entries for every
         // transcript ever enriched would grow without bound over a long uptime.
-        await sessionTotalsCache.prune(keeping: agents.compactMap { agent in
-            agent.session?.logPath.flatMap {
-                LogFileFingerprint.current(for: URL(fileURLWithPath: $0))
-            }
+        // The subagent transcripts are kept alongside their session's: each is
+        // its own entry, and dropping them here would re-read every one of
+        // them from the top on the next tick.
+        await sessionTotalsCache.prune(keeping: transcriptURLs(for: agents).compactMap {
+            LogFileFingerprint.current(for: $0)
         })
         var enriched: [ActiveAgent] = []
         for var agent in agents {
-            if var session = agent.session,
-               let logPath = session.logPath,
-               let summary = await sessionUsageSummary(provider: agent.provider, url: URL(fileURLWithPath: logPath)) {
-                session.tokenCount = summary.tokenCount
-                session.estimatedCostUSD = summary.estimatedCostUSD
-                session.model = summary.model
-                session.effort = summary.effort
-                session.title = summary.title
-                agent.session = session
+            if let session = agent.session, session.logPath != nil {
+                agent.session = await sessionWithUsage(session, provider: agent.provider, observedAt: agent.observedAt)
             }
             enriched.append(agent)
         }
         return enriched
+    }
+
+    /// Every transcript file the session rows are read from — the main
+    /// transcript of each attributed session plus its subagents' — i.e. what
+    /// the parse cache has to keep between ticks.
+    static func transcriptURLs(for agents: [ActiveAgent]) -> [URL] {
+        agents.flatMap { agent -> [URL] in
+            guard let logPath = agent.session?.logPath else { return [] }
+            return [URL(fileURLWithPath: logPath)] + subagentTranscripts(for: logPath, provider: agent.provider)
+        }
+    }
+
+    /// The session with spend and identity filled in from its transcript(s).
+    /// Model, effort and title come from the main transcript only; tokens and
+    /// cost add every subagent transcript, each parsed and cached on its own.
+    static func sessionWithUsage(
+        _ session: ActiveAgentSession,
+        provider: Provider,
+        observedAt: Date
+    ) async -> ActiveAgentSession {
+        guard let logPath = session.logPath else { return session }
+        var session = session
+        if let summary = await sessionUsageSummary(provider: provider, url: URL(fileURLWithPath: logPath)) {
+            session.tokenCount = summary.tokenCount
+            session.estimatedCostUSD = summary.estimatedCostUSD
+            session.model = summary.model
+            session.effort = summary.effort
+            session.title = summary.title
+        }
+        let subagents = await subagentSummaries(
+            subagentTranscripts(for: logPath, provider: provider),
+            observedAt: observedAt
+        )
+        session.subagents = subagents
+        let subagentTokens = subagents.compactMap(\.tokenCount).reduce(0, +)
+        if subagentTokens > 0 {
+            session.tokenCount = (session.tokenCount ?? 0) + subagentTokens
+            // Each file's summary priced its own per-model counts, and pricing
+            // is linear, so summing the costs is the cost of the sum.
+            session.estimatedCostUSD = (session.estimatedCostUSD ?? 0)
+                + subagents.compactMap(\.estimatedCostUSD).reduce(0, +)
+        }
+        return session
+    }
+
+    /// Subagent transcripts of a Claude session: `agent-<id>.jsonl` under the
+    /// `subagents/` directory named after the main transcript. Derived from an
+    /// already-attributed `logPath` only — never from hook input — so it adds
+    /// no path component the hook could choose; the filename is still checked
+    /// against the same charset as a session id, and anything else in the
+    /// directory (meta files, symlinks, a stray file) is ignored. Sorted by name
+    /// so a tick reads them in one order.
+    static func subagentTranscripts(for logPath: String, provider: Provider) -> [URL] {
+        guard provider == .claude else { return [] }
+        let directory = URL(fileURLWithPath: logPath)
+            .deletingPathExtension()
+            .appendingPathComponent("subagents", isDirectory: true)
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return entries
+            .filter { url in
+                guard subagentID(fromTranscriptName: url.lastPathComponent) != nil else { return false }
+                return (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+            }
+            // Re-anchored on the main transcript's path: the listing comes back
+            // with symlinks resolved (`/var` → `/private/var`), and the cache is
+            // keyed by path, so the subagent files must be spelled the way the
+            // session's own file is.
+            .map { directory.appendingPathComponent($0.lastPathComponent, isDirectory: false) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// `agent-<id>.jsonl` → `<id>`, for names in the session-id charset only.
+    static func subagentID(fromTranscriptName name: String) -> String? {
+        let prefix = "agent-"
+        let suffix = ".jsonl"
+        guard name.hasPrefix(prefix), name.hasSuffix(suffix),
+              name.count > prefix.count + suffix.count else { return nil }
+        let id = String(name.dropFirst(prefix.count).dropLast(suffix.count))
+        return isSafeSessionFilename(id) ? id : nil
+    }
+
+    /// Meta files are a couple of hundred bytes; anything past this is not one
+    /// Claude Code wrote and is ignored rather than parsed.
+    private static let subagentMetaByteCap = 64 * 1024
+
+    private static func subagentSummaries(_ urls: [URL], observedAt: Date) async -> [ActiveSubagent] {
+        var subagents: [ActiveSubagent] = []
+        for url in urls {
+            guard let id = subagentID(fromTranscriptName: url.lastPathComponent),
+                  let modifiedAt = modificationDate(for: url) else { continue }
+            let summary = await sessionUsageSummary(provider: .claude, url: url)
+            let meta = subagentMetadata(for: url)
+            subagents.append(ActiveSubagent(
+                id: id,
+                logPath: url.path,
+                lastUpdatedAt: modifiedAt,
+                observedAt: observedAt,
+                description: meta.description ?? firstPrompt(in: url),
+                agentType: meta.agentType,
+                tokenCount: summary?.tokenCount,
+                estimatedCostUSD: summary?.estimatedCostUSD,
+                model: summary?.model,
+                effort: summary?.effort
+            ))
+        }
+        // Newest activity first: what is running now sits above what finished.
+        return subagents.sorted { lhs, rhs in
+            if lhs.lastUpdatedAt != rhs.lastUpdatedAt { return lhs.lastUpdatedAt > rhs.lastUpdatedAt }
+            return lhs.id < rhs.id
+        }
+    }
+
+    /// `description` and `agentType` from the sibling `agent-<id>.meta.json`.
+    static func subagentMetadata(for transcript: URL) -> (description: String?, agentType: String?) {
+        let url = transcript.deletingPathExtension().appendingPathExtension("meta.json")
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return (nil, nil) }
+        defer { try? handle.close() }
+        // Read one byte past the cap so an oversized file is recognised as such
+        // instead of being parsed truncated.
+        guard let data = try? handle.read(upToCount: subagentMetaByteCap + 1),
+              data.count <= subagentMetaByteCap,
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return (nil, nil) }
+        return (object["description"] as? String, object["agentType"] as? String)
+    }
+
+    /// The first user record's text, for a subagent whose meta file names no
+    /// description. `firstLines` already bounds the read; `SessionLabel` bounds
+    /// what a row shows of it.
+    private static func firstPrompt(in url: URL) -> String? {
+        for line in firstLines(of: url, maxLines: 40) {
+            guard let object = jsonObject(from: line),
+                  object["type"] as? String == "user",
+                  let message = object["message"] as? [String: Any] else { continue }
+            if let text = message["content"] as? String { return text }
+            if let blocks = message["content"] as? [[String: Any]] {
+                return blocks.lazy.compactMap { $0["text"] as? String }.first
+            }
+            return nil
+        }
+        return nil
     }
 
     /// Partial parse of one session transcript. Cached so an actively-appended

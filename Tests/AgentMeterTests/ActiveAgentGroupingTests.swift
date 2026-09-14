@@ -11,9 +11,22 @@ final class ActiveAgentGroupingTests: XCTestCase {
         elapsed: TimeInterval = 60,
         parentAgentPID: Int? = nil,
         status: AgentStatusState? = nil,
-        lastUpdatedAt: Date? = nil
+        lastUpdatedAt: Date? = nil,
+        subagents: [ActiveSubagent] = []
     ) -> ActiveAgent {
         let observedAt = Date(timeIntervalSince1970: 1_000)
+        var session: ActiveAgentSession?
+        if lastUpdatedAt != nil || !subagents.isEmpty {
+            session = ActiveAgentSession(
+                id: "session-\(pid)",
+                projectPath: cwd,
+                projectName: nil,
+                branch: nil,
+                lastUpdatedAt: lastUpdatedAt,
+                source: "test",
+                subagents: subagents
+            )
+        }
         return ActiveAgent(
             provider: provider,
             pid: pid,
@@ -22,18 +35,23 @@ final class ActiveAgentGroupingTests: XCTestCase {
             elapsedSeconds: elapsed,
             observedAt: observedAt,
             cwd: cwd,
-            session: lastUpdatedAt.map {
-                ActiveAgentSession(
-                    id: "session-\(pid)",
-                    projectPath: cwd,
-                    projectName: nil,
-                    branch: nil,
-                    lastUpdatedAt: $0,
-                    source: "test"
-                )
-            },
+            session: session,
             parentAgentPID: parentAgentPID,
             status: status
+        )
+    }
+
+    /// A transcript-derived subagent whose file changed `age` seconds before
+    /// the fixtures' shared `observedAt`.
+    private func subagent(_ id: String, age: TimeInterval, tokens: Int? = nil, cost: Double? = nil) -> ActiveSubagent {
+        let observedAt = Date(timeIntervalSince1970: 1_000)
+        return ActiveSubagent(
+            id: id,
+            logPath: "/t/subagents/agent-\(id).jsonl",
+            lastUpdatedAt: observedAt.addingTimeInterval(-age),
+            observedAt: observedAt,
+            tokenCount: tokens,
+            estimatedCostUSD: cost
         )
     }
 
@@ -164,6 +182,57 @@ final class ActiveAgentGroupingTests: XCTestCase {
         let parent = groups.first { $0.projectName == "alpha" }!.nodes[0]
         XCTAssertTrue(keys.contains(parent.disclosureKey))
         XCTAssertEqual(keys.count, 3, "childless nodes get no subagent key")
+    }
+
+    func testListedSubagentsAttachToTheirSessionNodeWithoutCountingAsAgents() {
+        let groups = ActiveAgentGrouping.group([
+            agent(pid: 100, cwd: "/Users/me/alpha", status: .idle, subagents: [
+                subagent("running", age: 30),
+                subagent("fresh", age: ActiveSubagent.lingerWindow - 1),
+                subagent("stale", age: ActiveSubagent.lingerWindow + 1),
+                subagent("morning", age: 3_600),
+            ]),
+            agent(pid: 200, cwd: "/Users/me/alpha"),
+        ])
+        let group = groups[0]
+        let node = group.nodes.first { $0.agent.pid == 100 }!
+
+        XCTAssertEqual(node.subagents.map(\.id), ["running", "fresh"], "finished past the linger window: hidden")
+        XCTAssertEqual(node.childRowCount, 2)
+        XCTAssertTrue(node.hasChildRows)
+        XCTAssertTrue(node.children.isEmpty, "subagents are not processes")
+        XCTAssertEqual(group.agentCount, 2, "the header counts processes only")
+        XCTAssertEqual(node.topStatus, .idle, "a working subagent does not colour the parent; the hook does")
+        XCTAssertTrue(node.subagents[0].isWorking)
+        XCTAssertFalse(node.subagents[1].isWorking)
+    }
+
+    func testDisclosureKeysIncludeNodesWhoseOnlyChildrenAreListedSubagents() {
+        let groups = ActiveAgentGrouping.group([
+            agent(pid: 100, cwd: "/Users/me/alpha", subagents: [subagent("a", age: 10)]),
+            agent(pid: 101, cwd: "/Users/me/alpha", subagents: [subagent("old", age: 7_200)]),
+        ])
+
+        let keys = ActiveAgentGrouping.disclosureKeys(for: groups)
+
+        XCTAssertTrue(keys.contains("subagents:claude:100"))
+        XCTAssertFalse(keys.contains("subagents:claude:101"), "nothing listed, nothing to disclose")
+        XCTAssertEqual(keys.count, 2)
+    }
+
+    func testCollapsedSummaryUsesTheSessionTotalWhichAlreadyIncludesEverySubagent() {
+        var parent = agent(pid: 1, cwd: "/Users/me/alpha", status: .working, lastUpdatedAt: Date(timeIntervalSince1970: 990), subagents: [
+            subagent("listed", age: 10, tokens: 400_000, cost: 0.20),
+            subagent("hidden", age: 7_200, tokens: 600_000, cost: 0.30),
+        ])
+        // What the service wrote: main 1.5M/$0.70 plus both subagents.
+        parent.session?.tokenCount = 2_500_000
+        parent.session?.estimatedCostUSD = 1.20
+
+        let group = ActiveAgentGrouping.group([parent, agent(pid: 2, cwd: "/Users/me/alpha", status: .idle)])[0]
+
+        XCTAssertEqual(group.collapsedSummary, "2 · 1 working · 2.5M · $1.20")
+        XCTAssertEqual(parent.session?.subagentUsageText, "incl. 2 subagents · 1M · $0.50")
     }
 
     func testInvalidParentCycleDoesNotHideAgents() {

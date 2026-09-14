@@ -3,7 +3,13 @@ import Foundation
 
 struct ActiveAgentNode: Identifiable, Sendable, Equatable {
     let agent: ActiveAgent
+    /// Child *processes*: agents whose nearest agent ancestor is this one.
     var children: [ActiveAgent] = []
+    /// The session's transcript-derived subagents that are still listed
+    /// (`ActiveSubagent.isListed`). They have no process and no hook state, so
+    /// they do not count toward `agentCount` and do not move `topStatus`; the
+    /// hook already keeps the parent `working` while they run.
+    var subagents: [ActiveSubagent] = []
     var id: String { agent.id }
 
     var topStatus: AgentStatusState? {
@@ -71,6 +77,10 @@ extension ActiveAgentNode {
     /// Key under which the user's subagent-disclosure choice is remembered in
     /// `AppViewModel.sessionDisclosure`, distinct from group IDs.
     var disclosureKey: String { "subagents:\(agent.id)" }
+
+    /// Rows behind the node's disclosure: child processes and listed subagents.
+    var childRowCount: Int { children.count + subagents.count }
+    var hasChildRows: Bool { childRowCount > 0 }
 }
 
 enum ActiveAgentGrouping {
@@ -79,7 +89,7 @@ enum ActiveAgentGrouping {
     static func disclosureKeys(for groups: [ActiveAgentGroup]) -> Set<String> {
         var keys = Set(groups.map(\.id))
         for group in groups {
-            for node in group.nodes where !node.children.isEmpty {
+            for node in group.nodes where node.hasChildRows {
                 keys.insert(node.disclosureKey)
             }
         }
@@ -128,7 +138,8 @@ enum ActiveAgentGrouping {
             let key = "\(agent.provider.rawValue):" + (path ?? "pid:\(agent.pid)")
             let node = ActiveAgentNode(
                 agent: agent,
-                children: (childrenByTop[agent.id] ?? []).sorted(by: agentOrdersBefore)
+                children: (childrenByTop[agent.id] ?? []).sorted(by: agentOrdersBefore),
+                subagents: (agent.session?.subagents ?? []).filter(\.isListed)
             )
             if var group = groupsByKey[key] {
                 group.nodes.append(node)

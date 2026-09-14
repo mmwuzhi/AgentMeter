@@ -227,6 +227,13 @@ enum TokenFormat {
         let s = String(format: "%.1f", x)
         return s.hasSuffix(".0") ? String(s.dropLast(2)) : s
     }
+
+    /// The row's usage cell, "1.2M · $3.45"; the dollar part is dropped when
+    /// no cost is known or it would round to $0.00.
+    static func usage(_ tokens: Int, costUSD: Double?) -> String {
+        guard let costUSD, costUSD >= 0.005 else { return short(tokens) }
+        return "\(short(tokens)) · $\(String(format: "%.2f", costUSD))"
+    }
 }
 
 /// Live quota for one provider, plus how it was obtained.
@@ -387,9 +394,28 @@ struct ActiveAgentSession: Codable, Sendable, Equatable {
     /// Session title as the provider recorded it: a user-set custom title, else
     /// the generated one. Untrusted text; render only through `SessionLabel`.
     var title: String? = nil
+    /// Every subagent transcript found under this session's directory, newest
+    /// first — finished ones included, since their spend is part of
+    /// `tokenCount` / `estimatedCostUSD`. Which of them a row lists is decided
+    /// at grouping time (`ActiveSubagent.isListed`). Claude only.
+    var subagents: [ActiveSubagent] = []
 
     var shortID: String {
         String(id.prefix(8))
+    }
+
+    /// "incl. 2 subagents · 1.2M · $3.45" for the tooltip: how much of the
+    /// session's total the subagents account for. Nil without any.
+    var subagentUsageText: String? {
+        guard !subagents.isEmpty else { return nil }
+        let count = subagents.count
+        var text = "incl. \(count) \(count == 1 ? "subagent" : "subagents")"
+        let tokens = subagents.compactMap(\.tokenCount).reduce(0, +)
+        if tokens > 0 {
+            let cost = subagents.compactMap(\.estimatedCostUSD).reduce(0, +)
+            text += " · " + TokenFormat.usage(tokens, costUSD: cost)
+        }
+        return text
     }
 
     /// Branch as a row may show it. `gitBranch` is copied from the transcript,
@@ -417,10 +443,78 @@ struct ActiveAgentSession: Codable, Sendable, Equatable {
     }
 }
 
+/// One subagent of a Claude session, read from its own transcript
+/// (`<projectKey>/<sessionID>/subagents/agent-<id>.jsonl` plus the sibling
+/// `agent-<id>.meta.json`). Transcript-derived only: there is no process to
+/// focus and no hook state — subagent tool calls report under the parent's
+/// session id — so its state is the transcript's mtime. Lives on
+/// `ActiveAgentSession.subagents`, which is never persisted.
+struct ActiveSubagent: Identifiable, Codable, Sendable, Equatable {
+    /// How long a finished subagent stays listed under its session. Long enough
+    /// to read what just finished; short enough that a day's runs do not pile
+    /// up under every row. Its spend counts in the session total regardless.
+    static let lingerWindow: TimeInterval = 600
+
+    /// The `<id>` of the filename.
+    let id: String
+    let logPath: String
+    /// Transcript mtime — the only activity signal a subagent has.
+    let lastUpdatedAt: Date
+    let observedAt: Date
+    /// `description` from the meta file (the spawning tool's short label),
+    /// else the opening words of the first prompt. Untrusted; render only
+    /// through `SessionLabel`.
+    var description: String? = nil
+    /// `agentType` from the meta file ("general-purpose", "Explore", …).
+    var agentType: String? = nil
+    var tokenCount: Int? = nil
+    var estimatedCostUSD: Double? = nil
+    /// Model and effort behind the subagent's newest counted record — its
+    /// own, not the parent's; a subagent routinely runs a cheaper model.
+    var model: String? = nil
+    var effort: String? = nil
+
+    /// Working while the transcript changed within the same window a session
+    /// without hook state is judged by; a subagent has no other signal.
+    var isWorking: Bool {
+        let age = observedAt.timeIntervalSince(lastUpdatedAt)
+        return age >= -ActiveAgent.futureActivityTolerance && age <= ActiveAgent.recentActivityWindow
+    }
+
+    /// Whether a row still shows it: in flight, or finished within `lingerWindow`.
+    var isListed: Bool {
+        observedAt.timeIntervalSince(lastUpdatedAt) <= Self.lingerWindow
+    }
+
+    var displayTitle: String {
+        SessionLabel.title(description) ?? "agent \(id.prefix(8))"
+    }
+
+    var displayAgentType: String? {
+        SessionLabel.effort(agentType)
+    }
+
+    /// "fable 5.1 · xhigh · working now" / "fable 5.1 · xhigh · done · 3m ago".
+    var subtitleText: String {
+        var parts: [String] = []
+        if let model = ModelLabel.short(model) { parts.append(model) }
+        if let effort = SessionLabel.effort(effort) { parts.append(effort) }
+        parts.append(isWorking ? "working now" : "done · \(ActiveAgent.relativeAge(from: lastUpdatedAt, to: observedAt))")
+        return parts.joined(separator: " · ")
+    }
+
+    var usageText: String {
+        guard let tokenCount else { return "No usage yet" }
+        return TokenFormat.usage(tokenCount, costUSD: estimatedCostUSD)
+    }
+}
+
 /// One locally running interactive agent process.
 struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
-    private static let recentActivityWindow: TimeInterval = 120
-    private static let futureActivityTolerance: TimeInterval = 60
+    /// A transcript touched this recently is "working" for rows that have no
+    /// hook state to say otherwise (Codex, and every subagent).
+    static let recentActivityWindow: TimeInterval = 120
+    static let futureActivityTolerance: TimeInterval = 60
 
     let provider: Provider
     let pid: Int
@@ -555,6 +649,10 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     }
 
     private func relativeAge(since date: Date) -> String {
+        Self.relativeAge(from: date, to: observedAt)
+    }
+
+    static func relativeAge(from date: Date, to observedAt: Date) -> String {
         let seconds = max(0, Int(observedAt.timeIntervalSince(date)))
         if seconds < 60 { return "\(seconds)s ago" }
         if seconds < 3_600 { return "\(seconds / 60)m ago" }

@@ -143,6 +143,21 @@ usage presentation, cached state, or Claude live-session integration.
   disclosure logic. Explicit choices live in `AppViewModel.sessionDisclosure`
   (keyed by group ID / `ActiveAgentNode.disclosureKey`), deliberately not
   persisted and pruned by the refresh path as groups disappear.
+- A session's subagent disclosure lists two kinds of child row: child
+  *processes* (`ActiveAgentNode.children`, agents whose nearest agent ancestor
+  is this one) and transcript-derived subagents (`ActiveAgentNode.subagents`,
+  `ActiveSubagent`). A transcript subagent has no PID and no hook state —
+  subagent tool calls report under the parent's session id — so its row is
+  not a button, its dot is green while its transcript changed within
+  `ActiveAgent.recentActivityWindow` and gray ("done · Xm ago") after, and it
+  is listed only while within `ActiveSubagent.lingerWindow` (10 min) of its
+  last write. It never moves the parent's status or `topStatus` (the hook
+  keeps the parent `working` while background tasks run) and never counts in
+  `agentCount`, which stays a process count; the "N subagents" label counts
+  both kinds. Title, agent type, model and effort are provider text and go
+  through `SessionLabel` / `ModelLabel`. The parent's tooltip ends with
+  "incl. N subagents · tokens · $cost" over every subagent the session ran,
+  listed or not.
 
 ## Spend and usage
 
@@ -210,3 +225,19 @@ usage presentation, cached state, or Claude live-session integration.
   boundary — folding the trailing, not-yet-terminated record into the cached
   value would count it again once it is complete. `enrichSessionUsage` prunes
   the cache to the running sessions, because each entry now holds a dedup set.
+- A Claude session's tokens and cost include its subagent transcripts,
+  `<projectKey>/<sessionID>/subagents/agent-<id>.jsonl`
+  (`ActiveAgentService.subagentTranscripts(for:provider:)`), found only by
+  walking from the already-attributed `logPath` — never from hook input — and
+  only for names in the session-id charset; meta files, symlinks and anything
+  else in the directory are skipped. Each file is its own cached partial
+  parse with its own dedup set (a sidechain's messages are never replayed into
+  the main transcript, so no cross-file dedup is needed), and the prune keeps
+  main *and* subagent fingerprints — dropping the latter would re-read every
+  subagent from the top each tick. Model, effort and title stay the main
+  transcript's; subagent transcripts carry no title records. Per-file costs
+  are summed, which pricing's linearity makes exact. The row's name for a
+  subagent is `description` from the sibling `agent-<id>.meta.json` (read
+  under a 64 KB cap), else the first user prompt's opening words. Finished
+  subagents stay in the total forever, like finished turns; only the listing
+  ages out. The spend scanner's recursive glob already counted these files.

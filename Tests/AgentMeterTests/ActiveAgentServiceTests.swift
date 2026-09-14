@@ -1243,6 +1243,186 @@ final class ActiveAgentServiceTests: XCTestCase {
                        "150 carried from the cached prefix + 30 newly appended")
     }
 
+    // MARK: - Subagent transcripts
+
+    func testSessionUsageAddsSubagentTranscriptsAndKeepsIdentityFromTheMainOne() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let main = try makeTempFile(contents: """
+        {"type":"ai-title","sessionId":"s1","aiTitle":"Parent work"}
+        {"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","effort":"high","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50}}}
+        """, filename: "s1.jsonl")
+        let subagent = try writeSubagent(
+            id: "a1", beside: main,
+            meta: #"{"agentType":"Explore","description":"Find the leak","toolUseId":"toolu_1","spawnDepth":1}"#,
+            transcript: """
+            {"type":"user","isSidechain":true,"agentId":"a1","sessionId":"s1","message":{"role":"user","content":"Find the leak in the parser, read-only."}}
+            {"timestamp":"2026-07-05T00:01:00Z","requestId":"r9","effort":"low","isSidechain":true,"agentId":"a1","message":{"id":"m9","model":"claude-haiku-4","usage":{"input_tokens":20,"output_tokens":10}}}
+            """
+        )
+        // Neighbours that are not subagent transcripts.
+        let directory = subagent.deletingLastPathComponent()
+        try "{}".data(using: .utf8)?.write(to: directory.appendingPathComponent("notes.jsonl"))
+        try "{}".data(using: .utf8)?.write(to: directory.appendingPathComponent("agent-b2.meta.json"))
+
+        let enriched = await ActiveAgentService.enrichSessionUsage([claudeAgent(logPath: main.path)])
+        let session = try XCTUnwrap(enriched.first?.session)
+
+        // Identity is the main transcript's; spend is both.
+        XCTAssertEqual(session.title, "Parent work")
+        XCTAssertEqual(session.model, "claude-sonnet-4")
+        XCTAssertEqual(session.effort, "high")
+        XCTAssertEqual(session.tokenCount, 180)
+        let mainAlone = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: main)
+        let subagentAlone = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: subagent)
+        XCTAssertEqual(
+            session.estimatedCostUSD ?? 0,
+            (mainAlone?.estimatedCostUSD ?? 0) + (subagentAlone?.estimatedCostUSD ?? 0),
+            accuracy: 1e-9
+        )
+
+        XCTAssertEqual(session.subagents.map(\.id), ["a1"])
+        let child = try XCTUnwrap(session.subagents.first)
+        XCTAssertEqual(child.description, "Find the leak")
+        XCTAssertEqual(child.agentType, "Explore")
+        XCTAssertEqual(child.model, "claude-haiku-4")
+        XCTAssertEqual(child.effort, "low")
+        XCTAssertEqual(child.tokenCount, 30)
+        XCTAssertEqual(child.logPath, subagent.path)
+        XCTAssertTrue(child.isWorking, "a transcript written moments ago is in flight")
+        XCTAssertEqual(child.subtitleText, "haiku 4 · low · working now")
+    }
+
+    func testGrowingSubagentTranscriptResumesAndKeepsItsOwnDedup() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let main = try makeTempFile(contents: """
+        {"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50}}}
+
+        """, filename: "s2.jsonl")
+        let subagent = try writeSubagent(id: "a1", beside: main, meta: nil, transcript: """
+        {"timestamp":"2026-07-05T00:01:00Z","requestId":"r9","message":{"id":"m9","model":"claude-haiku-4","usage":{"input_tokens":20,"output_tokens":10}}}
+
+        """)
+        let agent = claudeAgent(logPath: main.path)
+
+        let first = await ActiveAgentService.enrichSessionUsage([agent])
+        XCTAssertEqual(first.first?.session?.tokenCount, 180)
+
+        // The subagent replays m9 (already counted) and adds one message; the
+        // main transcript is untouched.
+        try append("""
+        {"timestamp":"2026-07-05T00:02:00Z","requestId":"r9","message":{"id":"m9","model":"claude-haiku-4","usage":{"input_tokens":999,"output_tokens":999}}}
+        {"timestamp":"2026-07-05T00:03:00Z","requestId":"r10","message":{"id":"m10","model":"claude-haiku-4","usage":{"input_tokens":10,"output_tokens":5}}}
+
+        """, to: subagent)
+        let second = await ActiveAgentService.enrichSessionUsage([agent])
+
+        XCTAssertEqual(second.first?.session?.tokenCount, 195)
+        XCTAssertEqual(second.first?.session?.subagents.first?.tokenCount, 45)
+    }
+
+    func testSubagentTranscriptsAcceptOnlyAgentFilesBesideTheMainTranscript() throws {
+        let main = try makeTempFile(contents: "", filename: "s3.jsonl")
+        XCTAssertEqual(ActiveAgentService.subagentTranscripts(for: main.path, provider: .claude), [],
+                       "a session that spawned nothing has no directory")
+
+        _ = try writeSubagent(id: "b2", beside: main, meta: nil, transcript: "")
+        _ = try writeSubagent(id: "a1_x-y", beside: main, meta: #"{"description":"x"}"#, transcript: "")
+        let directory = main.deletingPathExtension().appendingPathComponent("subagents", isDirectory: true)
+        try "{}".data(using: .utf8)?.write(to: directory.appendingPathComponent("notes.jsonl"))
+        try "{}".data(using: .utf8)?.write(to: directory.appendingPathComponent("agent-.jsonl"))
+        try "{}".data(using: .utf8)?.write(to: directory.appendingPathComponent("agent-a b.jsonl"))
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("agent-dir.jsonl", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        XCTAssertEqual(
+            ActiveAgentService.subagentTranscripts(for: main.path, provider: .claude).map(\.lastPathComponent),
+            ["agent-a1_x-y.jsonl", "agent-b2.jsonl"]
+        )
+        XCTAssertEqual(ActiveAgentService.subagentTranscripts(for: main.path, provider: .codex), [],
+                       "Codex rollouts have no subagent directory to look in")
+
+        XCTAssertEqual(ActiveAgentService.subagentID(fromTranscriptName: "agent-a0000000000000003.jsonl"), "a0000000000000003")
+        XCTAssertNil(ActiveAgentService.subagentID(fromTranscriptName: "agent-a1.meta.json"))
+        XCTAssertNil(ActiveAgentService.subagentID(fromTranscriptName: "agent-.jsonl"))
+        XCTAssertNil(ActiveAgentService.subagentID(fromTranscriptName: "agent-a.b.jsonl"))
+        XCTAssertNil(ActiveAgentService.subagentID(fromTranscriptName: "session.jsonl"))
+    }
+
+    func testTranscriptURLsForThePruneKeepTheSubagentFiles() throws {
+        let main = try makeTempFile(contents: "", filename: "s4.jsonl")
+        let subagent = try writeSubagent(id: "a1", beside: main, meta: nil, transcript: "")
+        let codex = try makeTempFile(contents: "", filename: "rollout.jsonl")
+        let codexAgent = ActiveAgent(
+            provider: .codex, pid: 2, parentPID: 1, command: "codex", elapsedSeconds: 1,
+            observedAt: Date(), session: claudeAgent(logPath: codex.path).session
+        )
+
+        let urls = ActiveAgentService.transcriptURLs(for: [claudeAgent(logPath: main.path), codexAgent])
+
+        XCTAssertEqual(Set(urls.map(\.path)), [main.path, subagent.path, codex.path])
+    }
+
+    func testSubagentDescriptionFallsBackToTheFirstPromptAndIsRenderedThroughSessionLabel() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let main = try makeTempFile(contents: "", filename: "s5.jsonl")
+        // No meta file: the opening words of the prompt name the row.
+        _ = try writeSubagent(id: "a1", beside: main, meta: nil, transcript: """
+        {"type":"user","message":{"role":"user","content":"Investigate\\n\\tthe   thing\\u0007 carefully"}}
+        """)
+        // Block-shaped prompt content.
+        _ = try writeSubagent(id: "a2", beside: main, meta: nil, transcript: """
+        {"type":"user","message":{"role":"user","content":[{"type":"text","text":"Block prompt"}]}}
+        """)
+        // A meta file past the size cap is not one Claude Code wrote: ignored.
+        let oversized = "{\"description\":\"Huge\"," + String(repeating: " ", count: 70_000) + "\"agentType\":\"x\"}"
+        _ = try writeSubagent(id: "a3", beside: main, meta: oversized, transcript: """
+        {"type":"user","message":{"role":"user","content":"Fallback prompt"}}
+        """)
+        // Description text is provider text: flattened and capped on display.
+        _ = try writeSubagent(id: "a4", beside: main, meta: #"{"description":"Review\n\u001b[31mchanges"}"#, transcript: "")
+        // Nothing to name it by: the id stands in.
+        _ = try writeSubagent(id: "a5f00dbeef", beside: main, meta: "not json", transcript: "")
+
+        let enriched = await ActiveAgentService.enrichSessionUsage([claudeAgent(logPath: main.path)])
+        let byID = Dictionary(uniqueKeysWithValues: (enriched.first?.session?.subagents ?? []).map { ($0.id, $0) })
+
+        XCTAssertEqual(byID["a1"]?.displayTitle, "Investigate the thing carefully")
+        XCTAssertEqual(byID["a2"]?.displayTitle, "Block prompt")
+        XCTAssertEqual(byID["a3"]?.displayTitle, "Fallback prompt")
+        XCTAssertNil(byID["a3"]?.agentType)
+        XCTAssertEqual(byID["a4"]?.displayTitle, "Review [31mchanges")
+        XCTAssertEqual(byID["a5f00dbeef"]?.displayTitle, "agent a5f00dbe")
+        XCTAssertEqual(byID["a1"]?.usageText, "No usage yet")
+        XCTAssertNil(enriched.first?.session?.tokenCount, "prompts alone spend nothing")
+    }
+
+    private func claudeAgent(logPath: String) -> ActiveAgent {
+        let observedAt = Date()
+        return ActiveAgent(
+            provider: .claude, pid: 1, parentPID: 1, command: "claude", elapsedSeconds: 60,
+            observedAt: observedAt,
+            session: ActiveAgentSession(
+                id: "s1", projectPath: "/p", projectName: "p", branch: nil,
+                lastUpdatedAt: observedAt, source: "test", logPath: logPath
+            )
+        )
+    }
+
+    /// `<main dir>/<main name>/subagents/agent-<id>.jsonl` (+ `.meta.json`),
+    /// the layout Claude Code writes beside a session transcript.
+    private func writeSubagent(id: String, beside main: URL, meta: String?, transcript: String) throws -> URL {
+        let directory = main.deletingPathExtension().appendingPathComponent("subagents", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("agent-\(id).jsonl")
+        try transcript.data(using: .utf8)?.write(to: file)
+        if let meta {
+            try meta.data(using: .utf8)?.write(to: directory.appendingPathComponent("agent-\(id).meta.json"))
+        }
+        return file
+    }
+
     private func append(_ text: String, to url: URL) throws {
         let handle = try FileHandle(forWritingTo: url)
         defer { try? handle.close() }

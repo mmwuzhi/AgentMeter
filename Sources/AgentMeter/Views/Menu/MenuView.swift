@@ -235,8 +235,9 @@ private struct ActiveAgentGroupRow: View {
     }
 }
 
-/// A top-level session row plus its subagents, which stay collapsed behind a
-/// small disclosure unless one of them needs the user.
+/// A top-level session row plus its subagents — child processes and the
+/// transcript-derived `ActiveSubagent`s — which stay collapsed behind a small
+/// disclosure unless one of the processes needs the user.
 private struct ActiveAgentNodeRows: View {
     let node: ActiveAgentNode
     @Environment(AppViewModel.self) private var model
@@ -248,7 +249,7 @@ private struct ActiveAgentNodeRows: View {
 
     var body: some View {
         ActiveAgentRow(agent: node.agent, showsProjectTitle: false)
-        if !node.children.isEmpty {
+        if node.hasChildRows {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) {
                     model.sessionDisclosure[node.disclosureKey] = !showsChildren
@@ -258,7 +259,7 @@ private struct ActiveAgentNodeRows: View {
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.semibold))
                         .rotationEffect(.degrees(showsChildren ? 90 : 0))
-                    Text(node.children.count == 1 ? "1 subagent" : "\(node.children.count) subagents")
+                    Text(node.childRowCount == 1 ? "1 subagent" : "\(node.childRowCount) subagents")
                 }
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
@@ -271,8 +272,45 @@ private struct ActiveAgentNodeRows: View {
                     ActiveAgentRow(agent: child, showsProjectTitle: false)
                         .padding(.leading, 14)
                 }
+                ForEach(node.subagents) { subagent in
+                    ActiveSubagentRow(subagent: subagent)
+                        .padding(.leading, 14)
+                }
             }
         }
+    }
+}
+
+/// One transcript-derived subagent under its session. Same shape as
+/// `ActiveAgentRow`, but not a button: there is no process of its own to
+/// focus, and the parent row directly above already jumps to the terminal
+/// the subagent reports into.
+private struct ActiveSubagentRow: View {
+    let subagent: ActiveSubagent
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle()
+                .fill(subagent.isWorking ? Color.green : Color.gray)
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(subagent.displayTitle)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(subagent.subtitleText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Text(subagent.usageText)
+                .font(.caption2.monospacedDigit().weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .help(ActiveAgentTooltip.text(for: subagent))
     }
 }
 
@@ -365,7 +403,26 @@ enum ActiveAgentTooltip {
             if let effort = SessionLabel.effort(session.effort) {
                 identity.append(effort)
             }
+            // The row's total already includes the subagents; this says how
+            // much of it they are, over every subagent the session ever ran.
+            if let subagents = session.subagentUsageText {
+                identity.append(subagents)
+            }
         }
+        lines.append(identity.joined(separator: " · "))
+        return lines.joined(separator: "\n")
+    }
+
+    /// Hover text of a subagent row: the whole description (the row truncates
+    /// it), then agent type, id, full model id and effort.
+    static func text(for subagent: ActiveSubagent) -> String {
+        var lines = [subagent.isWorking ? "Subagent running" : "Subagent finished"]
+        if let description = SessionLabel.title(subagent.description) { lines.append(description) }
+        var identity: [String] = []
+        if let agentType = subagent.displayAgentType { identity.append(agentType) }
+        identity.append("Agent \(subagent.id.prefix(8))")
+        if let model = subagent.model, ModelLabel.short(model) != nil { identity.append(model) }
+        if let effort = SessionLabel.effort(subagent.effort) { identity.append(effort) }
         lines.append(identity.joined(separator: " · "))
         return lines.joined(separator: "\n")
     }
