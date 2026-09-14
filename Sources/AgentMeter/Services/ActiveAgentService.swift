@@ -9,8 +9,15 @@ enum ActiveAgentService {
         await Task.detached {
             let payloads = AgentStatusStore.readAll()
             let agents = parsePSOutput(runPS().output, observedAt: Date(), payloads: payloads)
-            return attachStatus(await enrichSessionUsage(agents), payloads: payloads)
+            return presentable(await enrichSessionUsage(agents), payloads: payloads)
         }.value
+    }
+
+    /// The rows the popover gets: hook state attached, then every process that
+    /// has neither a hook state nor an attributed transcript dropped — it is
+    /// only a PID; see `ActiveAgent.isBlank`.
+    static func presentable(_ agents: [ActiveAgent], payloads: [AgentStatusPayload]) -> [ActiveAgent] {
+        attachStatus(agents, payloads: payloads).filter { !$0.isBlank }
     }
 
     /// Newest hook payload per running agent PID. A payload is attributed to

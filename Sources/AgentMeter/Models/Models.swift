@@ -372,6 +372,13 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
         }
     }
 
+    /// True when the process is known only to exist: no hook-reported state and
+    /// no attributed transcript. Such a row can say nothing but "open now" — no
+    /// model, no tokens, no spend — and a day of still-open editor tabs
+    /// produces a dozen of them, burying the sessions that carry information.
+    /// `ActiveAgentService.fetch()` drops them before anything renders.
+    var isBlank: Bool { status == nil && session == nil }
+
     /// nil when no transcript could be attributed to this process — rendering
     /// nothing beats a wall of "Usage unavailable" rows.
     var usageDisplayText: String? {

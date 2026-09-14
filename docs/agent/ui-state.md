@@ -84,6 +84,14 @@ usage presentation, cached state, or Claude live-session integration.
   `AppViewModel.popoverScreenVisibleHeight`, which the status item controller
   records on each open); header and footer stay fixed. Never let popover
   content grow the window past the screen, including a smaller secondary one.
+- A process with neither a hook-reported state nor an attributed transcript
+  (`ActiveAgent.isBlank`) is dropped in `ActiveAgentService.fetch()`, so it
+  never reaches the list or its counts. Such a row can only say "open now" —
+  no model, no tokens, no spend. In practice these are a day's still-open
+  editor tabs whose hook payload the 12-hour `AgentStatusStore.sweepStale`
+  removed: a dozen of them buried the six sessions that carried information,
+  and their provider-tinted dot read as more alive than the gray idle rows
+  above them.
 - Session groups start collapsed behind a summary (count · top status ·
   aggregated usage). Groups and subagent disclosures are automatic until the
   user toggles them: expanded exactly while waiting/error — surfacing sessions

@@ -337,6 +337,48 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(farFuture.activityText, "idle · 0s ago")
     }
 
+    func testBlankRowsCarryNeitherHookStateNorTranscript() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let bare = ActiveAgent(
+            provider: .claude, pid: 100, parentPID: 1, command: "claude", elapsedSeconds: 10, observedAt: now,
+            cwd: "/Users/me/project")
+        var stateOnly = bare
+        stateOnly.status = .working
+        var transcriptOnly = bare
+        transcriptOnly.session = ActiveAgentSession(
+            id: "s-100", projectPath: "/Users/me/project", projectName: "project", branch: nil,
+            lastUpdatedAt: nil, source: "test")
+
+        // A PID with a cwd is still only a PID: nothing to say beyond "open now".
+        XCTAssertTrue(bare.isBlank)
+        XCTAssertEqual(bare.activityText, "open now")
+        // Either signal alone earns the row: live state says what it is doing,
+        // a transcript says what it is and what it has spent.
+        XCTAssertFalse(stateOnly.isBlank)
+        XCTAssertFalse(transcriptOnly.isBlank)
+    }
+
+    func testPresentableDropsBarePIDsAfterAttachingHookState() {
+        // The tail of `fetch()`: a hook payload turns a bare PID into a row
+        // with state; a bare PID without one is dropped; a transcript-only
+        // row stays.
+        let now = Date(timeIntervalSince1970: 10_000)
+        func bare(_ pid: Int) -> ActiveAgent {
+            ActiveAgent(provider: .claude, pid: pid, parentPID: 1, command: "claude",
+                        elapsedSeconds: 10, observedAt: now, cwd: "/Users/me/project")
+        }
+        var transcriptOnly = bare(102)
+        transcriptOnly.session = ActiveAgentSession(
+            id: "s-102", projectPath: "/Users/me/project", projectName: "project", branch: nil,
+            lastUpdatedAt: nil, source: "test")
+        let hooked = AgentStatusPayload(state: .working, sessionID: "s-101", processAncestry: [601, 101, 1], updatedAt: now)
+
+        let rows = ActiveAgentService.presentable([bare(100), bare(101), transcriptOnly], payloads: [hooked])
+
+        XCTAssertEqual(rows.map(\.pid), [101, 102])
+        XCTAssertEqual(rows.first?.status, .working)
+    }
+
     func testInGroupRowTextPrefersDistinguishingDetails() {
         let now = Date(timeIntervalSince1970: 10_000)
         let withBranch = ActiveAgent(
