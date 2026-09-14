@@ -470,30 +470,94 @@ final class ActiveAgentServiceTests: XCTestCase {
         }
     }
 
-    func testIdentifiedClaudeSessionRejectsSymlinkedProjectDirOutsideRoot() throws {
+    func testIdentifiedClaudeSessionFollowsASymlinkedProjectStore() throws {
+        // Claude Code's SessionStart hook symlinks projects/<key> into a shared
+        // store, so the resolved transcript legitimately sits outside
+        // projects/. Refusing that (an earlier containment check on the
+        // *resolved* path did) loses the pinned transcript for every session on
+        // such a machine — and with it the row's model, tokens, cost and
+        // branch. Traversal is still blocked, on the constructed path: see
+        // testIdentifiedClaudeSessionRejectsPathEscapingSessionID and
+        // testIdentifiedClaudeSessionRejectsRelativeOrEscapingCWD.
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("agentmeter-base-\(UUID().uuidString)", isDirectory: true)
         tempDirs.append(base)
         let root = base.appendingPathComponent("projects", isDirectory: true)
-        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        let store = base.appendingPathComponent("projects-store", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
         let sessionID = "11111111-2222-3333-4444-555555555555"
-        try #"{"sessionId":"\#(sessionID)"}"#.write(
-            to: outside.appendingPathComponent("\(sessionID).jsonl"),
+        try #"{"sessionId":"\#(sessionID)","cwd":"/Users/me/project","gitBranch":"main"}"#.write(
+            to: store.appendingPathComponent("\(sessionID).jsonl"),
             atomically: true, encoding: .utf8
         )
         try FileManager.default.createSymbolicLink(
             at: root.appendingPathComponent("-Users-me-project", isDirectory: true),
-            withDestinationURL: outside
+            withDestinationURL: store
         )
 
-        XCTAssertNil(ActiveAgentService.identifiedClaudeSession(
+        let session = ActiveAgentService.identifiedClaudeSession(
             sessionID: sessionID,
             cwd: "/Users/me/project",
             observedAt: Date(),
             projectsRoot: root
-        ), "a project dir symlinked outside the projects root must be refused")
+        )
+
+        XCTAssertEqual(session?.id, sessionID)
+        XCTAssertEqual(session?.branch, "main")
+        XCTAssertEqual(session?.logPath?.hasSuffix("\(sessionID).jsonl"), true)
+    }
+
+    func testSessionResolverTriesTheProcessCWDWhenTheHookCWDMissesTheProjectKey() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        // Claude Code keys the transcript directory by the directory the
+        // session was launched from; the hook reports the session's current
+        // cwd. After an /add-dir or a cd they differ, and the hook cwd alone
+        // derives a project key no directory has.
+        let payload = AgentStatusPayload(
+            state: .working, sessionID: "hook-session",
+            cwd: "/Users/me/project/sub/dir",
+            processAncestry: [4_242], updatedAt: now)
+        let found = ActiveAgentSession(
+            id: "hook-session", projectPath: "/Users/me/project", projectName: "project",
+            branch: nil, lastUpdatedAt: now, source: "test")
+        var tried: [String] = []
+        let resolve = ActiveAgentService.sessionResolver(
+            payloadsByPID: [4_242: payload],
+            identified: { _, cwd, _ in
+                tried.append(cwd)
+                return cwd == "/Users/me/project" ? found : nil
+            },
+            heuristic: { _, _ in nil })
+
+        let session = resolve(ActiveAgentService.SessionQuery(
+            provider: .claude, pid: 4_242, cwd: "/Users/me/project",
+            startedAt: now.addingTimeInterval(-60), observedAt: now,
+            codexRolloutIdentifier: nil, isSoleAgentForCWD: false))
+
+        XCTAssertEqual(session?.id, "hook-session")
+        XCTAssertEqual(tried, ["/Users/me/project/sub/dir", "/Users/me/project"],
+                       "the hook cwd is the stronger signal and must be tried first")
+    }
+
+    func testSessionResolverDoesNotProbeTheSameCWDTwice() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let payload = AgentStatusPayload(
+            state: .working, sessionID: "hook-session",
+            cwd: "/Users/me/project",
+            processAncestry: [4_243], updatedAt: now)
+        var tried: [String] = []
+        let resolve = ActiveAgentService.sessionResolver(
+            payloadsByPID: [4_243: payload],
+            identified: { _, cwd, _ in tried.append(cwd); return nil },
+            heuristic: { _, _ in nil })
+
+        _ = resolve(ActiveAgentService.SessionQuery(
+            provider: .claude, pid: 4_243, cwd: "/Users/me/project",
+            startedAt: now.addingTimeInterval(-60), observedAt: now,
+            codexRolloutIdentifier: nil, isSoleAgentForCWD: false))
+
+        XCTAssertEqual(tried, ["/Users/me/project"])
     }
 
     func testHookPayloadRequiresCurrentPIDLifetime() {

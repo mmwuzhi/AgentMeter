@@ -141,10 +141,21 @@ enum ActiveAgentService {
     ) -> (SessionQuery) -> ActiveAgentSession? {
         { query in
             if query.provider == .claude,
-               let payload = hookPayload(for: query.pid, startedAt: query.startedAt, payloadsByPID: payloadsByPID),
-               let cwd = payload.cwd ?? query.cwd,
-               let session = identified(payload.sessionID, cwd, query.observedAt) {
-                return session
+               let payload = hookPayload(for: query.pid, startedAt: query.startedAt, payloadsByPID: payloadsByPID) {
+                // Claude Code names a transcript directory after the directory
+                // the session was launched from, while the hook reports the
+                // session's *current* cwd. An `/add-dir` or a cd makes those
+                // differ, and then the hook cwd alone derives a project key no
+                // directory has — so try the process cwd as well before giving
+                // up on the pinned transcript. Order matters: the same session
+                // id can exist under two project keys, and the process cwd is
+                // the weaker signal of the two.
+                var tried: Set<String> = []
+                for cwd in [payload.cwd, query.cwd].compactMap({ $0 }) where tried.insert(cwd).inserted {
+                    if let session = identified(payload.sessionID, cwd, query.observedAt) {
+                        return session
+                    }
+                }
             }
             guard let cwd = query.cwd,
                   query.codexRolloutIdentifier != nil || query.isSoleAgentForCWD else { return nil }
@@ -591,11 +602,25 @@ enum ActiveAgentService {
         let base = (projectsRoot ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects", isDirectory: true))
             .resolvingSymlinksInPath()
-        let root = base
-            .appendingPathComponent(claudeProjectKey(for: cwd), isDirectory: true)
-            .resolvingSymlinksInPath()
-        guard root.path.hasPrefix(base.path + "/") else { return nil }
-        let url = root.appendingPathComponent("\(sessionID).jsonl", isDirectory: false)
+        // Traversal is ruled out on the *constructed* path, not the resolved
+        // one. `claudeProjectKey` strips every separator, so the key is always
+        // a single component and cannot walk out of `base`; assert that here so
+        // a later change to the mangling cannot quietly reintroduce a traversal.
+        //
+        // Deliberately no containment check on the resolved path: Claude Code's
+        // SessionStart hook symlinks `projects/<key>` into a shared store, so
+        // requiring the resolved directory to sit under `projects/` refuses the
+        // layout Claude Code itself creates and loses the transcript for every
+        // session on such a machine. It also bought nothing — planting that
+        // symlink needs write access to `projects/`, and anyone holding it can
+        // drop a crafted transcript in directly. `latestClaudeSession` (the
+        // heuristic path) has always followed these symlinks; this is the same
+        // rule, applied consistently.
+        let key = claudeProjectKey(for: cwd)
+        guard !key.isEmpty, !key.contains("/"), key != ".", key != ".." else { return nil }
+        let url = base
+            .appendingPathComponent(key, isDirectory: true)
+            .appendingPathComponent("\(sessionID).jsonl", isDirectory: false)
         guard let modifiedAt = modificationDate(for: url),
               modifiedAt <= observedAt.addingTimeInterval(60) else { return nil }
         let metadata = claudeMetadata(from: url)
