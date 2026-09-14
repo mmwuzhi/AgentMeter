@@ -74,6 +74,8 @@ enum ActiveAgentService {
             guard let payload else { return agent }
             var agent = agent
             agent.status = payload.state
+            agent.pendingBackgroundTasks = payload.pendingBackgroundTasks
+            agent.pendingSubagents = payload.pendingSubagents
             return agent
         }
     }

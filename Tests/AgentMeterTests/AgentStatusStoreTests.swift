@@ -44,4 +44,52 @@ final class AgentStatusStoreTests: XCTestCase {
         AgentStatusStore.sweepStale(olderThan: 60)
         XCTAssertNil(AgentStatusStore.read(sessionID: sessionID))
     }
+
+    func testLegacyPayloadWithoutPendingBackgroundTasksDecodes() throws {
+        // A file written by a helper that predates the field: no
+        // `pendingBackgroundTasks` key at all. An app update must still read it.
+        let legacy = """
+        {
+          "cwd" : "/tmp/x",
+          "processAncestry" : [ 123, 45 ],
+          "sessionID" : "\(sessionID)",
+          "state" : "idle",
+          "updatedAt" : "2025-01-01T00:00:00Z"
+        }
+        """
+        try FileManager.default.createDirectory(at: AgentStatusStore.directory, withIntermediateDirectories: true)
+        try Data(legacy.utf8).write(to: AgentStatusStore.fileURL(forSession: sessionID))
+
+        let payload = AgentStatusStore.read(sessionID: sessionID)
+
+        XCTAssertEqual(payload?.state, .idle)
+        XCTAssertEqual(payload?.processAncestry, [123, 45])
+        XCTAssertNil(payload?.pendingBackgroundTasks)
+        XCTAssertNil(payload?.pendingSubagents)
+    }
+
+    func testWriteReadRoundTripKeepsPendingBackgroundTasks() throws {
+        try AgentStatusStore.write(
+            AgentStatusPayload(
+                state: .working,
+                sessionID: sessionID,
+                pendingBackgroundTasks: 2,
+                pendingSubagents: 1
+            )
+        )
+        XCTAssertEqual(AgentStatusStore.read(sessionID: sessionID)?.pendingBackgroundTasks, 2)
+        XCTAssertEqual(AgentStatusStore.read(sessionID: sessionID)?.pendingSubagents, 1)
+
+        // Absent stays absent: a `working` from PreToolUse carries no count.
+        try AgentStatusStore.write(AgentStatusPayload(state: .working, sessionID: sessionID))
+        XCTAssertNil(AgentStatusStore.read(sessionID: sessionID)?.pendingBackgroundTasks)
+        XCTAssertNil(AgentStatusStore.read(sessionID: sessionID)?.pendingSubagents)
+
+        // A negative count cannot come from an array walk; it is normalized, not stored.
+        try AgentStatusStore.write(
+            AgentStatusPayload(state: .idle, sessionID: sessionID, pendingBackgroundTasks: -1, pendingSubagents: -1)
+        )
+        XCTAssertEqual(AgentStatusStore.read(sessionID: sessionID)?.pendingBackgroundTasks, 0)
+        XCTAssertEqual(AgentStatusStore.read(sessionID: sessionID)?.pendingSubagents, 0)
+    }
 }

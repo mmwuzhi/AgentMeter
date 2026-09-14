@@ -436,6 +436,11 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     var parentAgentPID: Int? = nil
     /// Optional live state supplied by Claude Code hooks.
     var status: AgentStatusState? = nil
+    /// Background tasks (subagents, shell jobs) the hook reported still in
+    /// flight when `status` was recorded; see `AgentStatusPayload`. Only a
+    /// `Stop` carries them, so a `working` written by `PreToolUse` has nil.
+    var pendingBackgroundTasks: Int? = nil
+    var pendingSubagents: Int? = nil
 
     var id: String { "\(provider.rawValue):\(pid)" }
 
@@ -468,7 +473,7 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
 
     var activityText: String {
         switch status {
-        case .working: return "working now"
+        case .working: return workingText
         case .waiting: return "waiting for input"
         case .error: return "needs attention"
         case .idle:
@@ -525,6 +530,22 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
         if let effort = SessionLabel.effort(session?.effort) { parts.append(effort) }
         parts.append(activityText)
         return parts.joined(separator: " · ")
+    }
+
+    /// "working now", or what a quiet session is still working through: when
+    /// the main turn ended with background tasks in flight the hook kept the
+    /// row `working`, and the count says why a session that types nothing is
+    /// green. Plain "subagent(s)" when that is all of them; otherwise the
+    /// broader "background task(s)", since a shell job or MCP task is in there.
+    private var workingText: String {
+        guard let pending = pendingBackgroundTasks, pending > 0 else { return "working now" }
+        let noun: String
+        if pendingSubagents == pending {
+            noun = pending == 1 ? "subagent" : "subagents"
+        } else {
+            noun = pending == 1 ? "background task" : "background tasks"
+        }
+        return "working · \(pending) \(noun)"
     }
 
     private var hasRecentSessionActivity: Bool {

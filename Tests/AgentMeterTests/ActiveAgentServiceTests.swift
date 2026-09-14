@@ -122,6 +122,23 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(attached.first(where: { $0.pid == 200 })?.status, .working)
     }
 
+    func testAttachStatusCarriesThePendingBackgroundTaskCounts() {
+        // A `Stop` that found tasks still running writes `working` plus the
+        // counts; the row needs both to explain why a quiet session is green.
+        let now = Date(timeIntervalSince1970: 100)
+        let agent = ActiveAgent(provider: .claude, pid: 100, parentPID: 1, command: "claude",
+                                elapsedSeconds: 20, observedAt: now, cwd: "/tmp/project")
+        let paused = AgentStatusPayload(state: .working, sessionID: "a", processAncestry: [501, 100, 1],
+                                        pendingBackgroundTasks: 2, pendingSubagents: 1, updatedAt: now)
+
+        let attached = ActiveAgentService.attachStatus([agent], payloads: [paused]).first
+
+        XCTAssertEqual(attached?.status, .working)
+        XCTAssertEqual(attached?.pendingBackgroundTasks, 2)
+        XCTAssertEqual(attached?.pendingSubagents, 1)
+        XCTAssertEqual(attached?.activityText, "working · 2 background tasks")
+    }
+
     func testStatusPayloadFromOlderPIDLifetimeIsIgnored() {
         let now = Date(timeIntervalSince1970: 10_000)
         let agent = ActiveAgent(
@@ -335,6 +352,28 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertNil(unresolved.usageDisplayText, "unattributed processes render no usage text")
         XCTAssertEqual(farFuture.displayStatus, .idle)
         XCTAssertEqual(farFuture.activityText, "idle · 0s ago")
+    }
+
+    func testActivityTextNamesTheBackgroundWorkAStoppedTurnLeftRunning() {
+        // `Stop` fired with subagents still in flight: the hook kept the row
+        // `working` and recorded how many tasks it was waiting on. Subagents
+        // are named as such only when they are all of it.
+        let now = Date(timeIntervalSince1970: 10_000)
+        func agent(_ status: AgentStatusState?, pending: Int? = nil, subagents: Int? = nil) -> ActiveAgent {
+            ActiveAgent(provider: .claude, pid: 100, parentPID: 1, command: "claude",
+                        elapsedSeconds: 10, observedAt: now, status: status,
+                        pendingBackgroundTasks: pending, pendingSubagents: subagents)
+        }
+
+        XCTAssertEqual(agent(.working, pending: 1, subagents: 1).activityText, "working · 1 subagent")
+        XCTAssertEqual(agent(.working, pending: 2, subagents: 2).activityText, "working · 2 subagents")
+        XCTAssertEqual(agent(.working, pending: 1, subagents: 0).activityText, "working · 1 background task")
+        XCTAssertEqual(agent(.working, pending: 2, subagents: 1).activityText, "working · 2 background tasks")
+        XCTAssertEqual(agent(.working, pending: 0, subagents: 0).activityText, "working now")
+        XCTAssertEqual(agent(.working).activityText, "working now", "PreToolUse carries no count")
+        XCTAssertEqual(agent(.idle, pending: 1, subagents: 1).activityText, "idle",
+                       "only a working row explains itself with the count")
+        XCTAssertEqual(agent(.waiting, pending: 1, subagents: 1).activityText, "waiting for input")
     }
 
     func testBlankRowsCarryNeitherHookStateNorTranscript() {

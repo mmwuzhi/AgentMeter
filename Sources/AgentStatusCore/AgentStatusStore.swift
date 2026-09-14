@@ -27,6 +27,10 @@ public enum AgentStatusStore {
             message: payload.message.map { String($0.prefix(512)) },
             cwd: payload.cwd.map { String($0.prefix(4096)) },
             processAncestry: payload.processAncestry.map { Array($0.prefix(32)) },
+            // Counts come from our own array walk, so a negative one is a bug
+            // upstream, not data; clamp rather than persist it.
+            pendingBackgroundTasks: payload.pendingBackgroundTasks.map { max(0, $0) },
+            pendingSubagents: payload.pendingSubagents.map { max(0, $0) },
             updatedAt: payload.updatedAt
         )
         let encoder = JSONEncoder()

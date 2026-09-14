@@ -181,6 +181,18 @@ usage presentation, cached state, or Claude live-session integration.
   contain user commands.
 - Hook metadata comes from the official stdin JSON contract (`session_id`,
   `cwd`, and event fields), not guessed environment variables.
+- `Stop` fires when the main agent's turn ends even while background subagents
+  it launched are still running. Their tool calls still fire `PreToolUse` /
+  `PostToolUse` with the parent `session_id`, but a subagent's silent thinking
+  stretch writes nothing, so a plain `Stop → idle` painted such sessions gray.
+  The helper's `idle` command reads `background_tasks` from the Stop input
+  (`HookBackgroundTasks`, decoded leniently — hook input is untrusted) and
+  records `working` plus the pending counts while anything is in flight; the
+  row reads "working · N subagent(s)" (or "background task(s)" when a shell or
+  MCP task is among them). The next main `Stop`, fired after the task
+  notification wakes the main agent, carries an empty list and returns the row
+  to idle. `SubagentStart` / `SubagentStop` stay unwired: the count already
+  says what they would.
 - The bundled helper writes bounded per-session JSON through
   `AgentStatusCore`. Process ancestry distinguishes sessions that share a
   directory.

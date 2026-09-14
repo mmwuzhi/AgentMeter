@@ -9,6 +9,9 @@ private struct HookInput: Decodable {
     let title: String?
     let error: String?
     let errorDetails: String?
+    /// `Stop` input only. Decoded leniently by `HookBackgroundTasks`, so a
+    /// malformed array cannot fail the whole input and drop the write.
+    let backgroundTasks: HookBackgroundTasks?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
@@ -17,6 +20,7 @@ private struct HookInput: Decodable {
         case title
         case error
         case errorDetails = "error_details"
+        case backgroundTasks = "background_tasks"
     }
 }
 
@@ -36,6 +40,8 @@ private func usage() -> String {
 
     Claude Code hooks provide session_id, cwd, and event details as JSON on stdin.
     Explicit options are available for diagnostics and override stdin fields.
+    `idle` records `working` instead while the Stop input lists background_tasks
+    still in flight (subagents, shell jobs); the next Stop with none returns idle.
     """
 }
 
@@ -137,14 +143,22 @@ func resolvedMessage(for state: AgentStatusState) -> String? {
 do {
     switch command {
     case "working", "waiting", "idle", "error":
-        guard let state = AgentStatusState(rawValue: command) else { fail("unknown command: \(command)") }
+        guard let requested = AgentStatusState(rawValue: command) else { fail("unknown command: \(command)") }
+        // `Stop` fires while background subagents may still be running; the
+        // input's `background_tasks` says whether this turn end is a pause.
+        let backgroundTasks = input?.backgroundTasks
+        let state = requested == .idle
+            ? AgentStatusState.resolvedStopState(backgroundTasks: backgroundTasks)
+            : requested
         try AgentStatusStore.write(
             AgentStatusPayload(
                 state: state,
                 sessionID: resolvedSessionID(),
                 message: resolvedMessage(for: state),
                 cwd: resolvedCWD(),
-                processAncestry: processAncestry()
+                processAncestry: processAncestry(),
+                pendingBackgroundTasks: backgroundTasks?.total,
+                pendingSubagents: backgroundTasks?.subagents
             )
         )
     case "remove":
