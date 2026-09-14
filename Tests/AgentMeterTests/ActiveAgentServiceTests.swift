@@ -395,9 +395,18 @@ final class ActiveAgentServiceTests: XCTestCase {
             command: "/Users/me/Library/Application Support/Claude/claude-code/claude",
             elapsedSeconds: 10, observedAt: now)
 
+        var titled = withBranch
+        titled.session?.title = "Fix the flaky login test"
+
         XCTAssertEqual(withBranch.inGroupTitle, "feature/x")
         XCTAssertEqual(withTTY.inGroupTitle, "ttys002")
         XCTAssertEqual(bare.inGroupTitle, "PID 102")
+        XCTAssertEqual(titled.inGroupTitle, "Fix the flaky login test", "a title says which conversation this is")
+
+        // Beside a project name the same slot shows the title, else the branch.
+        XCTAssertEqual(titled.titleDetail, "Fix the flaky login test")
+        XCTAssertEqual(withBranch.titleDetail, "feature/x")
+        XCTAssertNil(withTTY.titleDetail)
 
         XCTAssertEqual(withTTY.subtitleText, "open now", "provider prefix is implied by the section")
         XCTAssertEqual(bare.subtitleText, "Desktop · open now")
@@ -791,6 +800,237 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertGreaterThan(output.count, 300_000)
     }
 
+    func testModelLabelReshapesAnthropicIdsAndLeavesEverythingElseAlone() {
+        XCTAssertEqual(ModelLabel.short("claude-opus-4-1-20250805"), "opus 4.1")
+        XCTAssertEqual(ModelLabel.short("claude-sonnet-4-5-20250929"), "sonnet 4.5")
+        XCTAssertEqual(ModelLabel.short("claude-opus-5"), "opus 5")
+        XCTAssertEqual(ModelLabel.short("claude-fable-5-1"), "fable 5.1")
+        XCTAssertEqual(ModelLabel.short("  claude-opus-5  "), "opus 5")
+
+        // Ids outside that shape keep their own spelling; only the snapshot
+        // date goes, because the row has no room for it.
+        XCTAssertEqual(ModelLabel.short("gpt-5-codex"), "gpt-5-codex")
+        XCTAssertEqual(ModelLabel.short("o3"), "o3")
+        XCTAssertEqual(ModelLabel.short("claude-3-5-haiku-20241022"), "3-5-haiku")
+        XCTAssertEqual(ModelLabel.short("some-model-nobody-shipped"), "some-model-nobody-shipped")
+
+        // Placeholders are not model names; a row must not print one as if a
+        // provider had reported it.
+        XCTAssertNil(ModelLabel.short("default"))
+        XCTAssertNil(ModelLabel.short("<synthetic>"))
+        XCTAssertNil(ModelLabel.short("claude-"))
+        XCTAssertNil(ModelLabel.short("   "))
+        XCTAssertNil(ModelLabel.short(nil))
+    }
+
+    func testSubtitleNamesTheModelTheSessionIsRunning() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        func agent(command: String, model: String?) -> ActiveAgent {
+            ActiveAgent(
+                provider: .claude, pid: 200, parentPID: 1, command: command,
+                elapsedSeconds: 10, observedAt: now, tty: "ttys001",
+                session: ActiveAgentSession(
+                    id: "s-200", projectPath: "/p", projectName: "p", branch: nil,
+                    lastUpdatedAt: now, source: "test", model: model))
+        }
+        let desktop = "/Users/me/Library/Application Support/Claude/claude-code/claude"
+
+        XCTAssertEqual(
+            agent(command: "claude", model: "claude-opus-4-1-20250805").subtitleText,
+            "opus 4.1 · active now"
+        )
+        XCTAssertEqual(
+            agent(command: desktop, model: "claude-opus-4-1-20250805").subtitleText,
+            "Desktop · opus 4.1 · active now"
+        )
+        // No model parsed yet (a session that has spent nothing): unchanged.
+        XCTAssertEqual(agent(command: "claude", model: nil).subtitleText, "active now")
+        XCTAssertEqual(agent(command: "claude", model: "default").subtitleText, "active now")
+    }
+
+    func testClaudeSessionUsageSummaryReportsTheModelBehindTheNewestTokens() async throws {
+        let file = try makeTempFile(contents: """
+        {"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4-5-20250929","usage":{"input_tokens":100,"output_tokens":50}}}
+        {"timestamp":"2026-07-05T00:01:00Z","requestId":"r2","message":{"id":"m2","model":"claude-opus-4-1-20250805","usage":{"input_tokens":20,"output_tokens":10}}}
+        """)
+
+        let summary = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+
+        // A session that switched models mid-run reports the one now spending.
+        XCTAssertEqual(summary?.model, "claude-opus-4-1-20250805")
+        XCTAssertEqual(ModelLabel.short(summary?.model), "opus 4.1")
+    }
+
+    func testSubtitleAppendsTheEffortAfterTheModel() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        func agent(model: String?, effort: String?) -> ActiveAgent {
+            ActiveAgent(
+                provider: .claude, pid: 201, parentPID: 1, command: "claude",
+                elapsedSeconds: 10, observedAt: now, tty: "ttys001",
+                session: ActiveAgentSession(
+                    id: "s-201", projectPath: "/p", projectName: "p", branch: nil,
+                    lastUpdatedAt: now, source: "test", model: model, effort: effort))
+        }
+
+        XCTAssertEqual(agent(model: "claude-fable-5-1", effort: "xhigh").subtitleText, "fable 5.1 · xhigh · active now")
+        // No effort recorded (an older transcript, or Codex): unchanged.
+        XCTAssertEqual(agent(model: "claude-fable-5-1", effort: nil).subtitleText, "fable 5.1 · active now")
+        // Effort without a readable model still shows; the two are independent.
+        XCTAssertEqual(agent(model: "default", effort: "max").subtitleText, "max · active now")
+        XCTAssertEqual(agent(model: nil, effort: "  ").subtitleText, "active now")
+    }
+
+    func testSessionLabelFlattensAndCapsUntrustedText() {
+        XCTAssertEqual(SessionLabel.title("  Fix  login\n\tflow  "), "Fix login flow")
+        XCTAssertEqual(SessionLabel.title("a\u{7}b\u{1B}[31mc"), "ab[31mc", "control characters are dropped, not rendered")
+        XCTAssertEqual(SessionLabel.title(String(repeating: "x", count: 200))?.count, 80)
+        XCTAssertNil(SessionLabel.title(""))
+        XCTAssertNil(SessionLabel.title("\n \t"))
+        XCTAssertNil(SessionLabel.title(nil))
+
+        XCTAssertEqual(SessionLabel.effort("xhigh"), "xhigh")
+        XCTAssertEqual(SessionLabel.effort(String(repeating: "m", count: 40))?.count, 16)
+        XCTAssertNil(SessionLabel.effort(" "))
+
+        // One base letter under a hundred thousand combining marks is a single
+        // Character; a character-only cap would pass all of it to the row.
+        let stacked = "a" + String(repeating: "\u{0301}", count: 100_000)
+        let bounded = SessionLabel.title(stacked)
+        XCTAssertEqual(bounded?.count, 1)
+        XCTAssertLessThanOrEqual(bounded?.unicodeScalars.count ?? .max, 80 * 4)
+        // Ordinary text is untouched: 80 CJK characters, a plain emoji. (A ZWJ
+        // emoji sequence does fall apart into its members: U+200D is a format
+        // character, the class the bidi overrides live in, and it is dropped
+        // with them rather than special-cased.)
+        XCTAssertEqual(SessionLabel.title(String(repeating: "用", count: 80))?.count, 80)
+        XCTAssertEqual(SessionLabel.title("🐛 review"), "🐛 review")
+    }
+
+    func testDisplayBranchIsSanitizedAndDropsDetachedHead() {
+        func session(branch: String?) -> ActiveAgentSession {
+            ActiveAgentSession(id: "s", projectPath: "/p", projectName: "p", branch: branch,
+                               lastUpdatedAt: nil, source: "test")
+        }
+        XCTAssertEqual(session(branch: "feature/x").displayBranch, "feature/x")
+        XCTAssertNil(session(branch: "HEAD").displayBranch)
+        XCTAssertNil(session(branch: "").displayBranch)
+        XCTAssertNil(session(branch: nil).displayBranch)
+        // `gitBranch` is copied from the transcript, so it is provider text too.
+        XCTAssertEqual(session(branch: "fix\u{1B}[31m\nlogin").displayBranch, "fix[31m login")
+    }
+
+    func testTitleInTheResumedTailAndAsATrailingRecordReachesTheSummary() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let head = """
+        {"type":"ai-title","sessionId":"s","aiTitle":"Generated"}
+        {"requestId":"r1","message":{"id":"m1","model":"claude-fable-5-1","usage":{"input_tokens":10,"output_tokens":5}}}
+
+        """
+        let file = try makeTempFile(contents: head, filename: "growing.jsonl")
+        let generated = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+        XCTAssertEqual(generated?.title, "Generated")
+
+        // The user renames the session; the record is still being written
+        // (no newline yet). It shows now, from the trailing-line fold.
+        try append(#"{"type":"custom-title","sessionId":"s","customTitle":"Renamed"}"#, to: file)
+        let torn = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+        XCTAssertEqual(torn?.title, "Renamed")
+
+        // Completed, then a later generated title must not displace it, and
+        // the tokens after the resume point are counted exactly once.
+        try append("""
+
+        {"type":"ai-title","sessionId":"s","aiTitle":"Generated again"}
+        {"requestId":"r2","message":{"id":"m2","model":"claude-fable-5-1","usage":{"input_tokens":20,"output_tokens":10}}}
+
+        """, to: file)
+        let resumed = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+        XCTAssertEqual(resumed?.title, "Renamed")
+        XCTAssertEqual(resumed?.tokenCount, 45)
+    }
+
+    func testClaudeSessionUsageSummaryCarriesATitleBeforeTheFirstCountedRecord() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        // A session renamed before its first reply has an identity but no spend.
+        let file = try makeTempFile(contents: """
+        {"type":"custom-title","sessionId":"s","customTitle":"Named first"}
+        {"type":"user","sessionId":"s","message":{"role":"user","content":"hi"}}
+        """)
+
+        let summary = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+
+        XCTAssertEqual(summary?.title, "Named first")
+        XCTAssertNil(summary?.tokenCount, "spend is nil until a record is counted, not zero and not a missing summary")
+        XCTAssertNil(summary?.estimatedCostUSD)
+        XCTAssertNil(summary?.model)
+    }
+
+    func testClaudeSessionUsageSummaryReportsEffortAndTitle() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        // Effort sits at the record's top level, beside `type`, not inside
+        // `message`. The generated title lands *after* the custom one here, as
+        // Claude Code writes them, and must not displace it.
+        let file = try makeTempFile(contents: """
+        {"type":"assistant","effort":"high","requestId":"r1","message":{"id":"m1","model":"claude-fable-5-1","usage":{"input_tokens":100,"output_tokens":50}}}
+        {"type":"custom-title","sessionId":"s","customTitle":"bu g"}
+        {"type":"ai-title","sessionId":"s","aiTitle":"Agentmeter 用量速度指标"}
+        {"type":"assistant","effort":"xhigh","perTurnEffort":"xhigh","requestId":"r2","message":{"id":"m2","model":"claude-fable-5-1","usage":{"input_tokens":20,"output_tokens":10}}}
+        """)
+
+        let summary = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+
+        XCTAssertEqual(summary?.effort, "xhigh", "effort follows the newest counted record")
+        XCTAssertEqual(summary?.title, "bu g", "a user-set title outranks a generated one whatever the order")
+    }
+
+    func testClaudeSessionUsageSummaryFallsBackToTheGeneratedTitleWhenTheCustomOneIsCleared() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let file = try makeTempFile(contents: """
+        {"type":"ai-title","sessionId":"s","aiTitle":"First title"}
+        {"type":"custom-title","sessionId":"s","customTitle":"Mine"}
+        {"type":"custom-title","sessionId":"s","customTitle":""}
+        {"type":"ai-title","sessionId":"s","aiTitle":"Second title"}
+        {"type":"assistant","requestId":"r1","message":{"id":"m1","model":"claude-fable-5-1","usage":{"input_tokens":1,"output_tokens":1}}}
+        """)
+
+        let summary = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+
+        XCTAssertEqual(summary?.title, "Second title")
+        XCTAssertNil(summary?.effort, "a record without the key reports none rather than a stale value")
+    }
+
+    func testCodexSessionUsageSummaryCarriesNeitherEffortNorTitle() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        // A rollout's only effort field is `reasoning_effort`, nested under
+        // turn_context and null in practice; titles live outside the rollout.
+        let file = try makeTempFile(contents: """
+        {"type":"turn_context","payload":{"type":"turn_context","model":"gpt-5","collaboration_mode":{"settings":{"reasoning_effort":null}}}}
+        {"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}}}
+        """)
+
+        let summary = await ActiveAgentService.sessionUsageSummary(provider: .codex, url: file)
+
+        XCTAssertEqual(summary?.model, "gpt-5")
+        XCTAssertNil(summary?.effort)
+        XCTAssertNil(summary?.title)
+    }
+
+    func testCodexSessionUsageSummaryIgnoresATurnContextThatSpentNothing() async throws {
+        let file = try makeTempFile(contents: """
+        {"timestamp":"2026-07-05T00:00:00Z","payload":{"type":"turn_context","model":"gpt-5-codex"}}
+        {"timestamp":"2026-07-05T00:01:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":20}}}}
+        {"timestamp":"2026-07-05T00:02:00Z","payload":{"type":"turn_context","model":"gpt-5"}}
+        {"timestamp":"2026-07-05T00:03:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}}}
+        {"timestamp":"2026-07-05T00:04:00Z","payload":{"type":"turn_context","model":"o3"}}
+        """)
+
+        let summary = await ActiveAgentService.sessionUsageSummary(provider: .codex, url: file)
+
+        // The trailing turn_context named o3 but spent nothing under it, so the
+        // row must not claim the session is running o3.
+        XCTAssertEqual(summary?.model, "gpt-5")
+    }
+
     func testClaudeSessionUsageSummaryCountsTokensAndCost() async throws {
         let file = try makeTempFile(contents: """
         {"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":25,"cache_creation":{"ephemeral_5m_input_tokens":10,"ephemeral_1h_input_tokens":5}}}}
@@ -834,6 +1074,141 @@ final class ActiveAgentServiceTests: XCTestCase {
 
         XCTAssertEqual(first?.tokenCount, 15)
         XCTAssertEqual(second?.tokenCount, 45)
+    }
+
+    /// An actively-appended transcript resumes at the last line boundary rather
+    /// than being re-read whole, so the resumed parse has to land on exactly what
+    /// a cold parse of the final file gives: same dedup across the resume point,
+    /// same carried-over model.
+    func testClaudeIncrementalParseMatchesColdParseAndKeepsDedup() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let head = """
+        {"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50}}}
+        {"type":"ai-title","sessionId":"s","aiTitle":"Titled before the resume"}
+        {"timestamp":"2026-07-05T00:01:00Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4","usage":{"input_tokens":20,"output_tokens":10}}}
+
+        """
+        // Replays m1 (already counted before the resume) plus one new message.
+        let tail = """
+        {"timestamp":"2026-07-05T00:02:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":999,"output_tokens":999}}}
+        {"timestamp":"2026-07-05T00:03:00Z","requestId":"r3","message":{"id":"m3","model":"claude-sonnet-4","usage":{"input_tokens":7,"output_tokens":3}}}
+
+        """
+        let growing = try makeTempFile(contents: head, filename: "growing.jsonl")
+        _ = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: growing)
+        try append(tail, to: growing)
+        let resumed = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: growing)
+
+        let cold = try makeTempFile(contents: head + tail, filename: "cold.jsonl")
+        let expected = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: cold)
+
+        XCTAssertEqual(resumed?.tokenCount, 190, "the replayed m1 must not be counted twice")
+        XCTAssertEqual(resumed?.tokenCount, expected?.tokenCount)
+        XCTAssertEqual(resumed?.estimatedCostUSD ?? 0, expected?.estimatedCostUSD ?? -1, accuracy: 0.000_001)
+        XCTAssertEqual(resumed?.title, "Titled before the resume", "the title is part of the cached partial state")
+        XCTAssertEqual(resumed?.title, expected?.title)
+    }
+
+    /// Codex names the model once in a turn_context line and then emits bare
+    /// token_count events. A resume that starts after that line has to remember
+    /// it, or the tail gets priced as the default model.
+    func testCodexIncrementalParseCarriesTheModelAcrossTheResume() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let head = """
+        {"timestamp":"2026-07-05T00:00:00Z","payload":{"type":"turn_context","model":"gpt-5"}}
+        {"timestamp":"2026-07-05T00:01:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20}}}}
+
+        """
+        let tail = """
+        {"timestamp":"2026-07-05T00:02:00Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5}}}}
+
+        """
+        let growing = try makeTempFile(contents: head, filename: "codex-growing.jsonl")
+        _ = await ActiveAgentService.sessionUsageSummary(provider: .codex, url: growing)
+        try append(tail, to: growing)
+        let resumed = await ActiveAgentService.sessionUsageSummary(provider: .codex, url: growing)
+
+        let cold = try makeTempFile(contents: head + tail, filename: "codex-cold.jsonl")
+        let expected = await ActiveAgentService.sessionUsageSummary(provider: .codex, url: cold)
+
+        XCTAssertEqual(resumed?.tokenCount, 135)
+        XCTAssertEqual(resumed?.estimatedCostUSD ?? 0, expected?.estimatedCostUSD ?? -1, accuracy: 0.000_001,
+                       "the tail must still be priced as gpt-5, not the default model")
+    }
+
+    /// A refresh can land mid-write. The unterminated record is shown now but
+    /// must not be cached, or completing it on the next pass counts it twice.
+    func testTrailingPartialRecordIsShownOnceAndNotDoubleCountedWhenCompleted() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let complete = #"{"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50}}}"#
+        let partial = #"{"timestamp":"2026-07-05T00:01:00Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4","usage":{"input_tokens":20,"output_tokens":10}}}"#
+        let file = try makeTempFile(contents: complete + "\n" + partial, filename: "torn.jsonl")
+
+        let torn = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+        try append("\n", to: file)
+        let completed = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+
+        XCTAssertEqual(torn?.tokenCount, 180, "the unterminated record still shows in the live total")
+        XCTAssertEqual(completed?.tokenCount, 180, "and must not be counted again once terminated")
+    }
+
+    /// A rotated or rewritten transcript keeps its path but is a different file,
+    /// so resuming from the old offset would read someone else's bytes.
+    func testTruncatedLogIsReparsedFromTheTop() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let long = """
+        {"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50}}}
+        {"timestamp":"2026-07-05T00:01:00Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4","usage":{"input_tokens":200,"output_tokens":100}}}
+
+        """
+        let file = try makeTempFile(contents: long, filename: "rotated.jsonl")
+        let before = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+
+        try """
+        {"timestamp":"2026-07-06T00:00:00Z","requestId":"r9","message":{"id":"m9","model":"claude-sonnet-4","usage":{"input_tokens":5,"output_tokens":5}}}
+
+        """.data(using: .utf8)?.write(to: file)
+        let after = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+
+        XCTAssertEqual(before?.tokenCount, 450)
+        XCTAssertEqual(after?.tokenCount, 10, "a shrunk file must be re-read from the top")
+    }
+
+    /// Proves the prefix is genuinely not re-read: after the first parse, the
+    /// already-consumed bytes are overwritten in place with a record carrying no
+    /// usage at all. A resume still reports the original tokens; a re-read from
+    /// the top would lose them.
+    func testGrownLogDoesNotRereadTheAlreadyConsumedPrefix() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let first = #"{"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50}}}"#
+        let file = try makeTempFile(contents: first + "\n", filename: "prefix.jsonl")
+
+        let before = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+        XCTAssertEqual(before?.tokenCount, 150)
+
+        // Same byte length, no usage block — only a re-read would ever see this.
+        let blank = #"{"note":"overwritten"}"#
+        let scrubbed = blank + String(repeating: " ", count: first.utf8.count - blank.utf8.count)
+        XCTAssertEqual(scrubbed.utf8.count, first.utf8.count)
+        let handle = try FileHandle(forUpdating: file)
+        try handle.seek(toOffset: 0)
+        try handle.write(contentsOf: Data(scrubbed.utf8))
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(#"{"timestamp":"2026-07-05T00:01:00Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4","usage":{"input_tokens":20,"output_tokens":10}}}"#.utf8))
+        try handle.write(contentsOf: Data("\n".utf8))
+        try handle.close()
+
+        let after = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+
+        XCTAssertEqual(after?.tokenCount, 180,
+                       "150 carried from the cached prefix + 30 newly appended")
+    }
+
+    private func append(_ text: String, to url: URL) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(text.utf8))
     }
 
     private func makeTempFile(contents: String, filename: String = "session.jsonl") throws -> URL {

@@ -118,6 +118,85 @@ struct QuotaRunway: Codable, Sendable, Equatable {
     var isAtRisk: Bool { status == .atRisk }
 }
 
+/// Compact display name for a provider-reported model id, for the session rows
+/// ("claude-opus-4-1-20250805" → "opus 4.1"). The id is untrusted provider
+/// input, so this only strips and reshapes — it never maps to a nicer name from
+/// a hardcoded table, and an id it does not recognise is shown as-is minus the
+/// release date. Nil for the placeholders that mean "no model was named", so a
+/// row shows nothing rather than a name no provider actually reported.
+enum ModelLabel {
+    private static let placeholders: Set<String> = ["default", "<synthetic>", "unknown"]
+    private static let maxLength = 40
+
+    static func short(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        var id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        id = String(id.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+        guard !id.isEmpty, !placeholders.contains(id.lowercased()) else { return nil }
+        if id.count > maxLength { id = String(id.prefix(maxLength)) }
+        // Release dates distinguish snapshots, not models; the row has no space.
+        if let date = id.range(of: "-[0-9]{8}$", options: .regularExpression) {
+            id.removeSubrange(date)
+        }
+        // "family-major-minor" is Anthropic's own shape, so reshaping it is
+        // reading the id, not renaming it. Everything else (gpt-5-codex, o3,
+        // a bare snapshot name) already reads fine.
+        guard id.hasPrefix("claude-") else { return id }
+        let body = String(id.dropFirst("claude-".count))
+        let parts = body.split(separator: "-").map(String.init)
+        guard let family = parts.first,
+              parts.count > 1,
+              family.allSatisfy(\.isLetter),
+              parts.dropFirst().allSatisfy({ $0.allSatisfy(\.isNumber) })
+        else { return body.isEmpty ? nil : body }
+        return family + " " + parts.dropFirst().joined(separator: ".")
+    }
+}
+
+/// Single-line forms of the free text a session transcript carries. Like
+/// `ModelLabel`, this only strips: control characters go, runs of whitespace
+/// collapse to one space, and the length is capped so a crafted or runaway
+/// value cannot spill past the row it sits on. The cap is applied to scalars
+/// as well as to characters: one base letter under a hundred thousand
+/// combining marks is a single `Character`, and a character-only cap would let
+/// it through to paint over the neighbouring rows.
+enum SessionLabel {
+    private static let maxTitleLength = 80
+    private static let maxEffortLength = 16
+    /// Scalars allowed per character before the scalar cap bites. A ZWJ emoji
+    /// sequence (family, profession) runs to seven; nothing legitimate needs
+    /// more than a handful of combining marks per base.
+    private static let maxScalarsPerCharacter = 4
+
+    static func title(_ raw: String?) -> String? {
+        singleLine(raw, maxLength: maxTitleLength)
+    }
+
+    static func effort(_ raw: String?) -> String? {
+        singleLine(raw, maxLength: maxEffortLength)
+    }
+
+    private static func singleLine(_ raw: String?, maxLength: Int) -> String? {
+        guard let raw else { return nil }
+        var normalized = ""
+        for scalar in raw.unicodeScalars {
+            if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                normalized.append(" ")
+            } else if !CharacterSet.controlCharacters.contains(scalar) {
+                normalized.unicodeScalars.append(scalar)
+            }
+        }
+        let collapsed = normalized
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .joined(separator: " ")
+        guard !collapsed.isEmpty else { return nil }
+        let scalarBounded = String(String.UnicodeScalarView(
+            collapsed.unicodeScalars.prefix(maxLength * maxScalarsPerCharacter)
+        ))
+        return String(scalarBounded.prefix(maxLength))
+    }
+}
+
 /// Compact token-count formatter: 1.2k / 3.4M / 1.1B / 2.0T (drops trailing .0).
 enum TokenFormat {
     static func short(_ n: Int) -> String {
@@ -286,9 +365,26 @@ struct ActiveAgentSession: Codable, Sendable, Equatable {
     var tokenCount: Int? = nil
     var estimatedCostUSD: Double? = nil
     var logPath: String? = nil
+    /// Raw model id behind the most recent tokens this session spent. Nil until
+    /// the transcript has a token-bearing record to read it from.
+    var model: String? = nil
+    /// Reasoning effort on that same record (`effort` in a Claude transcript).
+    /// Nil when the provider does not write one; Codex rollouts never do.
+    var effort: String? = nil
+    /// Session title as the provider recorded it: a user-set custom title, else
+    /// the generated one. Untrusted text; render only through `SessionLabel`.
+    var title: String? = nil
 
     var shortID: String {
         String(id.prefix(8))
+    }
+
+    /// Branch as a row may show it. `gitBranch` is copied from the transcript,
+    /// so it passes through `SessionLabel` like the title; a detached HEAD
+    /// names no branch and is dropped.
+    var displayBranch: String? {
+        guard let branch = SessionLabel.title(branch), branch != "HEAD" else { return nil }
+        return branch
     }
 
     var usageText: String? {
@@ -388,17 +484,34 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
 
     /// Title for a row under a project-group header, where repeating the
     /// project name carries no information. Prefer what distinguishes the
-    /// session: branch, then terminal, then PID.
+    /// session (`titleDetail`), then terminal, then PID.
     var inGroupTitle: String {
-        if let branch = session?.branch, !branch.isEmpty, branch != "HEAD" { return branch }
-        if let tty { return tty }
-        return "PID \(pid)"
+        titleDetail ?? tty ?? "PID \(pid)"
+    }
+
+    /// The identity slot: what says which session this is, beside the project
+    /// name on a lone row or as the whole title under a group header. The
+    /// session title when the provider recorded one, else the branch — a title
+    /// says which conversation this is; a branch only says where it runs. This
+    /// is the one place that precedence lives; the tooltip shows the branch
+    /// unconditionally so it stays reachable when a title displaces it.
+    var titleDetail: String? {
+        SessionLabel.title(session?.title) ?? session?.displayBranch
     }
 
     /// Row subtitle. The provider is implied by the surrounding popover
     /// section, so only the less common Desktop origin is called out.
     var subtitleText: String {
-        sourceLabel.hasSuffix("Desktop") ? "Desktop · \(activityText)" : activityText
+        var parts: [String] = []
+        if sourceLabel.hasSuffix("Desktop") { parts.append("Desktop") }
+        // Which model a session is burning decides whether its spend is worth
+        // it, and sessions in one project often differ — so it belongs on the
+        // row, not only in the tooltip.
+        if let model = ModelLabel.short(session?.model) { parts.append(model) }
+        // Effort multiplies the model's cost, so it sits right after it.
+        if let effort = SessionLabel.effort(session?.effort) { parts.append(effort) }
+        parts.append(activityText)
+        return parts.joined(separator: " · ")
     }
 
     private var hasRecentSessionActivity: Bool {

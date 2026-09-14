@@ -311,8 +311,8 @@ private struct ActiveAgentRow: View {
                 HStack(spacing: 4) {
                     Text(showsProjectTitle ? agent.displayTitle : agent.inGroupTitle)
                         .font(.caption.weight(.semibold))
-                    if showsProjectTitle, let branch = agent.session?.branch, branch != "HEAD" {
-                        Text(branch)
+                    if showsProjectTitle, let detail = agent.titleDetail {
+                        Text(detail)
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
@@ -345,11 +345,29 @@ enum ActiveAgentTooltip {
         case .idle: "Idle, click to jump to this session"
         case nil: "Open, click to jump to this session"
         }
+        var lines = [action]
         var identity = ["PID #\(agent.pid)"]
         if let session = agent.session {
+            // The row truncates a long title in the middle; the tooltip is
+            // where the whole of it can be read.
+            if let title = SessionLabel.title(session.title) { lines.append(title) }
             identity.append("Session \(session.shortID)")
+            // The row shows the title in the branch's place when it has one
+            // (`ActiveAgent.titleDetail`), so the branch has to stay reachable here.
+            if let branch = session.displayBranch {
+                identity.append(branch)
+            }
+            // Full id here: the row shows the shortened form, and a snapshot
+            // date is exactly what someone hovering a session wants to confirm.
+            if let model = session.model, ModelLabel.short(model) != nil {
+                identity.append(model)
+            }
+            if let effort = SessionLabel.effort(session.effort) {
+                identity.append(effort)
+            }
         }
-        return [action, identity.joined(separator: " · ")].joined(separator: "\n")
+        lines.append(identity.joined(separator: " · "))
+        return lines.joined(separator: "\n")
     }
 }
 

@@ -3,7 +3,7 @@ import Darwin
 import Foundation
 
 enum ActiveAgentService {
-    private static let sessionUsageCache = LogFileParseCache<SessionUsageSummary>()
+    private static let sessionTotalsCache = LogFileParseCache<SessionTokenTotals>()
 
     static func fetch() async -> [ActiveAgent] {
         await Task.detached {
@@ -718,13 +718,33 @@ enum ActiveAgentService {
         )
     }
 
+    /// What one transcript says about its session: spend so far, and the
+    /// identity facts (model, effort, title) that ride along in the same scan.
+    /// Spend is nil until a record has been counted; identity is independent
+    /// of it, so a session titled before its first reply is still titled.
     struct SessionUsageSummary: Sendable, Equatable {
-        let tokenCount: Int
-        let estimatedCostUSD: Double
+        let tokenCount: Int?
+        let estimatedCostUSD: Double?
+        /// Model behind the most recent token-bearing record, i.e. what the
+        /// session is running now. Nil when no record named one.
+        let model: String?
+        /// Reasoning effort on that same record. Nil when it carried none.
+        let effort: String?
+        /// The session's title: the newest custom title wins over the newest
+        /// generated one whatever order they were written in.
+        let title: String?
     }
 
     private static func enrichSessionUsage(_ agents: [ActiveAgent]) async -> [ActiveAgent] {
         await PricingService.shared.ensureLoaded()
+        // Forget sessions that are no longer running. The cached parse state
+        // carries a per-session dedup set, so keeping entries for every
+        // transcript ever enriched would grow without bound over a long uptime.
+        await sessionTotalsCache.prune(keeping: agents.compactMap { agent in
+            agent.session?.logPath.flatMap {
+                LogFileFingerprint.current(for: URL(fileURLWithPath: $0))
+            }
+        })
         var enriched: [ActiveAgent] = []
         for var agent in agents {
             if var session = agent.session,
@@ -732,6 +752,9 @@ enum ActiveAgentService {
                let summary = await sessionUsageSummary(provider: agent.provider, url: URL(fileURLWithPath: logPath)) {
                 session.tokenCount = summary.tokenCount
                 session.estimatedCostUSD = summary.estimatedCostUSD
+                session.model = summary.model
+                session.effort = summary.effort
+                session.title = summary.title
                 agent.session = session
             }
             enriched.append(agent)
@@ -739,102 +762,182 @@ enum ActiveAgentService {
         return enriched
     }
 
+    /// Partial parse of one session transcript. Cached so an actively-appended
+    /// log resumes at the last consumed line boundary rather than being re-read
+    /// from the top: the popover polls this every refresh tick while it is open,
+    /// and a busy session's transcript only grows.
+    private struct SessionTokenTotals: Sendable {
+        var totalsByModel: [String: TokenCounts] = [:]
+        /// `message.id|requestId` values already counted (Claude only). Carried
+        /// so an incremental tail keeps the dedup a whole-file parse had,
+        /// instead of recounting a duplicate that straddles the resume point.
+        var seenDedupKeys: Set<String> = []
+        /// Codex rollouts name the model in a turn_context line and then emit
+        /// bare `token_count` events, so a resume has to remember the last one.
+        var lastModel = "gpt-5-codex"
+        /// Model behind the newest counted record. Deliberately *not* the newest
+        /// model seen: a Codex `turn_context` can name a model before that turn
+        /// spends anything, and a session that has produced no tokens under a
+        /// model is not running it yet.
+        var currentModel: String? = nil
+        /// Effort on that same record, so a switch mid-session shows up.
+        var currentEffort: String? = nil
+        /// Titles arrive on their own records (`ai-title` / `custom-title`),
+        /// each kind overwriting its predecessor. Kept apart because a generated
+        /// title can land after a user-set one and must not displace it.
+        var aiTitle: String? = nil
+        var customTitle: String? = nil
+    }
+
     static func sessionUsageSummary(provider: Provider, url: URL) async -> SessionUsageSummary? {
-        guard let fingerprint = LogFileFingerprint.current(for: url) else {
-            return await uncachedSessionUsageSummary(provider: provider, url: url)
+        guard provider != .copilot else { return nil }
+        let fingerprint = LogFileFingerprint.current(for: url)
+        if let fingerprint, let cached = await sessionTotalsCache.value(for: fingerprint) {
+            return await summary(from: cached)
         }
-        if let cached = await sessionUsageCache.value(for: fingerprint) {
-            return cached
+
+        var totals = SessionTokenTotals()
+        var startOffset: Int64 = 0
+        if let fingerprint, let base = await sessionTotalsCache.incrementalBase(for: fingerprint) {
+            totals = base.value
+            startOffset = base.parsedBytes
         }
-        guard let summary = await uncachedSessionUsageSummary(provider: provider, url: url) else { return nil }
-        await sessionUsageCache.store(summary, for: fingerprint)
-        return summary
+        let result = try? JSONLLineReader.forEachCompleteLine(in: url, fromOffset: startOffset) { line in
+            consume(line: line, provider: provider, into: &totals)
+        }
+        // Cache only the clean line-boundary state so a resume can't double-count;
+        // the trailing (not yet newline-terminated) record is folded into what is
+        // shown now and re-read from `consumed` once it is complete.
+        if let fingerprint {
+            await sessionTotalsCache.store(totals, for: fingerprint,
+                                           parsedBytes: result?.consumed ?? startOffset)
+        }
+        guard let trailing = result?.trailing else { return await summary(from: totals) }
+        var display = totals
+        JSONLLineReader.withLine(trailing) { consume(line: $0, provider: provider, into: &display) }
+        return await summary(from: display)
     }
 
     static func clearSessionUsageCacheForTests() async {
-        await sessionUsageCache.clear()
+        await sessionTotalsCache.clear()
     }
 
-    private static func uncachedSessionUsageSummary(provider: Provider, url: URL) async -> SessionUsageSummary? {
-        let totalsByModel: [String: TokenCounts]
-        switch provider {
-        case .claude:
-            totalsByModel = claudeSessionTokenCounts(from: url)
-        case .codex:
-            totalsByModel = codexSessionTokenCounts(from: url)
-        case .copilot:
-            return nil
-        }
-        let tokenCount = totalsByModel.values.reduce(0) { total, counts in
+    private static func summary(from totals: SessionTokenTotals) async -> SessionUsageSummary {
+        let tokenCount = totals.totalsByModel.values.reduce(0) { total, counts in
             total + totalTokens(in: counts)
         }
-        guard tokenCount > 0 else { return nil }
-        await PricingService.shared.ensureLoaded()
-        var cost = 0.0
-        for (model, counts) in totalsByModel {
-            cost += await PricingService.shared.cost(model: model, counts: counts)
+        var cost: Double?
+        if tokenCount > 0 {
+            await PricingService.shared.ensureLoaded()
+            var total = 0.0
+            for (model, counts) in totals.totalsByModel {
+                total += await PricingService.shared.cost(model: model, counts: counts)
+            }
+            cost = total
         }
-        return SessionUsageSummary(tokenCount: tokenCount, estimatedCostUSD: cost)
+        return SessionUsageSummary(
+            tokenCount: tokenCount > 0 ? tokenCount : nil,
+            estimatedCostUSD: cost,
+            model: totals.currentModel,
+            effort: totals.currentEffort,
+            title: totals.customTitle ?? totals.aiTitle
+        )
     }
 
-    private static func claudeSessionTokenCounts(from url: URL) -> [String: TokenCounts] {
-        var seen = Set<String>()
-        var totals: [String: TokenCounts] = [:]
-        try? JSONLLineReader.forEachLine(in: url) { line in
-            guard let text = line.string, text.contains("\"usage\""),
-                  let object = jsonObject(from: text),
-                  let message = object["message"] as? [String: Any],
-                  let usage = message["usage"] as? [String: Any] else { return }
-            let model = (message["model"] as? String) ?? "default"
-            if model == "<synthetic>" { return }
+    /// Cheap per-line pre-filters. These run over whole session transcripts, so
+    /// they must not go through `String.contains`, which is locale-aware and
+    /// allocates per candidate position.
+    private static let usageMarker = JSONLLineReader.Marker("\"usage\"")
+    private static let tokenCountMarker = JSONLLineReader.Marker("token_count")
+    private static let modelMarker = JSONLLineReader.Marker("\"model\"")
+    /// Matches `"type":"ai-title"` and `"type":"custom-title"`; measured against
+    /// a 190k-line transcript, every hit was one of the two.
+    private static let titleMarker = JSONLLineReader.Marker("-title\"")
 
-            let messageID = (message["id"] as? String) ?? ""
-            let requestID = (object["requestId"] as? String) ?? ""
-            let dedup = messageID + "|" + requestID
-            if !messageID.isEmpty {
-                guard seen.insert(dedup).inserted else { return }
-            }
-
-            var counts = TokenCounts()
-            counts.input = (usage["input_tokens"] as? Int) ?? 0
-            counts.output = (usage["output_tokens"] as? Int) ?? 0
-            counts.cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
-            if let cacheCreation = usage["cache_creation"] as? [String: Any] {
-                counts.cacheWrite5m = (cacheCreation["ephemeral_5m_input_tokens"] as? Int) ?? 0
-                counts.cacheWrite1h = (cacheCreation["ephemeral_1h_input_tokens"] as? Int) ?? 0
-            } else {
-                counts.cacheWrite5m = (usage["cache_creation_input_tokens"] as? Int) ?? 0
-            }
-            add(counts, to: &totals, model: model)
+    private static func consume(
+        line: JSONLLineReader.LogLine,
+        provider: Provider,
+        into totals: inout SessionTokenTotals
+    ) {
+        switch provider {
+        case .claude: consumeClaude(line: line, into: &totals)
+        case .codex: consumeCodex(line: line, into: &totals)
+        case .copilot: break
         }
-        return totals
     }
 
-    private static func codexSessionTokenCounts(from url: URL) -> [String: TokenCounts] {
-        var model = "gpt-5-codex"
-        var totals: [String: TokenCounts] = [:]
-        try? JSONLLineReader.forEachLine(in: url) { line in
-            // Skip the JSON parse for lines that carry neither a model nor a
-            // token_count event — the bulk of a rollout log.
-            guard let text = line.string, text.contains("token_count") || text.contains("\"model\""),
-                  let object = jsonObject(from: text),
-                  let payload = object["payload"] as? [String: Any] else { return }
-            if let nextModel = payload["model"] as? String {
-                model = nextModel
-            }
-            guard payload["type"] as? String == "token_count",
-                  let info = payload["info"] as? [String: Any],
-                  let last = info["last_token_usage"] as? [String: Any] else { return }
-            let input = (last["input_tokens"] as? Int) ?? 0
-            let cached = (last["cached_input_tokens"] as? Int) ?? 0
-            let output = (last["output_tokens"] as? Int) ?? 0
-            var counts = TokenCounts()
-            counts.input = max(0, input - cached)
-            counts.cacheRead = cached
-            counts.output = output
-            add(counts, to: &totals, model: model)
+    private static func consumeClaude(
+        line: JSONLLineReader.LogLine,
+        into totals: inout SessionTokenTotals
+    ) {
+        guard line.contains(Self.usageMarker) || line.contains(Self.titleMarker),
+              let object = line.jsonObject() else { return }
+        // Title records carry no usage, so they are handled before the usage
+        // guard rather than sharing its early return.
+        switch object["type"] as? String {
+        case "custom-title":
+            // An empty custom title is the user clearing theirs.
+            let title = (object["customTitle"] as? String) ?? ""
+            totals.customTitle = title.isEmpty ? nil : title
+            return
+        case "ai-title":
+            totals.aiTitle = object["aiTitle"] as? String
+            return
+        default:
+            break
         }
-        return totals
+        guard let message = object["message"] as? [String: Any],
+              let usage = message["usage"] as? [String: Any] else { return }
+        let model = (message["model"] as? String) ?? "default"
+        if model == "<synthetic>" { return }
+
+        let messageID = (message["id"] as? String) ?? ""
+        let requestID = (object["requestId"] as? String) ?? ""
+        if !messageID.isEmpty {
+            guard totals.seenDedupKeys.insert(messageID + "|" + requestID).inserted else { return }
+        }
+
+        var counts = TokenCounts()
+        counts.input = (usage["input_tokens"] as? Int) ?? 0
+        counts.output = (usage["output_tokens"] as? Int) ?? 0
+        counts.cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
+        if let cacheCreation = usage["cache_creation"] as? [String: Any] {
+            counts.cacheWrite5m = (cacheCreation["ephemeral_5m_input_tokens"] as? Int) ?? 0
+            counts.cacheWrite1h = (cacheCreation["ephemeral_1h_input_tokens"] as? Int) ?? 0
+        } else {
+            counts.cacheWrite5m = (usage["cache_creation_input_tokens"] as? Int) ?? 0
+        }
+        add(counts, to: &totals.totalsByModel, model: model)
+        totals.currentModel = model
+        // `effort` is the effective value; `perTurnEffort` only repeats it when
+        // set, so the top-level key alone is what a row should show.
+        totals.currentEffort = object["effort"] as? String
+    }
+
+    private static func consumeCodex(
+        line: JSONLLineReader.LogLine,
+        into totals: inout SessionTokenTotals
+    ) {
+        // Skip the JSON parse for lines that carry neither a model nor a
+        // token_count event — the bulk of a rollout log.
+        guard line.contains(Self.tokenCountMarker) || line.contains(Self.modelMarker),
+              let object = line.jsonObject(),
+              let payload = object["payload"] as? [String: Any] else { return }
+        if let nextModel = payload["model"] as? String {
+            totals.lastModel = nextModel
+        }
+        guard payload["type"] as? String == "token_count",
+              let info = payload["info"] as? [String: Any],
+              let last = info["last_token_usage"] as? [String: Any] else { return }
+        let input = (last["input_tokens"] as? Int) ?? 0
+        let cached = (last["cached_input_tokens"] as? Int) ?? 0
+        let output = (last["output_tokens"] as? Int) ?? 0
+        var counts = TokenCounts()
+        counts.input = max(0, input - cached)
+        counts.cacheRead = cached
+        counts.output = output
+        add(counts, to: &totals.totalsByModel, model: totals.lastModel)
+        totals.currentModel = totals.lastModel
     }
 
     private static func add(_ counts: TokenCounts, to totals: inout [String: TokenCounts], model: String) {

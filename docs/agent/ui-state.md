@@ -84,6 +84,47 @@ usage presentation, cached state, or Claude live-session integration.
   `AppViewModel.popoverScreenVisibleHeight`, which the status item controller
   records on each open); header and footer stay fixed. Never let popover
   content grow the window past the screen, including a smaller secondary one.
+- A session row names the model behind its newest tokens
+  (`ActiveAgentSession.model`, shortened by `ModelLabel.short`), because which
+  model a session is burning is what decides whether its spend is reasonable,
+  and sessions in one project routinely differ. The row shows the short form
+  and the tooltip the full id. `ModelLabel` only strips and reshapes an
+  untrusted provider id — it never maps one to a nicer name from a table, and
+  it returns nil for the `default`/`<synthetic>` placeholders so no row prints
+  a model no provider reported.
+- The model reported is the one behind the newest *counted* record, not the
+  newest one named. A Codex `turn_context` can name a model before that turn
+  spends anything, and a session that has produced no tokens under a model is
+  not running it yet.
+- The reasoning effort sits right after the model on the row
+  (`ActiveAgentSession.effort`, via `SessionLabel.effort`) because it multiplies
+  the model's cost. It is read from the same newest counted record: Claude
+  writes `effort` at the record's top level, beside `type`, not inside
+  `message`, and `perTurnEffort` only repeats it when set. A record without the
+  key reports none rather than carrying a stale value forward. Codex rollouts
+  never record one (`reasoning_effort` is nested under `turn_context` and null),
+  so Codex rows show no effort.
+- A session's title (`ActiveAgentSession.title`, via `SessionLabel.title`)
+  takes the identity slot: it replaces branch/tty/PID as an in-group row's
+  title and stands beside the project name on a lone row, with the branch
+  moving into the tooltip. Claude writes titles on their own records,
+  `ai-title` / `custom-title`, which carry no `usage`, so `consumeClaude`
+  pre-filters on `-title"` too. A user-set custom title outranks the generated
+  one whatever order they were written in (a generated title routinely lands
+  after a custom one); an empty custom title is the user clearing theirs.
+  Codex titles live in `~/.codex/state_5.sqlite`, not the rollout, and are not
+  read. Both title and effort are untrusted provider text, and so is the
+  transcript's `gitBranch` (`ActiveAgentSession.displayBranch`): `SessionLabel`
+  drops control characters, collapses whitespace and caps the length in
+  characters *and* in scalars, because one base letter under a hundred
+  thousand combining marks is a single `Character`. The identity slot's
+  precedence (title, else branch) is defined once, in `ActiveAgent.titleDetail`;
+  `inGroupTitle` and the tooltip derive from it.
+- `SessionUsageSummary` carries identity (model, effort, title) independently
+  of spend: `tokenCount`/`estimatedCostUSD` are nil until a record has been
+  counted, so a session titled before its first reply is still titled and the
+  row says "No usage yet" beside it. Do not reintroduce a "no tokens, no
+  summary" gate — it silently hides every identity fact until the session spends.
 - A process with neither a hook-reported state nor an attributed transcript
   (`ActiveAgent.isBlank`) is dropped in `ActiveAgentService.fetch()`, so it
   never reaches the list or its counts. Such a row can only say "open now" —
@@ -146,3 +187,11 @@ usage presentation, cached state, or Claude live-session integration.
   heuristic applies only to a directory's single agent; ambiguous processes get
   no session rather than a guessed one. Session IDs become filenames — keep the
   charset guard.
+- Per-session token totals are cached as a partial parse
+  (`SessionTokenTotals`: per-model counts, the Claude dedup set, Codex's last
+  seen model, and the newest effort and titles), not as the finished summary. A live transcript grows between
+  every tick, so caching the summary only ever hit on an idle session; the
+  partial resumes from the last consumed line boundary instead. Cache only that
+  boundary — folding the trailing, not-yet-terminated record into the cached
+  value would count it again once it is complete. `enrichSessionUsage` prunes
+  the cache to the running sessions, because each entry now holds a dedup set.
