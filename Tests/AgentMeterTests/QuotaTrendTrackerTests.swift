@@ -242,6 +242,147 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertEqual(paced.percentPerHour!, 12, accuracy: 0.01)
     }
 
+    /// The reported case: a weekly reading "would run out in 17h 59m" next to a
+    /// 5-hour window. That date assumes the pace holds through three full peer
+    /// refills, which is not something the user can act on now, so the row
+    /// keeps its pace and drops the date. The peer carries no observations
+    /// here, so the capacity floor has no evidence and this rule acts alone.
+    func testLongWindowRunOutBeyondTwoPeerCyclesDropsTheDate() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(91 * 3600)
+        let peer = QuotaWindow(
+            id: "five_hour", label: "5-hour", usedPercent: 85,
+            resetsAt: now.addingTimeInterval(2 * 3600), cycle: 5 * 3600
+        )
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 58, resetsAt: reset, cycle: 7 * 24 * 3600)
+        // 10 points over 4 hours = 2.5%/h; 42 left projects 16h 48m out.
+        let observations = staircase("seven_day", from: 52, to: 42, steps: 10, overMinutes: 240, now: now, resetsAt: reset)
+
+        let alone = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now
+        )
+        XCTAssertEqual(alone.status, .atRisk)
+        XCTAssertEqual(alone.estimatedDepletionAt!.timeIntervalSince(now), 16.8 * 3600, accuracy: 60)
+
+        // 16h 48m is past 2 x the 5-hour cycle.
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [peer, window]
+        )
+        XCTAssertEqual(paced.status, .watch)
+        XCTAssertNil(paced.estimatedDepletionAt)
+        XCTAssertNil(QuotaRow.alertLine(paced))
+        // The pace survives, and with it the `now`/`avg` line.
+        XCTAssertEqual(paced.percentPerHour!, 2.5, accuracy: 0.01)
+        XCTAssertEqual(QuotaRow.pace(paced)?.overBudget, false)
+    }
+
+    func testLongWindowRunOutInsideTwoPeerCyclesKeepsTheDate() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(91 * 3600)
+        let peer = QuotaWindow(
+            id: "five_hour", label: "5-hour", usedPercent: 85,
+            resetsAt: now.addingTimeInterval(2 * 3600), cycle: 5 * 3600
+        )
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 58, resetsAt: reset, cycle: 7 * 24 * 3600)
+        // 21 points over 4 hours = 5.25%/h; 42 left projects exactly 8h out.
+        let observations = staircase("seven_day", from: 63, to: 42, steps: 21, overMinutes: 240, now: now, resetsAt: reset)
+
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [peer, window]
+        )
+
+        XCTAssertEqual(paced.status, .atRisk)
+        XCTAssertEqual(paced.estimatedDepletionAt!.timeIntervalSince(now), 8 * 3600, accuracy: 60)
+        XCTAssertTrue(paced.message.hasPrefix("would run out in 8h"), paced.message)
+    }
+
+    func testRunOutHorizonIsFlooredAgainstAnImplausiblePeerCycle() {
+        // `cycle` is provider-reported everywhere but Claude, and this rule only
+        // ever takes a warning away, so one bad field must not be able to hide a
+        // run-out an hour out. `CodexRolloutReader.cycle(forMinutes:)` rejects a
+        // cadence this short as well; this is the second layer.
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(91 * 3600)
+        let peer = QuotaWindow(
+            id: "five_hour", label: "5-hour", usedPercent: 85,
+            resetsAt: now.addingTimeInterval(2 * 3600), cycle: 60
+        )
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 58, resetsAt: reset, cycle: 7 * 24 * 3600)
+        // 42 points over an hour = 42%/h; 42 left projects exactly 1h out.
+        let observations = staircase("seven_day", from: 84, to: 42, steps: 42, overMinutes: 60, now: now, resetsAt: reset)
+
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [peer, window]
+        )
+
+        // Unfloored this would be 2 x 60s, hiding everything beyond two minutes.
+        XCTAssertEqual(paced.status, .atRisk)
+        XCTAssertEqual(paced.estimatedDepletionAt!.timeIntervalSince(now), 3600, accuracy: 60)
+    }
+
+    func testRunOutHorizonIgnoresAPeerWhoseCycleContradictsItsOwnReset() {
+        // A five-minute cadence clears the plausibility band, so the band alone
+        // cannot catch it — but a window resetting two hours out is not on a
+        // five-minute cycle, and reading it would drag the horizon to its floor
+        // and take a genuine six-hour warning away.
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(91 * 3600)
+        let liar = QuotaWindow(
+            id: "five_hour", label: "5-hour", usedPercent: 85,
+            resetsAt: now.addingTimeInterval(2 * 3600), cycle: 5 * 60
+        )
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 58, resetsAt: reset, cycle: 7 * 24 * 3600)
+        // 7 points an hour over four hours; 42 left projects six hours out.
+        let observations = staircase("seven_day", from: 70, to: 42, steps: 28, overMinutes: 240, now: now, resetsAt: reset)
+
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [liar, window]
+        )
+
+        XCTAssertEqual(paced.status, .atRisk)
+        XCTAssertEqual(paced.estimatedDepletionAt!.timeIntervalSince(now), 6 * 3600, accuracy: 60)
+    }
+
+    func testRunOutHorizonNeedsTheWindowToNameItsOwnCycle() {
+        // Nothing to compare a peer's cadence against, so there is no "couple of
+        // refills" to reason about and the rule stays out of it. Copilot's
+        // allowances are the real shape here.
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(91 * 3600)
+        let peer = QuotaWindow(
+            id: "five_hour", label: "5-hour", usedPercent: 85,
+            resetsAt: now.addingTimeInterval(2 * 3600), cycle: 5 * 3600
+        )
+        let window = QuotaWindow(id: "premium", label: "Premium", usedPercent: 58, resetsAt: reset)
+        let observations = staircase("premium", from: 52, to: 42, steps: 10, overMinutes: 240, now: now, resetsAt: reset)
+
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [peer, window]
+        )
+
+        XCTAssertEqual(paced.status, .atRisk)
+        XCTAssertEqual(paced.estimatedDepletionAt!.timeIntervalSince(now), 16.8 * 3600, accuracy: 60)
+    }
+
+    func testRunOutHorizonNeedsAPeerThatNamesACycle() {
+        // Copilot's allowances name no cadence, so "past a couple of refills"
+        // describes nothing and the projection stands on the trust rules alone.
+        // (The observation helper stamps `.claude`; what is under test is the
+        // missing `cycle`, not which provider reported it.)
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(91 * 3600)
+        let peer = QuotaWindow(id: "chat", label: "Chat", usedPercent: 85, resetsAt: now.addingTimeInterval(2 * 3600))
+        let window = QuotaWindow(id: "premium", label: "Premium", usedPercent: 58, resetsAt: reset)
+        let observations = staircase("premium", from: 52, to: 42, steps: 10, overMinutes: 240, now: now, resetsAt: reset)
+
+        let paced = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [peer, window]
+        )
+
+        XCTAssertEqual(paced.status, .atRisk)
+        XCTAssertEqual(paced.estimatedDepletionAt!.timeIntervalSince(now), 16.8 * 3600, accuracy: 60)
+    }
+
     /// Two weekly points say nothing about the ratio yet, so the raw
     /// projection stands until a third lands — the same three-tick argument
     /// `nowTriggerPercent` makes.
@@ -723,7 +864,12 @@ final class QuotaTrendTrackerTests: XCTestCase {
 
         XCTAssertEqual(runway.status, .safe)
         XCTAssertEqual(runway.percentPerHour ?? -1, 3.0, accuracy: 0.05)
-        XCTAssertEqual(runway.nowPercentPerHour ?? -1, 12.0, accuracy: 0.05)
+        // One point dropped somewhere in the 29 flat minutes since the pool
+        // began, and nothing says where: reading it over the last five would
+        // assume the drain belongs to them. `now` spreads it over the span the
+        // evidence actually covers.
+        XCTAssertEqual(runway.nowPercentPerHour ?? -1, 60.0 / 29, accuracy: 0.05)
+        XCTAssertEqual(runway.nowSpan ?? -1, 1740, accuracy: 1)
         XCTAssertGreaterThan(runway.estimatedDepletionAt ?? now, reset)
     }
 
@@ -924,7 +1070,7 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertNotNil(runway.percentPerHour)
     }
 
-    func testNowStretchesAcrossASamplingGapUpToTheSlackLimit() {
+    func testNowStretchesAcrossASamplingGapAndSaysHowFar() {
         let now = bucketAlignedNow
         let reset = now.addingTimeInterval(4 * 3600)
         let window = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 30, resetsAt: reset)
@@ -941,26 +1087,27 @@ final class QuotaTrendTrackerTests: XCTestCase {
             )
         }
 
-        // 7.5 minutes is past the 5-minute ceiling but exactly on the 1.5x
-        // slack, so `now` still reports and `nowSpan` tells the tooltip the
-        // truth rather than implying the reading is instantaneous.
+        // Both sit inside `nowStepLookback`, so both report, and `nowSpan`
+        // tells the tooltip the truth rather than implying the reading is
+        // instantaneous. The five-minute slice used to cut the second one off
+        // as "too stale"; the bound that remains is the lookback hour, which
+        // `testLongWindowNowIsOmittedWhenAGapLeavesOnlyTheCurrentSample`
+        // exercises on the far side.
         let bridged = runway(gapMinutes: 7.5)
         XCTAssertEqual(bridged.nowSpan ?? -1, 450, accuracy: 1)
         XCTAssertEqual(bridged.nowPercentPerHour ?? -1, 40.0, accuracy: 0.01)
 
-        // Half a minute further out and there is no honest "now" left to report.
-        let stale = runway(gapMinutes: 8)
-        XCTAssertNil(stale.nowPercentPerHour)
-        XCTAssertNil(stale.nowSpan)
-        XCTAssertNotNil(stale.percentPerHour)
+        let wider = runway(gapMinutes: 8)
+        XCTAssertEqual(wider.nowSpan ?? -1, 480, accuracy: 1)
+        XCTAssertEqual(wider.nowPercentPerHour ?? -1, 37.5, accuracy: 0.01)
+        XCTAssertNotNil(wider.percentPerHour)
     }
 
-    func testNowNeverReadsBeyondItsCeilingOnLongHorizonWindows() {
-        // A weekly window used to get a 60-minute `now`, which is not "now" at
-        // all — it was a second copy of `avg` with a different label. When a
-        // burst crosses the trigger inside the five-minute slice, a weekly
-        // window reads it exactly like a short one; the step anchor below only
-        // takes over when that slice is flat.
+    func testBurstInsideTheSliceIsReadOnTheSlice() {
+        // `nowMaximumSpan` is no longer a ceiling on what `now` may read, but a
+        // burst crossing `nowTriggerPercent` inside it still wins over the step
+        // anchor, so a spike is reported on the few minutes it happened in
+        // rather than smeared across the span between the last two steps.
         let now = bucketAlignedNow
         let reset = now.addingTimeInterval(6 * 24 * 3600)
         let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 25, resetsAt: reset)
@@ -988,10 +1135,12 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertEqual(runway.avgSpan ?? -1, 7200, accuracy: 1)
     }
 
-    func testNowIsOmittedWhenItWouldOnlyRepeatTheAverage() {
-        // Two minutes of history: the only span `now` could read is the span
-        // `avg` already reads, so the row would print the same number twice
-        // under two different labels.
+    func testNowStillReportsWhenItCanOnlyRepeatTheAverage() {
+        // Two minutes of history: the only span `now` can read is the span
+        // `avg` already reads. The row prints the same number twice, which is
+        // honest for a history this young — hiding it instead read as the
+        // segment having been removed, for the whole first hour after an
+        // install or a wake.
         let now = bucketAlignedNow
         let reset = now.addingTimeInterval(4 * 3600)
         let window = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 10, resetsAt: reset)
@@ -1004,8 +1153,8 @@ final class QuotaTrendTrackerTests: XCTestCase {
             provider: .claude, window: window, observations: observations, now: now
         )
 
-        XCTAssertNil(runway.nowPercentPerHour)
-        XCTAssertNil(runway.nowSpan)
+        XCTAssertEqual(runway.nowPercentPerHour ?? -1, 30.0, accuracy: 0.01)
+        XCTAssertEqual(runway.nowSpan ?? -1, 120, accuracy: 1)
         XCTAssertEqual(runway.percentPerHour ?? -1, 30.0, accuracy: 0.01)
         XCTAssertEqual(runway.avgSpan ?? -1, 120, accuracy: 1)
     }
@@ -1051,22 +1200,13 @@ final class QuotaTrendTrackerTests: XCTestCase {
     }
 
     func testPerStylePolicyIsDecidedInOnePlace() {
-        // Horizon semantics have one owner. `.hidden` keeps the readings it had
-        // before the policy was written down: long `avg` (the runway status
-        // uses it), short-slice `now` (nothing renders it).
+        // `avg` is the only rate whose span still depends on the horizon, and
+        // that decision has one owner. `.hidden` reads long, which the runway
+        // status uses. `now` no longer branches on style at all — every window
+        // anchors on its latest whole-point step.
         XCTAssertEqual(QuotaTrendTracker.averageSpan(for: .paceVersusBudget), QuotaTrendTracker.shortAverageSpan)
         XCTAssertEqual(QuotaTrendTracker.averageSpan(for: .paceOnly), QuotaTrendTracker.longAverageSpan)
         XCTAssertEqual(QuotaTrendTracker.averageSpan(for: .hidden), QuotaTrendTracker.longAverageSpan)
-
-        XCTAssertTrue(QuotaTrendTracker.nowAnchorsOnLatestStep(for: .paceOnly))
-        XCTAssertFalse(QuotaTrendTracker.nowAnchorsOnLatestStep(for: .paceVersusBudget))
-        XCTAssertFalse(QuotaTrendTracker.nowAnchorsOnLatestStep(for: .hidden))
-
-        // Only the step anchor is bounded by a lookback, so only it may report
-        // a `now` that spans the same young history as `avg`.
-        XCTAssertTrue(QuotaTrendTracker.nowMayEqualAverageSpan(for: .paceOnly))
-        XCTAssertFalse(QuotaTrendTracker.nowMayEqualAverageSpan(for: .paceVersusBudget))
-        XCTAssertFalse(QuotaTrendTracker.nowMayEqualAverageSpan(for: .hidden))
     }
 
     func testLongWindowNowIsOmittedWhenAGapLeavesOnlyTheCurrentSample() {
@@ -1147,8 +1287,9 @@ final class QuotaTrendTrackerTests: XCTestCase {
             weeklyRunway { minute in 80 - Double([40, 16].filter { minute <= $0 }.count) }.nowAnchor,
             QuotaNowAnchor.step
         )
-        // Flat hour: the lookback floor.
-        XCTAssertEqual(weeklyRunway { _ in 80 }.nowAnchor, QuotaNowAnchor.lookback)
+        // Flat for the whole two hours of history: past what a shared window's
+        // shape explains, so the reading is dormancy rather than a rate.
+        XCTAssertEqual(weeklyRunway { _ in 80 }.nowAnchor, QuotaNowAnchor.dormant)
         // One step inside the hour, none before it inside the hour: still the floor.
         XCTAssertEqual(weeklyRunway { $0 <= 30 ? 79 : 80 }.nowAnchor, QuotaNowAnchor.lookback)
         // Three points inside two minutes: a burst, read like a short window.
@@ -1156,7 +1297,9 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertEqual(burst.nowAnchor, QuotaNowAnchor.burst)
         XCTAssertEqual(burst.nowSpan ?? -1, 120, accuracy: 1)
 
-        // Short window, one point four minutes ago: the flat five-minute slice.
+        // Short window, one point four minutes ago and nothing before it inside
+        // the hour: the same lookback floor a weekly gets. A 5-hour window reads
+        // `now` by the same rule as every other window.
         let fiveHourReset = now.addingTimeInterval(4 * 3600)
         let fiveHour = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 21, resetsAt: fiveHourReset)
         let slice = QuotaTrendTracker.runway(
@@ -1166,8 +1309,9 @@ final class QuotaTrendTrackerTests: XCTestCase {
             },
             now: now
         )
-        XCTAssertEqual(slice.nowAnchor, QuotaNowAnchor.slice)
-        XCTAssertEqual(slice.nowSpan ?? -1, 300, accuracy: 1)
+        XCTAssertEqual(slice.nowAnchor, QuotaNowAnchor.lookback)
+        XCTAssertEqual(slice.nowSpan ?? -1, 3600, accuracy: 1)
+        XCTAssertEqual(slice.nowPercentPerHour ?? -1, 1.0, accuracy: 0.01)
     }
 
     func testSteadyIntegerDrainSurvivesADayOfDecimatedHistory() {
@@ -1217,14 +1361,15 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertEqual(runway.percentPerHour ?? -1, 1.5, accuracy: 0.01)
         XCTAssertEqual(runway.avgSpan ?? -1, 2400, accuracy: 1)
 
-        // The 5-hour window keeps hiding a `now` that would duplicate `avg`;
-        // its slice is five minutes, so that lasts five minutes, not an hour.
+        // The 5-hour window reads the same way on a history just as young:
+        // one point across the three minutes there are.
         let short = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 36, resetsAt: now.addingTimeInterval(4 * 3600))
         let young = (0...3).reversed().map {
             observation("five_hour", remaining: $0 > 1 ? 65 : 64, minutesAgo: Double($0), from: now, resetsAt: short.resetsAt)
         }
         let shortRunway = QuotaTrendTracker.runway(provider: .claude, window: short, observations: young, now: now)
-        XCTAssertNil(shortRunway.nowPercentPerHour)
+        XCTAssertEqual(shortRunway.nowPercentPerHour ?? -1, 20.0, accuracy: 0.01)
+        XCTAssertEqual(shortRunway.nowSpan ?? -1, 180, accuracy: 1)
         XCTAssertNotNil(shortRunway.percentPerHour)
     }
 
@@ -1246,18 +1391,95 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertEqual(sparse.nowPercentPerHour ?? -1, 1.0, accuracy: 0.01)
         XCTAssertEqual(sparse.nowSpan ?? -1, 3600, accuracy: 1)
 
-        // No step at all inside the hour: a flat zero across the lookback, so
-        // the tooltip says how long the window has sat still — not "0 over 5m".
+        XCTAssertFalse(sparse.nowIsUpperBound)
+
+        // No step at all inside the hour. Utilization is whole points, so this
+        // is not "0%/h" — it is "under one point in the 90 minutes since the
+        // window last moved", and the row renders the figure with a `<`. The
+        // bound reads past the lookback on purpose: a longer flat stretch is a
+        // tighter claim, so an idle window keeps converging toward zero instead
+        // of parking at one point per hour.
         let idle = runway { $0 <= 90 ? 80 : 81 }
-        XCTAssertEqual(idle.nowPercentPerHour ?? -1, 0, accuracy: 0.01)
-        XCTAssertEqual(idle.nowSpan ?? -1, 3600, accuracy: 1)
+        XCTAssertEqual(idle.nowPercentPerHour ?? -1, 1 / 1.5, accuracy: 0.01)
+        XCTAssertEqual(idle.nowSpan ?? -1, 5400, accuracy: 1)
+        XCTAssertTrue(idle.nowIsUpperBound)
         XCTAssertEqual(idle.percentPerHour ?? -1, 0.5, accuracy: 0.01)
     }
 
-    func testShortWindowNowStillReadsTheFlatFiveMinuteSlice() {
-        // Same shape as the weekly case, on a 5-hour window: a point of this
-        // pool is a few minutes of ordinary use, so "nothing in five minutes"
-        // is a real reading and the step anchor must not stretch it.
+    func testFlatButYoungHistoryIsABoundRatherThanDormancy() {
+        // Half an hour of samples, nothing moved. That is inside what a shared
+        // window's shape explains, so it stays a ceiling on the rate instead of
+        // claiming the window has stopped.
+        let now = bucketAlignedNow
+        let reset = now.addingTimeInterval(6 * 24 * 3600)
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 20, resetsAt: reset)
+        let observations = (0...29).reversed().map {
+            observation("seven_day", remaining: 80, minutesAgo: Double($0), from: now, resetsAt: reset)
+        }
+
+        let runway = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now
+        )
+
+        XCTAssertEqual(runway.nowAnchor, QuotaNowAnchor.flat)
+        XCTAssertTrue(runway.nowIsUpperBound)
+        XCTAssertEqual(runway.nowSpan ?? -1, 29 * 60, accuracy: 1)
+    }
+
+    func testModelScopedWindowGoesDormantWhereASharedOneStillReadsARate() {
+        let now = bucketAlignedNow
+        let reset = now.addingTimeInterval(6 * 24 * 3600)
+        // Steps at minute 17 and minute 12, then twelve minutes of silence.
+        func history(_ id: String) -> [QuotaObservation] {
+            (0...60).reversed().map { minute in
+                let remaining: Double = minute <= 12 ? 80 : (minute <= 17 ? 81 : 82)
+                return observation(id, remaining: remaining, minutesAgo: Double(minute), from: now, resetsAt: reset)
+            }
+        }
+
+        let scoped = QuotaWindow(
+            id: "seven_day_fable", label: "Weekly (Fable)", usedPercent: 20,
+            resetsAt: reset, isModelScoped: true, cycle: 7 * 24 * 3600
+        )
+        let dormant = QuotaTrendTracker.runway(
+            provider: .claude, window: scoped, observations: history("seven_day_fable"), now: now
+        )
+        XCTAssertEqual(dormant.nowAnchor, QuotaNowAnchor.dormant)
+        XCTAssertEqual(dormant.nowSpan ?? -1, 12 * 60, accuracy: 1)
+        XCTAssertTrue(dormant.nowIsUpperBound)
+        XCTAssertEqual(QuotaRow.pace(dormant)?.text.hasPrefix("now flat 12m"), true,
+                       QuotaRow.pace(dormant)?.text ?? "no pace line")
+
+        let shared = QuotaWindow(
+            id: "seven_day", label: "Weekly", usedPercent: 20,
+            resetsAt: reset, cycle: 7 * 24 * 3600
+        )
+        let measured = QuotaTrendTracker.runway(
+            provider: .claude, window: shared, observations: history("seven_day"), now: now
+        )
+        XCTAssertEqual(measured.nowAnchor, QuotaNowAnchor.step)
+        XCTAssertFalse(measured.nowIsUpperBound)
+        // One point over the seventeen minutes since the step before the latest.
+        XCTAssertEqual(measured.nowPercentPerHour ?? -1, 60.0 / 17, accuracy: 0.01)
+    }
+
+    func testFlatThresholdFollowsWhetherTheProviderScopedTheWindow() {
+        let scoped = QuotaWindow(id: "seven_day_fable", label: "Weekly (Fable)", usedPercent: 20,
+                                 resetsAt: nil, isModelScoped: true)
+        let shared = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 20, resetsAt: nil)
+        let unstated = QuotaWindow(id: "premium", label: "Premium", usedPercent: 20, resetsAt: nil)
+        XCTAssertEqual(QuotaTrendTracker.flatThreshold(for: scoped), QuotaTrendTracker.modelScopedFlatThreshold)
+        XCTAssertEqual(QuotaTrendTracker.flatThreshold(for: shared), QuotaTrendTracker.nowStepLookback)
+        // Not stated reads as not scoped, so an unknown provider never gets the
+        // shorter threshold by accident.
+        XCTAssertEqual(QuotaTrendTracker.flatThreshold(for: unstated), QuotaTrendTracker.nowStepLookback)
+    }
+
+    func testShortWindowNowReadsTheLatestStepInsteadOfAFlatSlice() {
+        // The reported case. A 5-hour window draining ~3%/h drops a point every
+        // twenty minutes, so the five-minute slice this used to read was flat
+        // three ticks in four and the row said `now 0%/h` through an active
+        // session. The step anchor reads the span the points actually span.
         let now = bucketAlignedNow
         let reset = now.addingTimeInterval(4 * 3600)
         let window = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 22, resetsAt: reset)
@@ -1272,8 +1494,12 @@ final class QuotaTrendTrackerTests: XCTestCase {
             provider: .claude, window: window, observations: observations, now: now
         )
 
-        XCTAssertEqual(runway.nowPercentPerHour ?? -1, 0, accuracy: 0.01)
-        XCTAssertEqual(runway.nowSpan ?? -1, 300, accuracy: 1)
+        // Steps 40 and 16 minutes ago: one point over the 40 minutes since the
+        // earlier one, measured rather than bounded.
+        XCTAssertEqual(runway.nowPercentPerHour ?? -1, 1.5, accuracy: 0.01)
+        XCTAssertEqual(runway.nowSpan ?? -1, 2400, accuracy: 1)
+        XCTAssertEqual(runway.nowAnchor, QuotaNowAnchor.step)
+        XCTAssertFalse(runway.nowIsUpperBound)
         // avg over its 20 minutes: the 16-minute-old step.
         XCTAssertEqual(runway.percentPerHour ?? -1, 3.0, accuracy: 0.01)
     }

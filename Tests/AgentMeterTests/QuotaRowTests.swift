@@ -178,7 +178,7 @@ final class QuotaRowTests: XCTestCase {
         let flat = weekly(.lookback, now: 0, span: 3600)
         let burst = weekly(.burst, now: 90, span: 120)
         let fiveHour = pace(
-            runway(nowPercentPerHour: 12, percentPerHour: 3, safePercentPerHour: 4.4, nowSpan: 5 * 60, nowAnchor: .slice)
+            runway(nowPercentPerHour: 12, percentPerHour: 3, safePercentPerHour: 4.4, nowSpan: 5 * 60, nowAnchor: .burst)
         )?.help ?? ""
 
         XCTAssertTrue(stepped.contains("now: drain over the last 40m. The span runs from the step before the latest whole-point step to now."), stepped)
@@ -252,6 +252,89 @@ final class QuotaRowTests: XCTestCase {
         QuotaRow.pace(runway)
     }
 
+    func testUpperBoundNowRendersWithALessThanSign() {
+        let line = QuotaRow.pace(
+            runway(
+                nowPercentPerHour: 0.42,
+                percentPerHour: 4.4,
+                safePercentPerHour: nil,
+                paceStyle: .paceOnly,
+                nowSpan: 8580,
+                nowAnchor: .flat,
+                nowIsUpperBound: true
+            )
+        )
+        XCTAssertEqual(line?.text, "now <0.4%/h · avg 4.4%/h")
+        XCTAssertTrue(line?.help.contains("ceiling, not a measured rate") == true)
+    }
+
+    func testUpperBoundNowBelowATenthKeepsOneLessThanSign() {
+        // `trimRate` writes its own `<` for a positive rate that rounds to zero,
+        // and "<<0.1%/h" is not a reading.
+        let line = QuotaRow.pace(
+            runway(
+                nowPercentPerHour: 0.04,
+                percentPerHour: 2,
+                safePercentPerHour: nil,
+                paceStyle: .paceOnly,
+                nowIsUpperBound: true
+            )
+        )
+        XCTAssertEqual(line?.text, "now <0.1%/h · avg 2%/h")
+    }
+
+    func testUpperBoundNowDoesNotDecideTheBudgetVerdict() {
+        // A ceiling says the rate is *below* its figure, so it can never
+        // establish an overrun. A two-minute flat span bounds at 30%/h, which
+        // would otherwise paint an idle row orange against an 8%/h budget.
+        let bounded = QuotaRow.pace(
+            runway(
+                nowPercentPerHour: 30,
+                percentPerHour: 2.9,
+                safePercentPerHour: 8.2,
+                nowIsUpperBound: true
+            )
+        )
+        XCTAssertEqual(bounded?.overBudget, false)
+
+        // Measured, and over: still orange.
+        let measured = QuotaRow.pace(
+            runway(nowPercentPerHour: 30, percentPerHour: 2.9, safePercentPerHour: 8.2)
+        )
+        XCTAssertEqual(measured?.overBudget, true)
+    }
+
+    func testStaleMeasuredNowDoesNotDecideTheBudgetVerdict() {
+        // `now` outranks `avg` for the colour only because it is fresher. A
+        // step-anchored `now` reaches back further than `avg` whenever the last
+        // step is old, and a 40-minute reading has no business overriding a
+        // 20-minute one on the grounds of being current.
+        let stale = QuotaRow.pace(
+            runway(
+                nowPercentPerHour: 12,
+                percentPerHour: 3,
+                safePercentPerHour: 4.4,
+                nowSpan: 40 * 60,
+                avgSpan: 20 * 60
+            )
+        )
+        XCTAssertEqual(stale?.overBudget, false)
+        // Still rendered — it is a true reading, it just does not set the colour.
+        XCTAssertEqual(stale?.text, "now 12%/h · avg 3%/h · budget 4.4%/h")
+
+        // A burst inside the average's own window keeps the privilege.
+        let fresh = QuotaRow.pace(
+            runway(
+                nowPercentPerHour: 12,
+                percentPerHour: 3,
+                safePercentPerHour: 4.4,
+                nowSpan: 3 * 60,
+                avgSpan: 20 * 60
+            )
+        )
+        XCTAssertEqual(fresh?.overBudget, true)
+    }
+
     private func alertRunway(in seconds: TimeInterval, from now: Date, message: String) -> QuotaRunway {
         QuotaRunway(
             provider: .claude,
@@ -273,7 +356,8 @@ final class QuotaRowTests: XCTestCase {
         paceStyle: QuotaPaceStyle = .paceVersusBudget,
         nowSpan: TimeInterval? = nil,
         avgSpan: TimeInterval? = nil,
-        nowAnchor: QuotaNowAnchor? = nil
+        nowAnchor: QuotaNowAnchor? = nil,
+        nowIsUpperBound: Bool = false
     ) -> QuotaRunway {
         QuotaRunway(
             provider: .claude,
@@ -287,7 +371,8 @@ final class QuotaRowTests: XCTestCase {
             nowPercentPerHour: nowPercentPerHour,
             nowSpan: nowSpan,
             avgSpan: avgSpan,
-            nowAnchor: nowAnchor
+            nowAnchor: nowAnchor,
+            nowIsUpperBound: nowIsUpperBound
         )
     }
 }

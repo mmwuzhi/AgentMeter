@@ -224,6 +224,14 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         XCTAssertEqual(fable.usedPercent, 64)
         XCTAssertNotNil(fable.resetsAt)
         XCTAssertFalse(fable.isOneTimeCredit ?? false)
+        // Taken from `kind == "weekly_scoped"`, a documented field, not from
+        // the model name — `scope.model.id` is null in live responses, so a
+        // name match would be a guess. The trend tracker reads this to decide
+        // how long a silence has to run before it stops reporting a rate.
+        XCTAssertTrue(fable.isModelScoped ?? false)
+        for shared in snapshot.windows where shared.id != "seven_day_fable" {
+            XCTAssertFalse(shared.isModelScoped ?? false, shared.id)
+        }
     }
 
     /// The usage API states no window duration, so the cycle the trend tracker

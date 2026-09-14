@@ -110,19 +110,40 @@ enum CodexRolloutReader {
                            cycle: Self.cycle(forMinutes: minutes))
     }
 
+    /// Plausible bounds for a provider-stated refill cadence. Unlike Claude's,
+    /// which is derived from the window id, this is a raw number off the wire
+    /// (`window_minutes`, `limit_window_seconds`). It drives the peer-capacity
+    /// floor and the run-out horizon, both of which *suppress* warnings, so a
+    /// nonsense value — a units change, a truncated field — would quietly take
+    /// the quota alarm away. Outside the band the cadence is reported as
+    /// unstated, which every caller already handles.
+    static let minimumCycle: TimeInterval = 5 * 60
+    static let maximumCycle: TimeInterval = 31 * 24 * 3600
+
     /// The window's refill cycle in seconds; nil when the payload stated no
-    /// duration — the same case `label(forMinutes:)` reads as "Quota" — so the
-    /// trend tracker never paces a longer window against a guessed cadence.
+    /// duration, or one outside the plausible band — the same case
+    /// `label(forMinutes:)` reads as "Quota" — so the trend tracker never paces
+    /// a longer window against a guessed cadence.
     static func cycle(forMinutes minutes: Double) -> TimeInterval? {
-        minutes > 0 ? minutes * 60 : nil
+        // Rejects NaN and infinity as well: both fail these comparisons.
+        guard minutes > 0 else { return nil }
+        let seconds = minutes * 60
+        guard seconds >= minimumCycle, seconds <= maximumCycle else { return nil }
+        return seconds
     }
 
+    /// Display name for a window of this duration, through the same validation
+    /// `cycle(forMinutes:)` applies. It has to: `minutes` is a raw provider
+    /// number and `Int(Double)` traps on NaN, on infinity, and on any magnitude
+    /// past Int64, so a `window_minutes` of `1e25` — or a corrupted rollout
+    /// file — would otherwise crash the app on every refresh, and permanently
+    /// if the value is on disk.
     static func label(forMinutes minutes: Double) -> String {
-        switch minutes {
-        case 0: return "Quota"
-        case ..<120: return "\(Int(minutes / 60))-hour"
-        case ..<(60 * 24 * 2): return "\(Int(minutes / 60))-hour"
-        default: return "\(Int(minutes / (60 * 24)))-day"
+        guard let seconds = cycle(forMinutes: minutes) else { return "Quota" }
+        let bounded = seconds / 60
+        switch bounded {
+        case ..<(60 * 24 * 2): return "\(Int(bounded / 60))-hour"
+        default: return "\(Int(bounded / (60 * 24)))-day"
         }
     }
 

@@ -15,16 +15,19 @@ agent usage tracking.
 
 - **Quota bar**: % per window with reset countdowns — remaining by default
   (battery-style) or used, one switch in Settings turning the popover rows and
-  the menu bar over together. Plus an
-  always-visible `now · avg · budget` pace readout — the current burn rate and
-  the recent average side by side, so you can both react to a burst and see how
-  long the quota lasts — plus a run-out estimate whenever the average pace would
-  hit the window before it resets.
+  the menu bar over together. An always-visible `now · avg · budget` pace
+  readout puts the current burn rate beside the recent average, so you can react
+  to a burst and still see how long the quota lasts; `now` reads `<x%/h` while
+  the window has not ticked a whole point yet, because usage arrives in whole
+  percent and that is a ceiling rather than a zero. A run-out estimate appears
+  when the average pace would hit the window before it resets, and stays hidden
+  while that date is more than two refill cycles away, since holding one pace
+  through that many full resets is not something you can act on now.
 - **Usage heatmap**: 24-week GitHub-style grid per provider.
 - **Spend**: local-day, 7-day, and 30-day cost, computed from local logs × live pricing.
 - **Custom menu bar**: drag visible items into order — each quota window as a
-  text % and/or a mini gauge — with per-window warning dots
-  anchored to the quota item that triggered them.
+  text % and/or a mini gauge — with per-window warning dots anchored to the
+  quota item that triggered them.
 - **Notifications**: critical quota alerts, plus optional recovery alerts after a
   previously critical window resets.
 - **Auto-update**: Sparkle, once you host an appcast. See below.

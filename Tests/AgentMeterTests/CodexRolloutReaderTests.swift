@@ -182,4 +182,38 @@ final class CodexRolloutReaderTests: XCTestCase {
 
         XCTAssertEqual(CodexRolloutReader.recentRolloutFiles([old, recent], modifiedSince: cutoff), [recent])
     }
+
+    func testCycleAcceptsPlausibleCadences() {
+        XCTAssertEqual(CodexRolloutReader.cycle(forMinutes: 300), 5 * 3600)
+        XCTAssertEqual(CodexRolloutReader.cycle(forMinutes: 60 * 24 * 7), 7 * 24 * 3600)
+        XCTAssertEqual(CodexRolloutReader.cycle(forMinutes: 5), CodexRolloutReader.minimumCycle)
+    }
+
+    func testLabelSurvivesAnImplausibleCadence() {
+        // `Int(Double)` traps on NaN, on infinity and past Int64, and `minutes`
+        // is a raw provider number, so the label goes through the same band the
+        // cycle does rather than crashing the refresh.
+        XCTAssertEqual(CodexRolloutReader.label(forMinutes: .nan), "Quota")
+        XCTAssertEqual(CodexRolloutReader.label(forMinutes: .infinity), "Quota")
+        XCTAssertEqual(CodexRolloutReader.label(forMinutes: 1e25), "Quota")
+        XCTAssertEqual(CodexRolloutReader.label(forMinutes: 0), "Quota")
+        XCTAssertEqual(CodexRolloutReader.label(forMinutes: -300), "Quota")
+        // The believable band still reads the way it always did.
+        XCTAssertEqual(CodexRolloutReader.label(forMinutes: 300), "5-hour")
+        XCTAssertEqual(CodexRolloutReader.label(forMinutes: 60 * 24 * 7), "7-day")
+    }
+
+    func testCycleRejectsImplausibleCadences() {
+        // `cycle` is a raw provider number and it only ever feeds rules that
+        // *suppress* a warning (the peer-capacity floor and the run-out
+        // horizon), so a units change or a truncated field must read as "no
+        // cadence stated" rather than as a very fast refill.
+        XCTAssertNil(CodexRolloutReader.cycle(forMinutes: 0))
+        XCTAssertNil(CodexRolloutReader.cycle(forMinutes: -300))
+        XCTAssertNil(CodexRolloutReader.cycle(forMinutes: 1))
+        XCTAssertNil(CodexRolloutReader.cycle(forMinutes: 60 * 24 * 365))
+        XCTAssertNil(CodexRolloutReader.cycle(forMinutes: .nan))
+        XCTAssertNil(CodexRolloutReader.cycle(forMinutes: .infinity))
+    }
+
 }

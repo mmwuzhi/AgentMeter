@@ -39,32 +39,39 @@ enum QuotaTrendTracker {
     static let nowTriggerPercent: Double = 3
     /// `now` never reads a span shorter than this, so one refresh can't swing it.
     static let nowMinimumSpan: TimeInterval = 2 * 60
-    /// Hard ceiling on the slice `now` reads on short-horizon windows. When
-    /// `nowTriggerPercent` has not drained inside it, `now` reports the
-    /// (near-zero) drain across the slice rather than widening: a rate averaged
-    /// over twenty minutes or an hour is not "now", it is a second copy of `avg`.
+    /// Slice `now` scans for a burst. A drain of `nowTriggerPercent` landing
+    /// inside five minutes is a spike worth reading on its own, ahead of the
+    /// step anchor every window otherwise uses.
     ///
-    /// Five minutes is a trade against resolution: `utilization` arrives as
-    /// whole integers, so a W-minute span resolves only 60/W %/h. Measured
-    /// against a real day of samples, a 2-minute span reads a flat 0 for ~42%
-    /// of the ticks of an actively draining 5-hour window (~89% for a weekly
-    /// one) because the integer has not moved yet in that slice; five minutes
-    /// drops that to ~17% at a 12%/h resolution, which is readable against a
-    /// short window's 20-50%/h budget. Long-horizon windows do not read this
-    /// slice at all unless a burst crosses the trigger inside it; see
-    /// `nowStepLookback`.
+    /// This was once a hard ceiling on the span `now` could read, on the
+    /// argument that a rate averaged over twenty minutes is not "now" but a
+    /// second copy of `avg`. At a light pace the ceiling made `now` claim 0
+    /// instead: `utilization` arrives as whole integers, so a W-minute span
+    /// resolves only 60/W %/h, and a 5-hour window draining at 3%/h drops a
+    /// point every twenty minutes — three ticks in four read a flat 0 inside a
+    /// five-minute slice. A stale-but-true rate beats a fresh false one, so the
+    /// slice now only catches bursts and `nowStepLookback` carries the rest.
     static let nowMaximumSpan: TimeInterval = 5 * 60
-    /// Long-horizon windows (weekly, one-time credits) move in whole-point
-    /// steps that are each a large slice of the pool: at an ordinary pace the
-    /// weekly integer ticks every twenty to forty minutes, so a five-minute
-    /// slice reads a flat 0 nearly always and 12%/h the rest of the time, and
-    /// neither is the pace. Their `now` instead reads the latest step over the
-    /// time since the step before it landed: the step's true pace the moment it
-    /// arrives, fading as the next one fails to. The anchor never sits further
-    /// back than the carry-forward sample at this boundary (itself accepted up
-    /// to `nowAnchorSlack`x this old), so a window that has not stepped inside
-    /// the lookback reads a flat zero across it rather than an hours-old slope.
+    /// Windows move in whole-point steps, so `now` anchors on the latest one:
+    /// it reads that step over the time since the step before it landed — the
+    /// step's true pace the moment it arrives, fading as the next one fails to.
+    /// The anchor never sits further back than the carry-forward sample at this
+    /// boundary (itself accepted up to `nowAnchorSlack`x this old), so a window
+    /// that has not stepped inside the lookback reads the flat span rather than
+    /// an hours-old slope — and a flat span is reported as an upper bound
+    /// (`nowResolutionPercent`), never as a zero.
     static let nowStepLookback: TimeInterval = 60 * 60
+    /// Smallest drain a provider can report. Utilization arrives as whole
+    /// percentage points, so a span with no drop in it does not mean no drain —
+    /// it means less than one point across that span. `now` reports that
+    /// ceiling (`1 / span` in hours) flagged as an upper bound instead of a 0
+    /// that would claim an idleness the samples never showed.
+    static let nowResolutionPercent: Double = 1
+    /// How long a model-scoped weekly has to sit still before `now` stops
+    /// reporting a rate and says how long it has been still instead.
+    ///
+    /// Shared windows use the longer `nowStepLookback`.
+    static let modelScopedFlatThreshold: TimeInterval = 10 * 60
     /// The `now` anchor may sit before `nowMaximumSpan` (carry-forward across a
     /// sampling gap) only up to this multiple of it; beyond that the recent
     /// history is too sparse to call anything "now" and the rate is omitted.
@@ -83,6 +90,21 @@ enum QuotaTrendTracker {
     /// steps, so a few minutes of evidence should stay informational.
     static let longWindowMinimumAtRiskEvidence: TimeInterval = 30 * 60
     static let longWindowHorizon: TimeInterval = 24 * 60 * 60
+    /// How many of the shortest peer cycles a run-out date may sit ahead before
+    /// it stops being something the user can act on. A long window's projection
+    /// is already floored at what its shorter peer can hand over per refill
+    /// (`pacedByShorterWindow`); past a couple of those refills the date only
+    /// says "if you hold this pace through several full peer resets", which no
+    /// session does and nothing can be done about now. Beyond it the runway
+    /// drops to `.watch`: the pace still shows, the date and its alarm do not.
+    static let actionableHorizonCycles: Double = 2
+    /// The horizon never drops below this however short a peer claims its cycle
+    /// is. The cadence is a provider-reported number on every provider but
+    /// Claude, and this rule only ever *removes* a warning, so a single bad
+    /// field must not be able to hide a run-out the user could still act on.
+    /// Two hours sits far below any real cadence (the shortest is five hours),
+    /// so it engages on nonsense input and nothing else.
+    static let minimumActionableHorizon: TimeInterval = 2 * 60 * 60
 
     // MARK: Peer capacity
 
@@ -218,7 +240,8 @@ enum QuotaTrendTracker {
                 nowPercentPerHour: current?.drain.percentPerHour,
                 nowSpan: current?.drain.span,
                 avgSpan: average?.span,
-                nowAnchor: current?.anchor
+                nowAnchor: current?.anchor,
+                nowIsUpperBound: current?.isUpperBound ?? false
             )
         }
 
@@ -241,7 +264,7 @@ enum QuotaTrendTracker {
         }
 
         let average = averageDrain(in: pool, current: latest, style: style)
-        let current = nowDrain(in: pool, current: latest, averageSpan: average.span, style: style)
+        let current = nowDrain(in: pool, current: latest, window: window)
         guard average.percentPerHour > 0 else {
             return make(status: .steady, average: average, current: current, depletion: nil, message: "pace steady")
         }
@@ -269,14 +292,90 @@ enum QuotaTrendTracker {
             depletion: reportedDepletion,
             message: message(for: status, depletion: depletion, percentPerHour: average.percentPerHour, now: now)
         )
-        return pacedByShorterWindow(
-            raw,
-            provider: provider,
+        return withinActionableHorizon(
+            pacedByShorterWindow(
+                raw,
+                provider: provider,
+                window: window,
+                observations: observations,
+                now: now,
+                peerWindows: peerWindows
+            ),
             window: window,
-            observations: observations,
-            now: now,
-            peerWindows: peerWindows
+            peerWindows: peerWindows,
+            now: now
         )
+    }
+
+    /// Drops the run-out date on a projection too far out to act on. Runs last,
+    /// after `pacedByShorterWindow` has had its say, because the floor it
+    /// applies can push the date further out than the `avg` projection alone.
+    /// The pace line survives; only the date, its alarm colour and the `.atRisk`
+    /// verdict go, so a window that later drifts inside the horizon says so
+    /// again on its own.
+    private static func withinActionableHorizon(
+        _ runway: QuotaRunway,
+        window: QuotaWindow,
+        peerWindows: [QuotaWindow],
+        now: Date
+    ) -> QuotaRunway {
+        guard runway.status == .atRisk,
+              let depletion = runway.estimatedDepletionAt,
+              let horizon = actionableHorizon(window: window, peerWindows: peerWindows, now: now),
+              depletion.timeIntervalSince(now) > horizon
+        else { return runway }
+        return reverdict(
+            runway,
+            status: .watch,
+            depletion: nil,
+            message: message(
+                for: .watch,
+                depletion: depletion,
+                percentPerHour: runway.percentPerHour ?? 0,
+                now: now
+            )
+        )
+    }
+
+    /// `actionableHorizonCycles` x the shortest cycle among the peers that can
+    /// actually refill this window faster than it refills itself, floored at
+    /// `minimumActionableHorizon`. Nil when no peer qualifies: a window nothing
+    /// paces has no "couple of refills" to speak of, so the
+    /// `maxExtrapolationMultiplier` and evidence rules stay its only guards, and
+    /// Copilot's allowances — which name no cadence at all — keep the runway
+    /// they had.
+    ///
+    /// The `cycle < own cycle` test is what keeps a 5-hour window out of this
+    /// rule, and it has to be tested rather than assumed: reading the shortest
+    /// cycle among *all* peers happens to spare the 5-hour window only because
+    /// today every other window is a weekly, so adding one shorter window to a
+    /// provider would start suppressing run-out dates on unrelated ones.
+    private static func actionableHorizon(
+        window: QuotaWindow,
+        peerWindows: [QuotaWindow],
+        now: Date
+    ) -> TimeInterval? {
+        guard let own = window.cycle else { return nil }
+        return peerWindows
+            .filter { $0.id != window.id && statesACredibleCycle($0, now: now) }
+            .compactMap(\.cycle)
+            .filter { $0 > 0 && $0 < own }
+            .min()
+            .map { max($0 * actionableHorizonCycles, minimumActionableHorizon) }
+    }
+
+    /// Whether a peer's stated cadence is believable enough to shorten another
+    /// window's horizon. `resetsAt` is by definition less than one cycle away,
+    /// so a window claiming a five-minute cycle while resetting in two hours is
+    /// not describing a cadence — and the plausibility band alone cannot catch
+    /// it, since five minutes clears `minimumCycle`. Reading it anyway would
+    /// pull the horizon down to its floor, and this rule only ever *removes* a
+    /// warning. A peer that states no reset keeps the benefit of the doubt;
+    /// there is no second field to contradict it.
+    private static func statesACredibleCycle(_ peer: QuotaWindow, now: Date) -> Bool {
+        guard let cycle = peer.cycle, cycle > 0 else { return false }
+        guard let reset = peer.resetsAt else { return true }
+        return reset.timeIntervalSince(now) <= cycle
     }
 
     private static func sameResetEpoch(_ lhs: Date?, _ rhs: Date?) -> Bool {
@@ -466,7 +565,10 @@ enum QuotaTrendTracker {
     }
 
     /// `raw` under a different verdict; the rates and the spans they were read
-    /// over are the readings they were and travel unchanged.
+    /// over are the readings they were and travel unchanged. `pacedBy` travels
+    /// too unless a caller names a new one — this composes, and a stage that
+    /// silently dropped a previous stage's annotation would be a trap for the
+    /// next rule stacked on top.
     private static func reverdict(
         _ raw: QuotaRunway,
         status: QuotaRunwayStatus,
@@ -487,7 +589,8 @@ enum QuotaTrendTracker {
             nowSpan: raw.nowSpan,
             avgSpan: raw.avgSpan,
             nowAnchor: raw.nowAnchor,
-            pacedBy: pacedBy
+            nowIsUpperBound: raw.nowIsUpperBound,
+            pacedBy: pacedBy ?? raw.pacedBy
         )
     }
 
@@ -501,12 +604,18 @@ enum QuotaTrendTracker {
 
     // MARK: Per-style policy
 
-    /// Everything that depends on the horizon, decided by exhaustive switches
-    /// on `QuotaPaceStyle` so the three cases are never told apart by negation
-    /// in one place and by a different negation in another. `.hidden` (no
-    /// reset date) is read like a long window for `avg`, which the runway
-    /// status still uses, and like a short window for `now`, which nothing
-    /// renders for it; both are the readings it had before this was written down.
+    /// What still depends on the horizon, decided by an exhaustive switch on
+    /// `QuotaPaceStyle` so the three cases are never told apart by negation in
+    /// one place and by a different negation in another. `.hidden` (no reset
+    /// date) is read like a long window, which the runway status still uses.
+    ///
+    /// `now` used to branch here as well — a flat five-minute slice for short
+    /// windows, the step anchor for long ones. Every window now takes the step
+    /// anchor, so `now` and `avg` differ by how each picks its span rather than
+    /// by which window they belong to, and `now` may read further back than
+    /// `avg` when the latest step is old. That is the point: the two answer
+    /// different questions, and the one `now` answers has no useful reading at
+    /// a fixed five minutes when a point lands every twenty.
 
     /// Span the `avg` rate covers for a window read with `style`.
     static func averageSpan(for style: QuotaPaceStyle) -> TimeInterval {
@@ -516,23 +625,12 @@ enum QuotaTrendTracker {
         }
     }
 
-    /// Whether `now` anchors on the latest whole-point step (`latestStepAnchor`)
-    /// instead of the flat `nowMaximumSpan` slice.
-    static func nowAnchorsOnLatestStep(for style: QuotaPaceStyle) -> Bool {
-        switch style {
-        case .paceOnly: return true
-        case .paceVersusBudget, .hidden: return false
-        }
-    }
-
-    /// Whether `now` is still reported when it covers the same span as `avg`.
-    /// The step anchor is bounded by `nowStepLookback`, so its span only
-    /// coincides with `avg`'s while history is younger than that hour, and
-    /// hiding `now` for that hour read as the segment having been removed. The
-    /// flat slice coincides with `avg` for the five minutes after a reset,
-    /// where one number under two labels is the worse reading.
-    static func nowMayEqualAverageSpan(for style: QuotaPaceStyle) -> Bool {
-        nowAnchorsOnLatestStep(for: style)
+    /// How long `window` must sit still before `now` reports dormancy rather
+    /// than a rate. Keyed on what the provider says the window is, never on its
+    /// label or id: `weekly_scoped` is a documented `limits` kind, whereas
+    /// matching a model name would be a guess about a field Claude leaves null.
+    static func flatThreshold(for window: QuotaWindow) -> TimeInterval {
+        window.isModelScoped == true ? modelScopedFlatThreshold : nowStepLookback
     }
 
     // MARK: Drain rates
@@ -563,60 +661,54 @@ enum QuotaTrendTracker {
         return rate(from: anchor, to: current)
     }
 
-    /// Short-window drain. Walks back through the samples inside
-    /// `nowMaximumSpan` to the newest one at least `nowTriggerPercent` above the
-    /// current value; when no such sample exists, reads the drain across the
-    /// whole maximum span (carry-forward anchor, allowed `nowAnchorSlack`× older
-    /// to bridge a sampling gap), or across whatever samples do sit inside the
-    /// span. Long-horizon windows (`.paceOnly`) skip that flat slice and anchor
-    /// on the latest whole-point step instead (`latestStepAnchor`). The span is
-    /// widened to `nowMinimumSpan` when the trigger fired on the very last
-    /// refresh. Nil when nothing recent enough exists, and nil when the span it
-    /// could read is no shorter than `averageSpan` unless the style's policy
-    /// allows that (`nowMayEqualAverageSpan(for:)`): a `now` that covers the
-    /// same history as `avg` is the same number twice, except while a
-    /// step-anchored window's history is younger than its lookback (a fresh
-    /// install, a wake after the 24-hour age cap emptied the pool, the sample
-    /// after a rise), where hiding it read as the segment having been removed.
-    /// A `now` reading together with how its anchor was chosen, so the runway
-    /// can tell the tooltip what `nowSpan` means.
+    /// A `now` reading, how its anchor was chosen (so the runway can tell the
+    /// tooltip what `nowSpan` means), and whether the rate is a measurement or
+    /// a ceiling.
     private struct NowReading {
         let drain: DrainRate
         let anchor: QuotaNowAnchor
+        /// Nothing dropped across the span: the rate is `< drain.percentPerHour`,
+        /// not equal to it. See `nowResolutionPercent`.
+        let isUpperBound: Bool
     }
 
+    /// Present-tense drain. A burst first: the newest sample inside
+    /// `nowMaximumSpan` at least `nowTriggerPercent` above the current value,
+    /// so a spike is read on the slice it happened in. Otherwise the latest
+    /// whole-point step (`latestStepAnchor`), which is what the reading is
+    /// built on at any ordinary pace. The span is widened to `nowMinimumSpan`
+    /// when the trigger fired on the very last refresh.
+    ///
+    /// Nil when nothing recent enough exists — never nil merely for covering as
+    /// much history as `avg`. The two are read differently (a step's own
+    /// elapsed time against a fixed trailing span) and coincide only by
+    /// accident; suppressing `now` on that coincidence used to blank the
+    /// segment for a whole hour after a fresh install or a wake.
     private static func nowDrain(
         in pool: [QuotaObservation],
         current: QuotaObservation,
-        averageSpan: TimeInterval,
-        style: QuotaPaceStyle
+        window: QuotaWindow
     ) -> NowReading? {
-        let maximumSpan = nowMaximumSpan
-        let slackLimit = maximumSpan * nowAnchorSlack
+        let slackLimit = nowMaximumSpan * nowAnchorSlack
         let earlier = pool.dropLast()
-        let inside = earlier.filter { current.observedAt.timeIntervalSince($0.observedAt) <= maximumSpan }
+        let inside = earlier.filter { current.observedAt.timeIntervalSince($0.observedAt) <= nowMaximumSpan }
 
-        var anchor: QuotaObservation?
-        var kind = QuotaNowAnchor.slice
+        let picked: (anchor: QuotaObservation, kind: QuotaNowAnchor)?
         if let triggered = inside.last(where: {
             $0.remainingPercent - current.remainingPercent >= nowTriggerPercent - 0.001
         }) {
-            anchor = triggered
-            kind = .burst
-        } else if nowAnchorsOnLatestStep(for: style) {
-            if let stepped = latestStepAnchor(in: pool, current: current) {
-                anchor = stepped.anchor
-                kind = stepped.kind
-            }
-        } else if let carried = carryForwardAnchor(
-            in: pool,
-            atOrBefore: current.observedAt.addingTimeInterval(-maximumSpan)
-        ), current.observedAt.timeIntervalSince(carried.observedAt) <= slackLimit {
-            anchor = carried
+            picked = (triggered, .burst)
+        } else if let dormant = dormantReading(in: pool, current: current, window: window) {
+            // Checked before the step anchor, not after: two old steps still
+            // yield a measured rate, so a window that stopped an hour ago would
+            // otherwise keep printing the pace it held while it was running.
+            return dormant
         } else {
-            anchor = inside.first
+            picked = latestStepAnchor(in: pool, current: current)
         }
-        guard var anchor else { return nil }
+        guard let picked else { return nil }
+        var anchor = picked.anchor
+        let kind = picked.kind
 
         if current.observedAt.timeIntervalSince(anchor.observedAt) < nowMinimumSpan,
            let widened = carryForwardAnchor(
@@ -627,16 +719,54 @@ enum QuotaTrendTracker {
             anchor = widened
         }
         let drain = rate(from: anchor, to: current)
-        // Below `nowMinimumSpan` one refresh is the whole reading (the widening
-        // above could not find an older sample), and a `now` that covers the
-        // same history as `avg` is the same number twice unless the style's
-        // policy says otherwise.
-        guard drain.span >= nowMinimumSpan,
-              nowMayEqualAverageSpan(for: style) || drain.span < averageSpan else { return nil }
-        return NowReading(drain: drain, anchor: kind)
+        // Below `nowMinimumSpan` one refresh is the whole reading — the widening
+        // above could not find an older sample.
+        guard drain.span >= nowMinimumSpan else { return nil }
+        guard drain.percentPerHour > 0 else {
+            // Flat across the span. Utilization is reported in whole points, so
+            // this bounds the rate rather than measuring it: under one point in
+            // however long the window has sat still. The bound reads back past
+            // `nowStepLookback` — that cap exists to stop an hours-old *slope*
+            // being reported as "now", and a longer flat stretch only makes this
+            // claim tighter, so an idle window converges toward zero instead of
+            // parking at one point per hour forever.
+            let still = current.observedAt
+                .timeIntervalSince(lastMovement(in: pool, relativeTo: current) ?? pool[0].observedAt)
+            let bound = DrainRate(percentPerHour: 0, span: max(still, drain.span))
+            return NowReading(
+                drain: DrainRate(percentPerHour: nowResolutionPercent / bound.hours, span: bound.span),
+                // Not `kind`: that anchor picked a span this branch just
+                // replaced, and `nowAnchor` is meant to say how `nowSpan` was
+                // chosen. Naming the flat stretch keeps the two fields agreeing.
+                anchor: .flat,
+                isUpperBound: true
+            )
+        }
+        return NowReading(drain: drain, anchor: kind, isUpperBound: false)
     }
 
-    /// Anchor for a long-horizon `now` when no burst crossed the trigger: the
+    /// A window still for longer than `flatThreshold(for:)` — no rate at all,
+    /// just how long it has been still, as an upper bound like any other flat
+    /// span. Nil while the silence is within what this window's shape explains.
+    /// The span always clears `nowMinimumSpan`, every threshold being minutes
+    /// longer than it.
+    private static func dormantReading(
+        in pool: [QuotaObservation],
+        current: QuotaObservation,
+        window: QuotaWindow
+    ) -> NowReading? {
+        let still = current.observedAt
+            .timeIntervalSince(lastMovement(in: pool, relativeTo: current) ?? pool[0].observedAt)
+        guard still > flatThreshold(for: window) else { return nil }
+        let span = DrainRate(percentPerHour: 0, span: still)
+        return NowReading(
+            drain: DrainRate(percentPerHour: nowResolutionPercent / span.hours, span: still),
+            anchor: .dormant,
+            isUpperBound: true
+        )
+    }
+
+    /// Anchor for `now` when no burst crossed the trigger: the
     /// sample right after the step before the latest one, so the reading is
     /// "the latest whole-point step, over the time it has taken so far". A step
     /// is any drop past the 0.1-point rounding floor between two consecutive
@@ -646,7 +776,7 @@ enum QuotaTrendTracker {
     /// sampling was so sparse that this boundary sample sits past
     /// `nowAnchorSlack`x the lookback (hours of gap, not the 5-minute
     /// decimation or the 15-minute background cadence), the floor is the
-    /// oldest sample inside the lookback instead — the same rule the short
+    /// oldest sample inside the lookback instead — the same rule the burst
     /// slice applies at its own scale.
     private static func latestStepAnchor(
         in pool: [QuotaObservation],
@@ -672,6 +802,32 @@ enum QuotaTrendTracker {
               let previous = steps.dropLast().last else { return (floor, .lookback) }
         let afterPrevious = pool[previous]
         return afterPrevious.observedAt > floor.observedAt ? (afterPrevious, .step) : (floor, .lookback)
+    }
+
+    /// When the window was last meaningfully above where it is now — the newest
+    /// sample more than the rounding floor above `current`. Time since it is how
+    /// long the value has effectively stood still.
+    ///
+    /// Deliberately compares each sample against `current` rather than against
+    /// its own predecessor. A step-to-step test assumes whole-point reporting,
+    /// and a window draining smoothly in sub-0.1 increments never takes such a
+    /// step, so it read as still for the whole of its history while it was in
+    /// fact draining steadily. Nil when nothing in the retained history sits
+    /// above `current`, which the caller reads as "as long as there are samples
+    /// for".
+    private static func lastMovement(
+        in pool: [QuotaObservation],
+        relativeTo current: QuotaObservation
+    ) -> Date? {
+        guard let above = pool.dropLast()
+            .lastIndex(where: { $0.remainingPercent - current.remainingPercent > 0.1 })
+        else { return nil }
+        // The sample *after* the last high one: the first reading at today's
+        // value, which is when it demonstrably settled. Taking the high sample
+        // itself would claim the window had been still since before the drop,
+        // and across a sampling gap that reads as hours of stillness on a
+        // window that in fact drained during the gap.
+        return pool[above + 1].observedAt
     }
 
     /// Newest sample observed at or before `boundary`: the value the window still

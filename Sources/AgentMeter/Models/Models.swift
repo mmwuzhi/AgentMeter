@@ -27,6 +27,14 @@ struct QuotaWindow: Identifiable, Codable, Sendable, Equatable {
     /// cached `QuotaWindow` JSON without this key still decodes; nil/false
     /// means `resetsAt` is a recurring reset like the 5-hour/weekly windows.
     var isOneTimeCredit: Bool? = nil
+    /// True for a weekly the provider scoped to one model (`weekly_scoped` in
+    /// Claude's `limits`). Such a window only drains while that one model runs,
+    /// which makes its ticking bimodal — steady while in use, a hard stop
+    /// otherwise — where a window shared by every kind of work is not. The
+    /// trend tracker reads it to decide how long a silence has to be before it
+    /// stops reporting a rate. Optional so cached JSON written before this key
+    /// still decodes; nil means "not stated", read as not scoped.
+    var isModelScoped: Bool? = nil
     /// Length of one refill cycle (five hours, seven days) when the provider
     /// states it or the window key implies it; nil for Copilot's allowances
     /// and anything else that names no cadence. `resetsAt` says when the
@@ -93,14 +101,22 @@ enum QuotaPaceStyle: String, Codable, Sendable {
 enum QuotaNowAnchor: String, Codable, Sendable {
     /// A burst crossed `nowTriggerPercent` inside the short slice.
     case burst
-    /// The flat short slice: its carry-forward sample, or the oldest inside it.
-    case slice
-    /// Step-anchored window: the sample where the step before the latest
+    /// The sample where the step before the latest
     /// whole-point step landed, so the span is that step's pace so far.
     case step
     /// Step-anchored window with fewer than two steps inside the lookback:
     /// the lookback floor, so the span reaches back across the hour.
     case lookback
+    /// Nothing moved across the span at all, so no anchor picked it: the span
+    /// is how long the window has been still. Always paired with
+    /// `QuotaRunway.nowIsUpperBound`; the two are set in one place.
+    case flat
+    /// Still for longer than this window's own shape explains
+    /// (`QuotaTrendTracker.flatThreshold(for:)`), so `now` stops reporting a
+    /// rate at all and the view prints how long it has been still instead. Also
+    /// an upper bound — the rate is not known to be zero, only to be under one
+    /// point across that stretch.
+    case dormant
 }
 
 struct QuotaRunway: Codable, Sendable, Equatable {
@@ -122,6 +138,13 @@ struct QuotaRunway: Codable, Sendable, Equatable {
     var avgSpan: TimeInterval? = nil
     /// How `nowSpan` was chosen; nil whenever `nowPercentPerHour` is.
     var nowAnchor: QuotaNowAnchor? = nil
+    /// True when `nowPercentPerHour` is a ceiling rather than a measurement:
+    /// the window did not drop a single reported point across `nowSpan`, so all
+    /// that is known is that the rate is below one point per that span. The
+    /// view renders it with a `<`. Providers report whole-percent utilization,
+    /// so a flat span is the common reading at a light pace and "0" would claim
+    /// an idleness the samples do not show.
+    var nowIsUpperBound: Bool = false
     /// Label of the shorter peer window whose refill capacity set
     /// `estimatedDepletionAt` (or, for `.safe`, ruled depletion out before
     /// the reset) in place of the `avg` projection. Nil when the estimate is

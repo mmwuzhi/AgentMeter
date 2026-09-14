@@ -40,6 +40,10 @@ usage presentation, cached state, or Claude live-session integration.
   fill itself (yellow/red) instead of a separate dot.
 - `QuotaWindow.shortLabel` is menu-bar-only; `QuotaRow` shows the full label.
   Format all token counts with `TokenFormat.short`.
+- `StatusItemController.accessibilitySummary` appends `QuotaDisplay.word`
+  ("used"/"left") to every segment carrying a `remaining`, because a spoken bare
+  "61%" is heard as the remainder by anyone who has not opened Settings. Usage
+  and spend segments carry no `remaining` and are read as-is.
 - Which end a quota figure counts from is a preference, `QuotaDisplay`
   (`quotaShowsUsed`, default **remaining** — an upgrade must not turn every row
   over). One switch covers the popover headline, its bar, the menu bar's quota
@@ -52,57 +56,87 @@ usage presentation, cached state, or Claude live-session integration.
   keeps one definition and the notification copy ("15% left", a whole sentence)
   still agrees with the thresholds that fired it. Render through
   `QuotaDisplay.percent(remaining:showsUsed:)`; `usedPercent` is the raw
-  provider figure and is not clamped. `MenuBarContentView` takes the end as an
-  input to `apply(elements:showCaptions:fillsByUsed:)` rather than reading it
-  ambiently, so the status item and both Settings preview zones turn over on
-  `UserDefaults.didChangeNotification` instead of on the next quota tick.
-- Any display default `MenuBarContentView.apply` takes must also appear in the
+  provider figure and is not clamped. `MenuBarContentView` reads the preference
+  in `apply(elements:showCaptions:)`, not in `draw`, so the status item turns
+  over on `UserDefaults.didChangeNotification` (`defaultsChanged` → `updateAll`
+  → `updateTitle` → `apply`) instead of on the next quota tick.
+- Any display default `MenuBarContentView.apply` reads must also appear in the
   Settings preview zones' rebuild signature (`SlotItemSettings.displaySignature`
   → `LayoutZoneView(signature:)`). `ChipContainerView.configure` returns early
   when the keys and the signature are both unchanged, so a preference left out
   of it renders chips at the previous setting until something else moves. It is
   one string on purpose: a new preference is a new segment in it, not a new
   parameter.
-- `StatusItemController.accessibilitySummary` appends `QuotaDisplay.word`
-  ("used"/"left") to every segment carrying a `remaining`, because a spoken bare
-  "61%" is heard as the remainder by anyone who has not opened Settings. Usage
-  and spend segments carry no `remaining` and are read as-is.
 - `QuotaColor.forRemaining` is for popover bars and headline percentages, not
   the menu bar.
 - The pace and run-out lines both show at once; neither replaces the other.
   `QuotaRow.pace` renders `now X%/h · avg Y%/h · budget Z%/h` — `now` is
   dropped when the tracker has nothing recent enough, and the line is nil
-  without an `avg`. `QuotaRow.alertLine` adds the run-out estimate on a second
+  without an `avg`. A `now` prefixed `<` is an upper bound
+  (`QuotaRunway.nowIsUpperBound`), not a measurement: nothing dropped across
+  its span, and utilization arrives in whole points, so all that is known is
+  "under one point per span". The span is measured from when the window last
+  moved, not from the `nowStepLookback` cap, so an idle window converges toward
+  zero instead of parking at one point per hour. Never let a bound decide the
+  budget colour — a ceiling cannot establish an overrun, so `pace` falls back
+  to `avg` there.
+  `QuotaRow.alertLine` adds the run-out estimate on a second
   line for every `.atRisk` runway carrying a depletion date, red inside
   `alertLeadTime` (30 min) and orange beyond it. Gating the estimate on the
   lead time hid exactly the question the user was asking — "how long at this
   pace" is needed well before the last half hour. When `QuotaRunway.pacedBy`
   is set the tracker floored the date at what a shorter limit allows; the line
   reads the same and only the tooltip says so, since the view never re-derives
-  that decision.
+  that decision. A date further out than `actionableHorizonCycles` x the
+  shortest peer cycle is dropped in the tracker (`.atRisk` becomes `.watch`):
+  a long projection would assume the current pace holds through several refills. It needs a
+  peer that names a `cycle` — a window standing alone is paced by nothing, so
+  the rule does not apply to it.
+- A `.dormant` `now` renders as `now flat 6h`, not as a rate: the figure would
+  be a ceiling that only tightens with time, which reads as a stuck number — the
+  reported complaint was a Fable weekly showing `<0.2%/h` for hours. How long it
+  has been still is the information. The word is `flat`, never `idle`: the
+  measurement is that the counter has not moved, and light use under one whole
+  point looks identical, so the tooltip says so.
 - The pace line colors on `now` (falling back to `avg`) versus budget, not on
   `avg`: a burst that just started is still under the 20-minute average, and
-  after the user stops, the average keeps nagging for 20 more minutes.
+  after the user stops, the average keeps nagging for 20 more minutes. `now`
+  holds that privilege only while the reason for it holds — it must be the
+  *fresher* reading. Since every window became step-anchored, `now` reaches back
+  further than `avg` whenever the last step is old, and an upper bound says the
+  rate is below its figure and so can never establish an overrun. In both cases
+  the measured `avg` decides the colour instead; the figure is still rendered,
+  it just does not set the colour.
 - The pace line renders per `QuotaRunway.paceStyle`, which only
   `QuotaTrendTracker` decides (windows resetting within `longWindowHorizon`
   compare drain vs the even-spread budget; longer ones drop the budget segment
   and turn orange only on an `.atRisk` runway — a weekly window's even-spread
   rate sits below any active use, so a raw pace > budget check would stay
   orange whenever the user is working at all). Views must not re-derive
-  window-horizon semantics from reset dates. Inside the tracker, everything
-  that depends on the style — `averageSpan(for:)`, `nowAnchorsOnLatestStep(for:)`,
-  `nowMayEqualAverageSpan(for:)` — is an exhaustive `switch` on
+  window-horizon semantics from reset dates. Inside the tracker, what still
+  depends on the style — `averageSpan(for:)` — is an exhaustive `switch` on
   `QuotaPaceStyle`, never an `== .paceOnly` / `!= .paceVersusBudget` test:
   two negations of a three-case enum once disagreed on `.hidden`, giving a
   nil-reset window a long-horizon `avg` and a short-horizon `now` from one call.
+  `now` no longer branches on style at all. Every window anchors on its latest
+  whole-point step; a fixed five-minute slice only resolves 12%/h, so a 5-hour
+  window draining at 3%/h (a point every twenty minutes) read `now 0%/h` three
+  ticks in four through an active session. `now` may therefore cover more span
+  than `avg`, and may repeat it on a young history — both beat a false zero.
 - The pace tooltip names the spans each rate actually covers
   (`QuotaRunway.nowSpan`/`avgSpan`), so a `now` stretched across the 15-minute
   background refresh cadence says so instead of implying it is instantaneous.
   `QuotaRunway.nowAnchor` says how the span was chosen, and the tooltip puts
   words to that rather than to the style: `.step` ("runs from the step before
   the latest whole-point step"), `.lookback` ("fewer than two steps landed in
-  the last hour"), nothing for `.burst`/`.slice`. It once said "stretches to
-  the latest step" for every long-window `now`, including hours with no step.
+  the last hour"), `.flat` ("nothing dropped across it ... a ceiling, not a
+  measured rate"), `.dormant` (the window is scoped to work that has not run for
+  that long), nothing for `.burst`. It once said "stretches to the latest
+  step" for every long-window `now`, including hours with no step. `.flat` is
+  why the upper-bound path sets its own anchor kind rather than keeping the one
+  whose span it replaced: `nowAnchor` means "how `nowSpan` was chosen", so a
+  bound that reports the flat stretch has to say so, and the exhaustive `switch`
+  then makes a forgotten case a compile error rather than a wrong sentence.
 - Accessory apps can open Settings inactive, making Toggle/Picker states look
   identical. Keep `SettingsView.onAppear` activation and
   `makeKeyAndOrderFront`; gray traffic lights indicate a non-key window.

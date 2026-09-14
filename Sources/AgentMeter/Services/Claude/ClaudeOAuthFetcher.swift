@@ -144,6 +144,7 @@ enum ClaudeOAuthFetcher {
             guard let kind = limit["kind"] as? String else { continue }
             let id: String
             let label: String
+            var modelScoped = false
             switch kind {
             case "session":
                 id = "five_hour"
@@ -161,6 +162,7 @@ enum ClaudeOAuthFetcher {
                       !name.isEmpty else { continue }
                 id = "seven_day_" + name.lowercased().replacingOccurrences(of: " ", with: "_")
                 label = "Weekly (\(name))"
+                modelScoped = true
             default:
                 continue
             }
@@ -171,7 +173,7 @@ enum ClaudeOAuthFetcher {
                   let percent = (limit["percent"] as? NSNumber)?.doubleValue else { continue }
             let resets = (limit["resets_at"] as? String).flatMap(CodexRolloutReader.parseISO)
             windows.append(QuotaWindow(id: id, label: label, usedPercent: percent, resetsAt: resets,
-                                       cycle: cycle(forWindowID: id)))
+                                       isModelScoped: modelScoped, cycle: cycle(forWindowID: id)))
         }
     }
 

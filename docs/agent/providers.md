@@ -152,37 +152,60 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   anchored on the carry-forward value at the window boundary. `now` answers
   "how fast right now", the average "how long at the recent pace" — one number
   cannot do both.
-- Long-horizon windows (`.paceOnly`: weekly, one-time credits) do not read the
-  flat five-minute slice. A weekly point is a large slice of the pool, so at an
-  ordinary pace the integer steps every twenty to forty minutes (measured: two
-  steps in an hour against eighteen on the 5-hour window), and a five-minute
-  slice reads 0 almost always and 12%/h for the five minutes after a step —
-  neither is the pace. Their `now` anchors on the sample right after the step
-  before the latest one (`latestStepAnchor`): the latest step, over the time
-  it has taken so far — its true pace the moment it lands, fading as the next
-  fails to arrive. The anchor never sits further back than the carry-forward
-  sample at the `nowStepLookback` boundary (60 min; that sample itself is
-  accepted up to `nowAnchorSlack`x older), so a window that has not stepped
-  inside the hour reads a flat zero across it; a boundary sample past that
-  (hours of gap) gives way to the oldest *earlier* sample inside the lookback,
-  and when the current sample is the only one there — the first refresh after
-  a lid-closed gap of 90 min to a day — `now` is omitted rather than read as 0
-  over no time. Every `now`, whatever the anchor, needs at least
-  `nowMinimumSpan` (2 min) of span: one refresh is never the whole reading,
-  so a point landing a minute into a fresh pool does not print 60%/h. A burst that crosses
-  `nowTriggerPercent` inside the five-minute slice still reads like a short
-  window's. A fixed longer ceiling (60 min) was tried first and rejected: an
-  hour-long average is `avg` under the wrong label, whereas the step span
-  shrinks to minutes the moment the window is actually busy.
-- On a short-horizon window `now` is dropped when the span it could read is
-  no shorter than `avgSpan`, so a young history never prints one number twice;
-  that lasts the five minutes after a reset. A long-horizon window keeps `now`
-  even then: its step anchor is bounded by the hour-long lookback, so the two
-  spans only coincide while history is shorter than that hour (a fresh install,
-  a wake after the 24-hour age cap emptied the pool — a weekend with the lid
-  closed does it — or the sample after a rise), and an hour of weekly rows
-  showing only `avg` read as the segment having been removed. A `now` that
-  equals `avg` is the honest reading of a young history.
+- **Every** window anchors `now` on the sample right after the step before the
+  latest one (`latestStepAnchor`): the latest whole-point step, over the time it
+  has taken so far — its true pace the moment it lands, fading as the next fails
+  to arrive. This was once long-horizon only, with short windows reading a flat
+  five-minute slice, and that slice was the bug: `utilization` arrives as whole
+  integers, so five minutes resolves only 12%/h, and a 5-hour window draining at
+  3%/h drops a point every twenty minutes, so the slice read a flat 0 three
+  ticks in four through an active session. A stale-but-true rate beats a fresh
+  false one. `now` may therefore span more history than `avg`, and may repeat it
+  on a young history; the view compensates where it matters (see
+  [ui-state.md](ui-state.md) on the budget colour).
+  The anchor never sits further back than the carry-forward sample at the
+  `nowStepLookback` boundary (60 min; that sample itself is accepted up to
+  `nowAnchorSlack`x older); a boundary sample past that (hours of gap) gives way
+  to the oldest *earlier* sample inside the lookback, and when the current
+  sample is the only one there — the first refresh after a lid-closed gap of
+  90 min to a day — `now` is omitted rather than read as 0 over no time. Every
+  `now`, whatever the anchor, needs at least `nowMinimumSpan` (2 min) of span:
+  one refresh is never the whole reading, so a point landing a minute into a
+  fresh pool does not print 60%/h. A burst that crosses `nowTriggerPercent`
+  inside the five-minute slice still wins over the step anchor, so a spike is
+  read on the minutes it happened in.
+- A span with no drop in it is **not** reported as 0. Utilization is whole
+  points, so it only bounds the rate: under one point (`nowResolutionPercent`)
+  in however long the window has been still. `now` reports that ceiling with
+  `QuotaRunway.nowIsUpperBound` set and `nowAnchor == .flat`; the two are
+  written in one place and always agree, and the view renders the figure with a
+  `<`. The bound's span is measured from the last movement rather than from the
+  lookback cap — the cap exists to stop an hours-old *slope* being called "now",
+  and a longer flat stretch only makes a bound tighter — so an idle window
+  converges toward zero instead of parking at one point per hour. "0%/h" while
+  the user is mid-session was the reported bug.
+- Past `flatThreshold(for:)` the window is read as dormant (`nowAnchor ==
+  .dormant`) and the view stops printing a rate at all, saying how long it has
+  been still instead. Checked *before* the step anchor: two old steps still
+  yield a measured rate, so a window that stopped an hour ago would otherwise
+  keep printing the pace it held while running. The threshold is
+  `modelScopedFlatThreshold` (10 min) for a weekly the provider scoped to one
+  model and `nowStepLookback` (60 min) for the rest. A scoped weekly drains only
+  while its one model runs, so it ticks steadily or stops dead.
+  Scoping is read from `QuotaWindow.isModelScoped`, set from Claude's
+  `kind == "weekly_scoped"` — a documented `limits` field. Never match on the
+  model name: `scope.model.id` is null in live responses, so the window id is
+  built from a display name, and joining that to a session's raw model id would
+  be a guess. Nothing here needs to know *which* model is running; the provider
+  already reports that window's own percentage.
+- "Still" is measured against the current value, not step to step: the newest
+  sample more than the rounding floor above it, then the sample after that (the
+  first reading at today's value, which is when it demonstrably settled). A
+  step-to-step test assumes whole-point reporting, and a window draining
+  smoothly in sub-0.1 increments takes no such step, so it read as still for its
+  whole history while draining a steady 1%/h. Taking the high sample itself
+  instead of the one after it claims stillness from before the drop, which reads
+  as hours of quiet on a window that drained across a sampling gap.
 - Span length costs resolution, and the numbers were picked against measured
   history rather than taste. `utilization` arrives as whole integers, so a
   W-minute span resolves only 60/W %/h. At two minutes `now` reads in 0/30/60/90
@@ -227,6 +250,24 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   Fable weekly ~0.24 points per 5-hour point). Codex fills `cycle` from
   `limit_window_seconds` / `windowDurationMins`, Claude from the window key,
   Copilot leaves it nil.
+- `cycle` is untrusted on every provider but Claude, whose value is derived from
+  the window key. It feeds only rules that *suppress* a warning, so a units
+  change or a truncated field would quietly take the quota alarm away rather
+  than raise a false one. `CodexRolloutReader.cycle(forMinutes:)` therefore
+  reports anything outside `minimumCycle`…`maximumCycle` (5 min … 31 days, NaN
+  and infinity included) as no cadence stated, which every consumer already
+  handles, and the run-out horizon below carries its own independent floor. Any
+  new rule keyed on `cycle` needs the same treatment.
+- A run-out date further ahead than `actionableHorizonCycles` (2) x the shortest
+  peer cycle drops to `.watch` with no date: past a couple of the peer's refills
+  the projection only says "if you hold this pace through several full peer
+  resets", which is not something to act on now. Runs last, after the capacity
+  floor, because the floor can push the date further out. The peer must refill
+  faster than this window (`cycle < window.cycle`) and the window must name a
+  cycle of its own, so a window nothing paces — Copilot's allowances — keeps the
+  runway it had; and the horizon is floored at `minimumActionableHorizon` (2 h),
+  far below any real cadence, so one bad `cycle` cannot hide a run-out an hour
+  out.
 - Extrapolation is trusted only up to `maxExtrapolationMultiplier` (6x) the
   observed span, and a window resetting beyond `longWindowHorizon` also needs
   `longWindowMinimumAtRiskEvidence` (30 min) of history. Failing either

@@ -82,7 +82,14 @@ struct QuotaRow: View {
         guard let runway, let average = runway.percentPerHour else { return nil }
         var parts: [String] = []
         if let now = runway.nowPercentPerHour {
-            parts.append("now \(trimRate(now))%/h")
+            // A dormant window has no rate worth printing: the figure would be a
+            // ceiling that only tightens with time, which reads as a stuck
+            // number. How long it has been still is the actual information.
+            if runway.nowAnchor == .dormant, let span = runway.nowSpan {
+                parts.append("now flat \(spanText(span))")
+            } else {
+                parts.append("now \(rateText(now, upperBound: runway.nowIsUpperBound))%/h")
+            }
         }
         parts.append("avg \(trimRate(average))%/h")
         switch runway.paceStyle {
@@ -97,7 +104,17 @@ struct QuotaRow: View {
         case .paceVersusBudget:
             guard let budget = runway.safePercentPerHour, budget > 0 else { return nil }
             parts.append("budget \(trimRate(budget))%/h")
-            let leading = runway.nowPercentPerHour ?? average
+            // `now` outranks `avg` here for one reason: it is the fresher
+            // reading, so a burst colours the row before the 20-minute average
+            // catches up. It only gets that privilege while the reason holds.
+            // A step-anchored `now` reaches back further than `avg` whenever the
+            // last step is old, and an upper bound says the rate is *below* its
+            // figure and so can never establish an overrun. Either way the
+            // measured `avg` decides instead.
+            let nowIsFresher = (runway.nowSpan ?? 0) <= (runway.avgSpan ?? .infinity)
+            let leading = !runway.nowIsUpperBound && nowIsFresher
+                ? (runway.nowPercentPerHour ?? average)
+                : average
             return PaceLine(
                 text: parts.joined(separator: " · "),
                 overBudget: leading > budget,
@@ -124,7 +141,14 @@ struct QuotaRow: View {
                 stretch = " The span runs from the step before the latest whole-point step to now."
             case .lookback:
                 stretch = " Fewer than two whole-point steps landed in the last hour, so the span reaches back across it."
-            case .burst, .slice, nil:
+            case .flat:
+                stretch = " Nothing dropped across it and usage is reported in whole percentage points, so this is a ceiling, not a measured rate."
+            case .dormant:
+                // Deliberately does not name a cause: `.dormant` covers both a
+                // model-scoped window whose model stopped and a shared one idle
+                // past the lookback, and the anchor does not say which.
+                stretch = " Nothing has drained this window for that long, so no rate is shown. Usage arrives in whole percentage points, so light use under one point would look the same."
+            case .burst, nil:
                 stretch = ""
             }
             lines.append("now: drain \(span).\(stretch)")
@@ -137,6 +161,15 @@ struct QuotaRow: View {
             lines.append("Turns orange only if this window is projected to run out before it resets.")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// A rate with the `<` an upper-bound reading needs. `trimRate` writes its
+    /// own `<` for a positive rate that rounds to zero, and one `<` is the
+    /// reading in either case.
+    nonisolated private static func rateText(_ value: Double, upperBound: Bool) -> String {
+        let text = trimRate(value)
+        guard upperBound, !text.hasPrefix("<") else { return text }
+        return "<" + text
     }
 
     nonisolated private static func trimRate(_ value: Double) -> String {
