@@ -45,6 +45,15 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   `Claude Code-credentials`. Quota fallback order is `ClaudeOAuthFetcher`
   (`GET api.anthropic.com/api/oauth/usage`) → `ClaudeCLIScraper` (`claude
   /usage`) → usage-only. Reset windows require network access.
+- The scrape runs only when there is no readable token or OAuth answers 401.
+  On any other OAuth failure (429, 5xx, offline) `ClaudeService.oauthFallback`
+  returns `.unavailable` while the previous snapshot is `.oauth`, still has a
+  usable window, and is at most `recentLiveQuotaMaxAge` (1 h) old, so
+  `preservingLiveQuota` keeps the live reading and the stale banner reports
+  the failure. `claude /usage` hits the same endpoint with the same token and,
+  when that fails, prints the `cachedUsageUtilization` it keeps in
+  `~/.claude.json` — a scrape under a 429 is never fresher than the live
+  reading it would replace, and it costs a full Claude Code session start.
 - Claude Code may persist `expiresAt: 0` as an unknown-expiry sentinel. Keep
   that token cached until a real HTTP 401; rate limits and transient server
   errors must not invalidate it because the next Keychain read may prompt.
@@ -116,6 +125,12 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
 - A forced popover refresh must survive refresh coalescing. Queue its scoped
   usage request behind an in-flight refresh instead of dropping it, and do not
   scan unrelated providers merely because their menu-bar slots are visible.
+- A forced (popover-open, wake) refresh skips the quota fetch for a provider
+  whose last live reading is younger than
+  `ProviderRefreshPlan.minimumForcedQuotaSpacing` (20 s); usage and
+  active-agent work still run, timer ticks and `forceAll` are unaffected, and
+  a provider whose fetch is failing is never held back. Seven
+  `/api/oauth/usage` requests in 50 s produced a 429 streak.
 
 ## Pricing and quota trends
 

@@ -101,6 +101,73 @@ final class RefreshCoordinatorMergeTests: XCTestCase {
         XCTAssertEqual(plan.refreshUsage, [.claude])
     }
 
+    func testForcedPopoverRefreshSkipsQuotaReadLiveSecondsAgo() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let recentRefreshes: [Provider: Date] = [
+            .codex: now,
+            .claude: now,
+            .copilot: now,
+        ]
+        let plan = ProviderRefreshPlan.make(
+            forceAll: false,
+            forceVisibleQuota: true,
+            forcedUsageProviders: [.claude],
+            forceActiveAgents: true,
+            now: now,
+            visibleSlots: [.codex, .claude, .copilot],
+            foregroundKinds: [.claude: [.quota]],
+            lastQuotaRefresh: recentRefreshes,
+            lastLiveQuotaFetch: [
+                .claude: now.addingTimeInterval(-10),
+                .codex: now.addingTimeInterval(-ProviderRefreshPlan.minimumForcedQuotaSpacing),
+            ],
+            lastUsageRefresh: [.codex: now, .claude: now],
+            lastActiveAgentsRefresh: now,
+            activeAgentsVisible: false,
+            refreshInterval: 60,
+            backgroundMinimumRefreshInterval: 15 * 60,
+            backgroundMinimumActiveAgentsRefreshInterval: 5 * 60,
+            lastResetCreditsRefresh: now,
+            resetCreditsMinimumRefreshInterval: 20 * 60,
+            lastProviderStatusRefresh: now,
+            providerStatusMinimumRefreshInterval: 30 * 60
+        )
+
+        // Claude was read live 10 s ago: skipped, even though its menu-bar item
+        // would otherwise refresh it. Codex sits on the spacing boundary and
+        // Copilot has no live reading at all (unavailable): both fetched.
+        XCTAssertEqual(plan.refreshQuota, [.codex, .copilot])
+        XCTAssertEqual(plan.refreshUsage, [.claude], "usage scans are not held back")
+        XCTAssertTrue(plan.refreshActiveAgents, "active-agent polling is not held back")
+    }
+
+    func testTimerTickIsNotHeldBackByARecentLiveRead() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let plan = ProviderRefreshPlan.make(
+            forceAll: false,
+            forceVisibleQuota: false,
+            forcedUsageProviders: [],
+            forceActiveAgents: false,
+            now: now,
+            visibleSlots: [.claude],
+            foregroundKinds: [.claude: [.quota]],
+            lastQuotaRefresh: [.codex: now, .claude: now, .copilot: now],
+            lastLiveQuotaFetch: [.claude: now.addingTimeInterval(-5)],
+            lastUsageRefresh: [.codex: now, .claude: now],
+            lastActiveAgentsRefresh: now,
+            activeAgentsVisible: false,
+            refreshInterval: 60,
+            backgroundMinimumRefreshInterval: 15 * 60,
+            backgroundMinimumActiveAgentsRefreshInterval: 5 * 60,
+            lastResetCreditsRefresh: now,
+            resetCreditsMinimumRefreshInterval: 20 * 60,
+            lastProviderStatusRefresh: now,
+            providerStatusMinimumRefreshInterval: 30 * 60
+        )
+
+        XCTAssertEqual(plan.refreshQuota, [.claude], "the spacing applies to forced refreshes only")
+    }
+
     func testPendingRefreshRequestMergesForcedWork() {
         var request = ProviderRefreshRequest()
 

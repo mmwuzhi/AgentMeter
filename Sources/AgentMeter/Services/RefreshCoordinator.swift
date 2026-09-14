@@ -243,6 +243,7 @@ final class RefreshCoordinator {
             visibleSlots: MenuBarLayout.visibleSlots(viewModel),
             foregroundKinds: MenuBarLayout.activeRefreshKinds(viewModel),
             lastQuotaRefresh: lastQuotaRefresh,
+            lastLiveQuotaFetch: lastLiveQuotaFetch,
             lastUsageRefresh: lastUsageRefresh,
             lastActiveAgentsRefresh: lastActiveAgentsRefresh,
             activeAgentsVisible: activeAgentsVisibleCount > 0,
@@ -254,6 +255,19 @@ final class RefreshCoordinator {
             lastProviderStatusRefresh: lastProviderStatusRefresh,
             providerStatusMinimumRefreshInterval: providerStatusMinimumRefreshInterval
         )
+    }
+
+    /// When each provider's on-screen quota was last read live, for
+    /// `ProviderRefreshPlan.minimumForcedQuotaSpacing`. `.unavailable` carries
+    /// no reading, and a snapshot `preservingLiveQuota` kept across a failed
+    /// fetch keeps its old `fetchedAt`, so a failing provider is never held back.
+    private var lastLiveQuotaFetch: [Provider: Date] {
+        var fetches: [Provider: Date] = [:]
+        for state in [viewModel.codex, viewModel.claude, viewModel.copilot]
+        where state.quota.source != .unavailable {
+            fetches[state.provider] = state.quota.fetchedAt
+        }
+        return fetches
     }
 
     private func finishRefresh(startedAt: Date) {
@@ -434,6 +448,10 @@ struct ProviderRefreshPlan: Sendable {
     let refreshResetCredits: Bool
     let refreshProviderStatus: Bool
 
+    /// Forced quota reads skip recent successful fetches. Other refresh work
+    /// still runs, and manual refresh applies the interval only to Claude.
+    static let minimumForcedQuotaSpacing: TimeInterval = 20
+
     static func make(
         forceAll: Bool,
         forceVisibleQuota: Bool,
@@ -443,6 +461,7 @@ struct ProviderRefreshPlan: Sendable {
         visibleSlots: [MenuBarSlot],
         foregroundKinds: [Provider: Set<MenuBarRefreshKind>],
         lastQuotaRefresh: [Provider: Date],
+        lastLiveQuotaFetch: [Provider: Date] = [:],
         lastUsageRefresh: [Provider: Date],
         lastActiveAgentsRefresh: Date?,
         activeAgentsVisible: Bool,
@@ -496,6 +515,12 @@ struct ProviderRefreshPlan: Sendable {
                     backgroundMinimumRefreshInterval: backgroundMinimumRefreshInterval
                 ) {
                 usage.insert(provider)
+            }
+        }
+        if forceVisibleQuota {
+            for (provider, fetchedAt) in lastLiveQuotaFetch
+            where now.timeIntervalSince(fetchedAt) < minimumForcedQuotaSpacing {
+                quota.remove(provider)
             }
         }
         let activeAgents = ActiveAgentRefreshPolicy.shouldRefresh(
