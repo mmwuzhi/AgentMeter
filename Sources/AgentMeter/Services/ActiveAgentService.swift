@@ -749,8 +749,8 @@ enum ActiveAgentService {
         var seen = Set<String>()
         var totals: [String: TokenCounts] = [:]
         try? JSONLLineReader.forEachLine(in: url) { line in
-            guard line.contains("\"usage\""),
-                  let object = jsonObject(from: line),
+            guard let text = line.string, text.contains("\"usage\""),
+                  let object = jsonObject(from: text),
                   let message = object["message"] as? [String: Any],
                   let usage = message["usage"] as? [String: Any] else { return }
             let model = (message["model"] as? String) ?? "default"
@@ -784,8 +784,8 @@ enum ActiveAgentService {
         try? JSONLLineReader.forEachLine(in: url) { line in
             // Skip the JSON parse for lines that carry neither a model nor a
             // token_count event — the bulk of a rollout log.
-            guard line.contains("token_count") || line.contains("\"model\""),
-                  let object = jsonObject(from: line),
+            guard let text = line.string, text.contains("token_count") || text.contains("\"model\""),
+                  let object = jsonObject(from: text),
                   let payload = object["payload"] as? [String: Any] else { return }
             if let nextModel = payload["model"] as? String {
                 model = nextModel

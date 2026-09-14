@@ -26,6 +26,10 @@ enum ClaudeJSONLScanner {
 
     private static let usageCache = LogFileParseCache<FileUsageSummary>()
 
+    /// Cheap pre-filter: most records in a transcript carry no usage block, and
+    /// parsing them all costs far more than the byte search that skips them.
+    private static let usageMarker = JSONLLineReader.Marker("\"usage\"")
+
     /// Resolve config dirs: $CLAUDE_CONFIG_DIR (comma list), XDG, ~/.claude.
     static func configDirs() -> [URL] {
         let fm = FileManager.default
@@ -197,14 +201,17 @@ enum ClaudeJSONLScanner {
         await usageCache.store(summary, for: fingerprint, parsedBytes: result?.consumed ?? startOffset)
         guard let trailing = result?.trailing else { return summary }
         var display = summary
-        consume(line: trailing, into: &display, calendar: cal)
+        JSONLLineReader.withLine(trailing) { consume(line: $0, into: &display, calendar: cal) }
         return display
     }
 
-    private static func consume(line: String, into summary: inout FileUsageSummary, calendar cal: Calendar) {
-        guard line.contains("\"usage\""),
-              let data = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    private static func consume(
+        line: JSONLLineReader.LogLine,
+        into summary: inout FileUsageSummary,
+        calendar cal: Calendar
+    ) {
+        guard line.contains(usageMarker),
+              let obj = line.jsonObject(),
               let message = obj["message"] as? [String: Any],
               let usage = message["usage"] as? [String: Any] else { return }
 

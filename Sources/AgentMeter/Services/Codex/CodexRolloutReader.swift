@@ -30,6 +30,11 @@ enum CodexRolloutReader {
 
     private static let usageCache = LogFileParseCache<FileUsageSummary>()
 
+    /// Cheap pre-filters: a rollout log is mostly prompts and tool calls, so the
+    /// byte search that skips them costs far less than parsing every record.
+    private static let tokenCountMarker = JSONLLineReader.Marker("token_count")
+    private static let modelMarker = JSONLLineReader.Marker("\"model\"")
+
     /// Roots that may hold rollout logs. `archived_sessions` is a flat directory;
     /// `sessions` is date-nested. The enumerator walks both recursively.
     static var sessionRoots: [URL] {
@@ -75,9 +80,8 @@ enum CodexRolloutReader {
         try? JSONLLineReader.forEachLine(in: url) { line in
             // Rollout logs are mostly non-quota lines; skip the JSON parse unless
             // the line could carry a token_count event.
-            guard line.contains("token_count"),
-                  let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            guard line.contains(tokenCountMarker),
+                  let obj = line.jsonObject(),
                   let payload = obj["payload"] as? [String: Any],
                   payload["type"] as? String == "token_count",
                   payload["rate_limits"] is [String: Any] else { return }
@@ -232,16 +236,19 @@ enum CodexRolloutReader {
         await usageCache.store(summary, for: fingerprint, parsedBytes: result?.consumed ?? startOffset)
         guard let trailing = result?.trailing else { return summary }
         var display = summary
-        consume(line: trailing, into: &display, calendar: cal)
+        JSONLLineReader.withLine(trailing) { consume(line: $0, into: &display, calendar: cal) }
         return display
     }
 
-    private static func consume(line: String, into summary: inout FileUsageSummary, calendar cal: Calendar) {
+    private static func consume(
+        line: JSONLLineReader.LogLine,
+        into summary: inout FileUsageSummary,
+        calendar cal: Calendar
+    ) {
         // Only model-carrying and token_count lines matter; skip the JSON parse for
         // the majority (user/assistant messages, tool calls).
-        guard line.contains("token_count") || line.contains("\"model\""),
-              let data = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        guard line.contains(tokenCountMarker) || line.contains(modelMarker),
+              let obj = line.jsonObject() else { return }
         // Capture model when it appears (turn_context / session_meta); carried in
         // `summary.lastModel` so incremental resumes keep the session's model.
         if let payload = obj["payload"] as? [String: Any], let m = payload["model"] as? String {

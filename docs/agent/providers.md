@@ -52,6 +52,13 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   stalled refresh can overlap, but must never queue multiple Keychain prompts.
 - Usage/spend comes from `ClaudeJSONLScanner` over
   `~/.claude/projects/**/*.jsonl`, deduplicated by `message.id`.
+- Scanners must not touch log lines through `String`. `JSONLLineReader` hands
+  each record over as a `LogLine` of raw bytes: `String(data:encoding:)`
+  validated every byte and `String.contains` resolved to
+  Foundation’s locale-aware search. Build `Marker` needles
+  once as static constants, and keep every chunk read inside an
+  `autoreleasepool`; a cooperative-pool thread drains none on its own, and the
+  chunks then pile up to the size of the whole file.
 - An OAuth response with no quota windows is a legitimate spend-based plan
   shape, not a parse failure. Preserve the neutral empty-windows state and dump
   the raw response (capped at 256 KB) to
