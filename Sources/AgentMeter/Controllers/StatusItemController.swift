@@ -177,13 +177,24 @@ private final class StatusItemSlotController: NSObject {
             statusItem.length = statusLength
         }
         contentView.frame = NSRect(x: 0, y: 0, width: width, height: button.bounds.height)
-        contentView.apply(elements: elements, showCaptions: showCaptions)
+        contentView.apply(
+            elements: elements,
+            showCaptions: showCaptions,
+            fillsByUsed: QuotaDisplay.showsUsed
+        )
     }
 
     private func accessibilitySummary() -> String {
         let rows = MenuBarLayout.activeSegments(model, slot: slot)
         guard !rows.isEmpty else { return "AgentMeter \(slot.displayName) — no items shown" }
-        return "AgentMeter \(slot.displayName) — " + rows.map { "\($0.label) \($0.value)" }.joined(separator: ", ")
+        // A bare "61%" is read as the remainder by anyone who has not opened
+        // Settings, so a quota figure says which end it counts from. Usage and
+        // spend segments carry no `remaining` and are read as-is.
+        let end = QuotaDisplay.word(showsUsed: QuotaDisplay.showsUsed)
+        let parts = rows.map { row in
+            row.remaining == nil ? "\(row.label) \(row.value)" : "\(row.label) \(row.value) \(end)"
+        }
+        return "AgentMeter \(slot.displayName) — " + parts.joined(separator: ", ")
     }
 
     @objc private func statusItemClicked() {

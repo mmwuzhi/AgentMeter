@@ -13,7 +13,9 @@ agent usage tracking.
 
 ## Features
 
-- **Quota battery bar**: remaining % per window with reset countdowns, an
+- **Quota bar**: % per window with reset countdowns — remaining by default
+  (battery-style) or used, one switch in Settings turning the popover rows and
+  the menu bar over together. Plus an
   always-visible `now · avg · budget` pace readout — the current burn rate and
   the recent average side by side, so you can both react to a burst and see how
   long the quota lasts — plus a run-out estimate whenever the average pace would
@@ -21,7 +23,7 @@ agent usage tracking.
 - **Usage heatmap**: 24-week GitHub-style grid per provider.
 - **Spend**: local-day, 7-day, and 30-day cost, computed from local logs × live pricing.
 - **Custom menu bar**: drag visible items into order — each quota window as a
-  text % and/or a mini battery-bar gauge — with per-window warning dots
+  text % and/or a mini gauge — with per-window warning dots
   anchored to the quota item that triggered them.
 - **Notifications**: critical quota alerts, plus optional recovery alerts after a
   previously critical window resets.

@@ -9,6 +9,7 @@ final class MenuBarLayoutTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.codex")
         UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.claude")
         UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.copilot")
+        UserDefaults.standard.removeObject(forKey: QuotaDisplay.defaultsKey)
         super.tearDown()
     }
 
@@ -103,6 +104,27 @@ final class MenuBarLayoutTests: XCTestCase {
 
         XCTAssertEqual(segments.map(\.label), ["5h", "7d", "day", "7d", "30d"])
         XCTAssertEqual(segments.map(\.value), ["100%", "39%", "16.3M", "314.4M", "998.7M"])
+    }
+
+    func testQuotaSegmentFollowsTheDisplayPreference() {
+        // One switch turns the menu bar over with the popover; `remaining` and
+        // the alert level stay on the remainder either way.
+        UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.claude")
+        UserDefaults.standard.set(true, forKey: QuotaDisplay.defaultsKey)
+        let model = AppViewModel()
+        model.claude = claudeState()
+        MenuBarLayout.save([
+            MenuBarItem(key: "q:claude:weekly", enabled: true),
+        ], for: .claude)
+
+        let used = MenuBarLayout.activeSegments(model, slot: .claude)
+        XCTAssertEqual(used.map(\.value), ["61%"])
+        XCTAssertEqual(used.first?.remaining, 39)
+
+        UserDefaults.standard.set(false, forKey: QuotaDisplay.defaultsKey)
+        let left = MenuBarLayout.activeSegments(model, slot: .claude)
+        XCTAssertEqual(left.map(\.value), ["39%"])
+        XCTAssertEqual(left.first?.remaining, 39)
     }
 
     func testActiveRefreshKindsDefaultToQuotaOnly() {

@@ -322,8 +322,12 @@ enum MenuBarLayout {
         switch parts.first {
         case "q", "b":
             guard parts.count == 3, let w = s.quota.windows.first(where: { $0.id == parts[2] }) else { return nil }
+            // Reads the same end as the popover (`QuotaDisplay`); `remaining`
+            // stays the field the bar fill and the alert thresholds use, so
+            // there is still one definition of how low is low.
+            let shown = QuotaDisplay.percent(remaining: w.remainingPercent, showsUsed: QuotaDisplay.showsUsed)
             let segment = MenuBarSegment(label: w.shortLabel,
-                                         value: "\(Int(w.remainingPercent.rounded()))%",
+                                         value: "\(Int(shown.rounded()))%",
                                          remaining: w.remainingPercent,
                                          alertLevel: alertLevel(forRemaining: w.remainingPercent))
             return (parts.first == "b" ? .bar(segment) : .segment(segment), p)

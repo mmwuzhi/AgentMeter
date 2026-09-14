@@ -1,12 +1,19 @@
 import SwiftUI
 
-/// One quota window: label + large remaining % anchor + continuous bar + reset countdown.
+/// One quota window: label + large percentage anchor + continuous bar + reset
+/// countdown. The anchor and the bar read the share left or the share spent per
+/// `QuotaDisplay`; everything else on the row is unaffected by that choice.
 struct QuotaRow: View {
     let window: QuotaWindow
     var runway: QuotaRunway?
     nonisolated private static let alertLeadTime: TimeInterval = 30 * 60
 
+    @AppStorage(QuotaDisplay.defaultsKey) private var showsUsed = false
+
     private var color: Color { QuotaColor.forRemaining(window.remainingPercent) }
+    private var displayPercent: Double {
+        QuotaDisplay.percent(remaining: window.remainingPercent, showsUsed: showsUsed)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline) {
@@ -15,14 +22,14 @@ struct QuotaRow: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
-                    Text("\(Int(window.remainingPercent.rounded()))")
+                    Text("\(Int(displayPercent.rounded()))")
                         .font(.title3.weight(.semibold).monospacedDigit())
-                    Text("% left")
+                    Text(QuotaDisplay.caption(showsUsed: showsUsed))
                         .font(.caption.weight(.semibold))
                 }
                 .foregroundStyle(color)
             }
-            QuotaBar(remainingPercent: window.remainingPercent)
+            QuotaBar(remainingPercent: window.remainingPercent, fillsByUsed: showsUsed)
             if let resets = window.resetsAt {
                 let verb = window.isOneTimeCredit == true ? "expires" : "resets"
                 Text("\(verb) \(Self.absolute(resets))")

@@ -31,6 +31,10 @@ private struct MenuBarSettings: View {
     let model: AppViewModel
 
     @AppStorage("menuBarShowCaptions") private var showCaptions = true
+    // Not rendered here, but `MenuBarContentView.apply` reads it, so it has to
+    // reach the preview zones' rebuild signature or the chips keep the old fill
+    // direction until some other display state changes.
+    @AppStorage(QuotaDisplay.defaultsKey) private var quotaShowsUsed = false
     @State private var selectedSlot: MenuBarSlot = .codex
 
     init(model: AppViewModel) {
@@ -51,8 +55,12 @@ private struct MenuBarSettings: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                SlotItemSettings(model: model, slot: selectedSlot, showCaptions: showCaptions)
-                    .id(selectedSlot.rawValue)
+                SlotItemSettings(
+                    model: model,
+                    slot: selectedSlot,
+                    displaySignature: "\(showCaptions)-\(quotaShowsUsed)"
+                )
+                .id(selectedSlot.rawValue)
             }
         }
         .formStyle(.grouped)
@@ -62,13 +70,16 @@ private struct MenuBarSettings: View {
 private struct SlotItemSettings: View {
     let model: AppViewModel
     let slot: MenuBarSlot
-    let showCaptions: Bool
+    /// Every display default a chip's rendering depends on, joined. Chips are
+    /// rebuilt only when this changes, so a preference missing from it renders
+    /// stale previews.
+    let displaySignature: String
     @StateObject private var coordinator: LayoutEditorCoordinator
 
-    init(model: AppViewModel, slot: MenuBarSlot, showCaptions: Bool) {
+    init(model: AppViewModel, slot: MenuBarSlot, displaySignature: String) {
         self.model = model
         self.slot = slot
-        self.showCaptions = showCaptions
+        self.displaySignature = displaySignature
         _coordinator = StateObject(wrappedValue: LayoutEditorCoordinator(model: model, slot: slot))
     }
 
@@ -77,11 +88,11 @@ private struct SlotItemSettings: View {
             Text("\(slot.displayName) fields")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
-            LayoutZoneView(zone: .visible, backing: coordinator, signature: "\(showCaptions)")
+            LayoutZoneView(zone: .visible, backing: coordinator, signature: displaySignature)
                 .frame(height: 46)
             Text("Drag fields to reorder. Empty visible fields hides that provider icon.")
                 .font(.caption).foregroundStyle(.secondary)
-            LayoutZoneView(zone: .hidden, backing: coordinator, signature: "\(showCaptions)")
+            LayoutZoneView(zone: .hidden, backing: coordinator, signature: displaySignature)
                 .frame(height: 46)
         }
     }
@@ -138,6 +149,7 @@ private struct GeneralSettings: View {
     @AppStorage("launchAtLogin") private var launchAtLogin = false
     @AppStorage("refreshIntervalSeconds") private var refreshIntervalSeconds = 60.0
     @AppStorage("statusHooksEnabled") private var statusHooksEnabled = false
+    @AppStorage(QuotaDisplay.defaultsKey) private var quotaShowsUsed = false
     @State private var hookMessage: String?
 
     var body: some View {
@@ -151,6 +163,17 @@ private struct GeneralSettings: View {
                     Text("2 minutes").tag(120.0)
                     Text("5 minutes").tag(300.0)
                 }
+            }
+            // Lives here, not under Menu Bar: it turns the popover rows over too,
+            // and the two surfaces deliberately share one switch.
+            Section("Quota Display") {
+                Picker("Show quota as", selection: $quotaShowsUsed) {
+                    Text("Remaining").tag(false)
+                    Text("Used").tag(true)
+                }
+                .pickerStyle(.segmented)
+                Text("Remaining counts down to the limit (\"15 % left\"); used fills toward it (\"85 % used\"). Applies to the popover rows and the menu bar together. Colors and alerts always follow what is left.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Claude Code Status") {
                 Toggle(

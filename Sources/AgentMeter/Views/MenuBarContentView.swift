@@ -9,6 +9,8 @@ import SwiftUI
 final class MenuBarContentView: NSView {
     private var elements: [MenuBarElement] = []
     private var showCaptions = true
+    /// Draws the gauge by the share spent instead of the share left.
+    private var fillsByUsed = false
 
     /// When set, text/icon use this color instead of the appearance-adaptive one.
     var forcedColor: NSColor?
@@ -39,9 +41,15 @@ final class MenuBarContentView: NSView {
         passesClicksThrough ? nil : super.hitTest(point)
     }
 
-    func apply(elements: [MenuBarElement], showCaptions: Bool) {
+    /// `fillsByUsed` is passed in rather than read from `QuotaDisplay` here: the
+    /// Settings preview zones rebuild their chips only when the keys or their
+    /// declared display signature change, so a value this view read ambiently
+    /// would leave those chips drawing the previous setting. Making it an input
+    /// puts it under the invalidation protocol that already exists.
+    func apply(elements: [MenuBarElement], showCaptions: Bool, fillsByUsed: Bool) {
         self.elements = elements
         self.showCaptions = showCaptions
+        self.fillsByUsed = fillsByUsed
         needsDisplay = true
     }
 
@@ -168,9 +176,10 @@ final class MenuBarContentView: NSView {
         }
     }
 
-    /// A mini gauge, filled left→right by remaining %. The fill itself carries
-    /// the low-quota cue (yellow/red), battery-icon style, so bars get no
-    /// separate alert dot.
+    /// A mini gauge filled left→right, reading the same end as the popover's bar
+    /// (`QuotaDisplay`). The fill itself carries the low-quota cue (yellow/red),
+    /// battery-icon style when it shows the remainder, so bars get no separate
+    /// alert dot.
     private func drawBar(_ segment: MenuBarSegment, in rect: NSRect, color: NSColor) {
         let radius = rect.height / 3
         let outline = NSBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: radius, yRadius: radius)
@@ -178,7 +187,10 @@ final class MenuBarContentView: NSView {
         color.withAlphaComponent(color.alphaComponent * 0.45).setStroke()
         outline.stroke()
 
-        let fraction = max(0, min(1, (segment.remaining ?? 0) / 100))
+        // nil means no quota behind this bar: an empty gauge either way, which
+        // is spent-nothing when filling by use and left-nothing when not.
+        let remaining = max(0, min(100, segment.remaining ?? (fillsByUsed ? 100 : 0))) / 100
+        let fraction = fillsByUsed ? 1 - remaining : remaining
         let inner = rect.insetBy(dx: 2, dy: 2)
         guard fraction > 0, inner.width > 0 else { return }
         let fillWidth = max(inner.height / 2, inner.width * CGFloat(fraction))
@@ -319,6 +331,11 @@ final class MenuBarContentView: NSView {
 struct MenuBarElementView: NSViewRepresentable {
     let elements: [MenuBarElement]
     let showCaptions: Bool
+    /// No default on purpose, like `QuotaBar.fillsByUsed`: a caller that reads
+    /// the preference ambiently instead of tracking it would leave this view
+    /// drawing the previous setting, which is the bug `displaySignature` exists
+    /// to prevent.
+    let fillsByUsed: Bool
     var color: NSColor = .white
     var barHeight: CGFloat = 22
 
@@ -330,7 +347,7 @@ struct MenuBarElementView: NSViewRepresentable {
 
     func updateNSView(_ v: MenuBarContentView, context: Context) {
         v.forcedColor = color
-        v.apply(elements: elements, showCaptions: showCaptions)
+        v.apply(elements: elements, showCaptions: showCaptions, fillsByUsed: fillsByUsed)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: MenuBarContentView, context: Context) -> CGSize? {

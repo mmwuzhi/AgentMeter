@@ -40,6 +40,33 @@ usage presentation, cached state, or Claude live-session integration.
   fill itself (yellow/red) instead of a separate dot.
 - `QuotaWindow.shortLabel` is menu-bar-only; `QuotaRow` shows the full label.
   Format all token counts with `TokenFormat.short`.
+- Which end a quota figure counts from is a preference, `QuotaDisplay`
+  (`quotaShowsUsed`, default **remaining** — an upgrade must not turn every row
+  over). One switch covers the popover headline, its bar, the menu bar's quota
+  text segment and the `.bar` gauge together: the same window shown from
+  opposite ends on two surfaces is the reading nobody gets right, so it is
+  deliberately not per-surface, and it sits under Settings > General rather
+  than Menu Bar. Only the rendering turns over — `QuotaWindow.remainingPercent`,
+  `QuotaColor.forRemaining`, `MenuBarSegment.remaining` and
+  `alertLevel(forRemaining:)` all still speak in remainder, so "how low is low"
+  keeps one definition and the notification copy ("15% left", a whole sentence)
+  still agrees with the thresholds that fired it. Render through
+  `QuotaDisplay.percent(remaining:showsUsed:)`; `usedPercent` is the raw
+  provider figure and is not clamped. `MenuBarContentView` takes the end as an
+  input to `apply(elements:showCaptions:fillsByUsed:)` rather than reading it
+  ambiently, so the status item and both Settings preview zones turn over on
+  `UserDefaults.didChangeNotification` instead of on the next quota tick.
+- Any display default `MenuBarContentView.apply` takes must also appear in the
+  Settings preview zones' rebuild signature (`SlotItemSettings.displaySignature`
+  → `LayoutZoneView(signature:)`). `ChipContainerView.configure` returns early
+  when the keys and the signature are both unchanged, so a preference left out
+  of it renders chips at the previous setting until something else moves. It is
+  one string on purpose: a new preference is a new segment in it, not a new
+  parameter.
+- `StatusItemController.accessibilitySummary` appends `QuotaDisplay.word`
+  ("used"/"left") to every segment carrying a `remaining`, because a spoken bare
+  "61%" is heard as the remainder by anyone who has not opened Settings. Usage
+  and spend segments carry no `remaining` and are read as-is.
 - `QuotaColor.forRemaining` is for popover bars and headline percentages, not
   the menu bar.
 - The pace and run-out lines both show at once; neither replaces the other.

@@ -373,7 +373,7 @@ final class LayoutEditorCoordinator: ObservableObject, LayoutEditorBacking {
         v.passesClicksThrough = true
         let w = MenuBarContentView.width(elements: [element], showCaptions: showCaptions)
         v.frame = CGRect(x: 0, y: 0, width: w, height: 22)
-        v.apply(elements: [element], showCaptions: showCaptions)
+        v.apply(elements: [element], showCaptions: showCaptions, fillsByUsed: QuotaDisplay.showsUsed)
         return v
     }
 
