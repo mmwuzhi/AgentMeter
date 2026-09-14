@@ -42,13 +42,37 @@ usage presentation, cached state, or Claude live-session integration.
   Format all token counts with `TokenFormat.short`.
 - `QuotaColor.forRemaining` is for popover bars and headline percentages, not
   the menu bar.
+- The pace and run-out lines both show at once; neither replaces the other.
+  `QuotaRow.pace` renders `now X%/h · avg Y%/h · budget Z%/h` — `now` is
+  dropped when the tracker has nothing recent enough, and the line is nil
+  without an `avg`. `QuotaRow.alertLine` adds the run-out estimate on a second
+  line for every `.atRisk` runway carrying a depletion date, red inside
+  `alertLeadTime` (30 min) and orange beyond it. Gating the estimate on the
+  lead time hid exactly the question the user was asking — "how long at this
+  pace" is needed well before the last half hour.
+- The pace line colors on `now` (falling back to `avg`) versus budget, not on
+  `avg`: a burst that just started is still under the 20-minute average, and
+  after the user stops, the average keeps nagging for 20 more minutes.
 - The pace line renders per `QuotaRunway.paceStyle`, which only
   `QuotaTrendTracker` decides (windows resetting within `longWindowHorizon`
-  compare drain vs the even-spread budget; longer ones show pace alone and turn
-  orange only on an `.atRisk` runway — a weekly window's even-spread rate sits
-  below any active use, so a raw pace > budget check would stay orange whenever
-  the user is working at all). Views must not re-derive window-horizon
-  semantics from reset dates.
+  compare drain vs the even-spread budget; longer ones drop the budget segment
+  and turn orange only on an `.atRisk` runway — a weekly window's even-spread
+  rate sits below any active use, so a raw pace > budget check would stay
+  orange whenever the user is working at all). Views must not re-derive
+  window-horizon semantics from reset dates. Inside the tracker, everything
+  that depends on the style — `averageSpan(for:)`, `nowAnchorsOnLatestStep(for:)`,
+  `nowMayEqualAverageSpan(for:)` — is an exhaustive `switch` on
+  `QuotaPaceStyle`, never an `== .paceOnly` / `!= .paceVersusBudget` test:
+  two negations of a three-case enum once disagreed on `.hidden`, giving a
+  nil-reset window a long-horizon `avg` and a short-horizon `now` from one call.
+- The pace tooltip names the spans each rate actually covers
+  (`QuotaRunway.nowSpan`/`avgSpan`), so a `now` stretched across the 15-minute
+  background refresh cadence says so instead of implying it is instantaneous.
+  `QuotaRunway.nowAnchor` says how the span was chosen, and the tooltip puts
+  words to that rather than to the style: `.step` ("runs from the step before
+  the latest whole-point step"), `.lookback` ("fewer than two steps landed in
+  the last hour"), nothing for `.burst`/`.slice`. It once said "stretches to
+  the latest step" for every long-window `now`, including hours with no step.
 - Accessory apps can open Settings inactive, making Toggle/Picker states look
   identical. Keep `SettingsView.onAppear` activation and
   `makeKeyAndOrderFront`; gray traffic lights indicate a non-key window.

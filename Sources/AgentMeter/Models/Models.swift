@@ -70,23 +70,50 @@ enum QuotaPaceStyle: String, Codable, Sendable {
     /// No reset date: no even-spread budget exists, show no pace line.
     case hidden
     /// Resets soon: remaining% spread over the hours left is a real spending
-    /// guide — show "pace · budget", orange when pace exceeds budget.
+    /// guide — show "now · avg · budget", orange when `now` (or `avg`, if the
+    /// recent history is too sparse for a `now`) exceeds budget.
     case paceVersusBudget
-    /// Long-horizon window: the even-spread rate sits below any active use,
-    /// so show pace alone, orange only on an at-risk runway.
+    /// Long-horizon window: the even-spread rate sits below any active use, so
+    /// drop the budget segment and turn orange only on an at-risk runway.
     case paceOnly
 }
 
 /// Derived prediction for one quota window, based on observed percent drain.
+/// Not persisted — rebuilt from `QuotaObservation` history on every read.
+/// How the `now` anchor was chosen. Carried on the runway so the pace tooltip
+/// can put the right words to `nowSpan` without re-deriving how it was read.
+enum QuotaNowAnchor: String, Codable, Sendable {
+    /// A burst crossed `nowTriggerPercent` inside the short slice.
+    case burst
+    /// The flat short slice: its carry-forward sample, or the oldest inside it.
+    case slice
+    /// Step-anchored window: the sample where the step before the latest
+    /// whole-point step landed, so the span is that step's pace so far.
+    case step
+    /// Step-anchored window with fewer than two steps inside the lookback:
+    /// the lookback floor, so the span reaches back across the hour.
+    case lookback
+}
+
 struct QuotaRunway: Codable, Sendable, Equatable {
     let provider: Provider
     let windowID: String
     let status: QuotaRunwayStatus
+    /// `avg`: drain averaged across `avgSpan`. The only rate behind
+    /// `estimatedDepletionAt` and the `.atRisk` / `.watch` decision.
     let percentPerHour: Double?
     let estimatedDepletionAt: Date?
     let safePercentPerHour: Double?
     let paceStyle: QuotaPaceStyle
     let message: String
+    /// `now`: drain across a short adaptive span (`nowSpan`). Nil when the recent
+    /// history is too sparse to say anything about the present.
+    var nowPercentPerHour: Double? = nil
+    /// Actual spans the two rates were read over, for the pace line's hover text.
+    var nowSpan: TimeInterval? = nil
+    var avgSpan: TimeInterval? = nil
+    /// How `nowSpan` was chosen; nil whenever `nowPercentPerHour` is.
+    var nowAnchor: QuotaNowAnchor? = nil
 
     var isAtRisk: Bool { status == .atRisk }
 }

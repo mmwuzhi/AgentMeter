@@ -58,31 +58,17 @@ final class QuotaRowTests: XCTestCase {
         XCTAssertEqual(absolute(utcDate(2026, 7, 10, 16, 46), now: now), "now")
     }
 
-    func testRunwayAlertOnlyShowsWithinThirtyMinutes() {
+    func testRunwayAlertShowsBeyondThirtyMinutesButOnlyTurnsRedInsideIt() {
         let now = Date(timeIntervalSince1970: 1_000)
-        let near = QuotaRunway(
-            provider: .claude,
-            windowID: "five_hour",
-            status: .atRisk,
-            percentPerHour: 10,
-            estimatedDepletionAt: now.addingTimeInterval(29 * 60),
-            safePercentPerHour: 5,
-            paceStyle: .paceVersusBudget,
-            message: "would run out in 29m"
-        )
-        let far = QuotaRunway(
-            provider: .claude,
-            windowID: "five_hour",
-            status: .atRisk,
-            percentPerHour: 10,
-            estimatedDepletionAt: now.addingTimeInterval(31 * 60),
-            safePercentPerHour: 5,
-            paceStyle: .paceVersusBudget,
-            message: "would run out in 31m"
-        )
+        let near = alertRunway(in: 29 * 60, from: now, message: "would run out in 29m")
+        let far = alertRunway(in: 31 * 60, from: now, message: "would run out in 31m")
 
-        XCTAssertTrue(QuotaRow.shouldShowRunwayAlert(near, now: now))
-        XCTAssertFalse(QuotaRow.shouldShowRunwayAlert(far, now: now))
+        // The line itself is not gated on the lead time any more — the user
+        // needs "how long at this pace" well before the last half hour.
+        XCTAssertEqual(QuotaRow.alertLine(near, now: now)?.text, "would run out in 29m")
+        XCTAssertEqual(QuotaRow.alertLine(near, now: now)?.urgent, true)
+        XCTAssertEqual(QuotaRow.alertLine(far, now: now)?.text, "would run out in 31m")
+        XCTAssertEqual(QuotaRow.alertLine(far, now: now)?.urgent, false)
     }
 
     func testRunwayAlertRequiresAtRiskStatusAndDepletionDate() {
@@ -108,29 +94,98 @@ final class QuotaRowTests: XCTestCase {
             message: "would run out soon"
         )
 
-        XCTAssertFalse(QuotaRow.shouldShowRunwayAlert(watch, now: now))
-        XCTAssertFalse(QuotaRow.shouldShowRunwayAlert(missingDate, now: now))
+        XCTAssertNil(QuotaRow.alertLine(watch, now: now))
+        XCTAssertNil(QuotaRow.alertLine(missingDate, now: now))
     }
 
     func testPaceComparesDrainRateAgainstBudgetRateForShortWindows() {
         let over = pace(runway(percentPerHour: 6.07, safePercentPerHour: 4.4))
-        XCTAssertEqual(over?.text, "pace 6.1%/h · budget 4.4%/h")
+        XCTAssertEqual(over?.text, "avg 6.1%/h · budget 4.4%/h")
         XCTAssertEqual(over?.overBudget, true)
 
         let under = pace(runway(percentPerHour: 2, safePercentPerHour: 4.4))
-        XCTAssertEqual(under?.text, "pace 2%/h · budget 4.4%/h")
+        XCTAssertEqual(under?.text, "avg 2%/h · budget 4.4%/h")
         XCTAssertEqual(under?.overBudget, false)
 
         let idle = pace(runway(percentPerHour: 0, safePercentPerHour: 5))
-        XCTAssertEqual(idle?.text, "pace 0%/h · budget 5%/h")
+        XCTAssertEqual(idle?.text, "avg 0%/h · budget 5%/h")
         XCTAssertEqual(idle?.overBudget, false)
+    }
+
+    func testPaceShowsCurrentAndAverageRatesTogether() {
+        let line = pace(runway(nowPercentPerHour: 12, percentPerHour: 3, safePercentPerHour: 4.4))
+
+        XCTAssertEqual(line?.text, "now 12%/h · avg 3%/h · budget 4.4%/h")
+    }
+
+    func testPaceColorFollowsTheCurrentRateNotTheAverage() {
+        // A burst that just started: the hour-long average is still under
+        // budget, but the user can only act on what they are spending now.
+        let starting = pace(runway(nowPercentPerHour: 12, percentPerHour: 3, safePercentPerHour: 4.4))
+        XCTAssertEqual(starting?.overBudget, true)
+
+        // The mirror case: they already stopped. The average still carries the
+        // burst, but the line should not keep nagging.
+        let stopped = pace(runway(nowPercentPerHour: 1, percentPerHour: 8, safePercentPerHour: 4.4))
+        XCTAssertEqual(stopped?.overBudget, false)
+    }
+
+    func testPaceRendersTinyButNonZeroRatesAsLessThanATenth() {
+        let line = pace(runway(nowPercentPerHour: 0, percentPerHour: 0.04, safePercentPerHour: 5))
+
+        XCTAssertEqual(line?.text, "now 0%/h · avg <0.1%/h · budget 5%/h")
+    }
+
+    func testPaceHelpNamesTheSpansEachRateCovers() {
+        let help = pace(
+            runway(
+                nowPercentPerHour: 12,
+                percentPerHour: 3,
+                safePercentPerHour: 4.4,
+                nowSpan: 5 * 60,
+                avgSpan: 60 * 60
+            )
+        )?.help ?? ""
+
+        XCTAssertTrue(help.contains("now: drain over the last "), help)
+        XCTAssertTrue(help.contains("avg: drain over the last "), help)
+        XCTAssertTrue(help.contains("budget:"), help)
+    }
+
+    func testPaceHelpPutsWordsToTheAnchorTheRunwayReports() {
+        func weekly(_ anchor: QuotaNowAnchor, now: Double, span: TimeInterval) -> String {
+            pace(runway(nowPercentPerHour: now, percentPerHour: 1, safePercentPerHour: nil,
+                        paceStyle: .paceOnly, nowSpan: span, nowAnchor: anchor))?.help ?? ""
+        }
+        let stepped = weekly(.step, now: 1.5, span: 40 * 60)
+        let flat = weekly(.lookback, now: 0, span: 3600)
+        let burst = weekly(.burst, now: 90, span: 120)
+        let fiveHour = pace(
+            runway(nowPercentPerHour: 12, percentPerHour: 3, safePercentPerHour: 4.4, nowSpan: 5 * 60, nowAnchor: .slice)
+        )?.help ?? ""
+
+        XCTAssertTrue(stepped.contains("now: drain over the last 40m. The span runs from the step before the latest whole-point step to now."), stepped)
+        XCTAssertTrue(flat.contains("now: drain over the last 1h. Fewer than two whole-point steps landed in the last hour"), flat)
+        // A burst on a long window reads like a short window's slice, and the
+        // help must not claim a step that never landed.
+        XCTAssertFalse(burst.contains("whole-point step"), burst)
+        XCTAssertFalse(fiveHour.contains("whole-point step"), fiveHour)
+    }
+
+    func testPaceOmitsTheNowSegmentWhenRecentHistoryIsTooSparse() {
+        let line = pace(runway(percentPerHour: 3, safePercentPerHour: 4.4, avgSpan: 60 * 60))
+
+        XCTAssertEqual(line?.text, "avg 3%/h · budget 4.4%/h")
+        XCTAssertFalse(line?.help.contains("now:") ?? true, line?.help ?? "")
     }
 
     func testPaceOnLongWindowsOmitsBudgetAndIgnoresRawComparison() {
         // Weekly-style scenario: any active use dwarfs the even-spread rate, so
         // the raw pace > budget comparison must not color the line.
-        let bursting = pace(runway(percentPerHour: 6.2, safePercentPerHour: 0.6, paceStyle: .paceOnly))
-        XCTAssertEqual(bursting?.text, "pace 6.2%/h")
+        let bursting = pace(
+            runway(nowPercentPerHour: 9, percentPerHour: 6.2, safePercentPerHour: 0.6, paceStyle: .paceOnly)
+        )
+        XCTAssertEqual(bursting?.text, "now 9%/h · avg 6.2%/h")
         XCTAssertEqual(bursting?.overBudget, false)
     }
 
@@ -138,13 +193,13 @@ final class QuotaRowTests: XCTestCase {
         let atRisk = pace(
             runway(percentPerHour: 6.2, safePercentPerHour: 0.6, status: .atRisk, paceStyle: .paceOnly)
         )
-        XCTAssertEqual(atRisk?.text, "pace 6.2%/h")
+        XCTAssertEqual(atRisk?.text, "avg 6.2%/h")
         XCTAssertEqual(atRisk?.overBudget, true)
     }
 
     func testPaceOnLongWindowsShowsWithoutBudgetRate() {
         let line = pace(runway(percentPerHour: 2, safePercentPerHour: nil, paceStyle: .paceOnly))
-        XCTAssertEqual(line?.text, "pace 2%/h")
+        XCTAssertEqual(line?.text, "avg 2%/h")
     }
 
     func testPaceHiddenWithoutRateBudgetOrResetDate() {
@@ -153,6 +208,8 @@ final class QuotaRowTests: XCTestCase {
         XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: nil)))
         XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: 0)))
         XCTAssertNil(pace(runway(percentPerHour: 2, safePercentPerHour: 4, paceStyle: .hidden)))
+        // A `now` rate alone is not enough: the avg is what the row is anchored on.
+        XCTAssertNil(pace(runway(nowPercentPerHour: 9, percentPerHour: nil, safePercentPerHour: 4)))
     }
 
     func testTrackerClassifiesPaceStyleByResetHorizon() {
@@ -178,11 +235,28 @@ final class QuotaRowTests: XCTestCase {
         QuotaRow.pace(runway)
     }
 
+    private func alertRunway(in seconds: TimeInterval, from now: Date, message: String) -> QuotaRunway {
+        QuotaRunway(
+            provider: .claude,
+            windowID: "five_hour",
+            status: .atRisk,
+            percentPerHour: 10,
+            estimatedDepletionAt: now.addingTimeInterval(seconds),
+            safePercentPerHour: 5,
+            paceStyle: .paceVersusBudget,
+            message: message
+        )
+    }
+
     private func runway(
+        nowPercentPerHour: Double? = nil,
         percentPerHour: Double?,
         safePercentPerHour: Double?,
         status: QuotaRunwayStatus = .watch,
-        paceStyle: QuotaPaceStyle = .paceVersusBudget
+        paceStyle: QuotaPaceStyle = .paceVersusBudget,
+        nowSpan: TimeInterval? = nil,
+        avgSpan: TimeInterval? = nil,
+        nowAnchor: QuotaNowAnchor? = nil
     ) -> QuotaRunway {
         QuotaRunway(
             provider: .claude,
@@ -192,7 +266,11 @@ final class QuotaRowTests: XCTestCase {
             estimatedDepletionAt: nil,
             safePercentPerHour: safePercentPerHour,
             paceStyle: paceStyle,
-            message: ""
+            message: "",
+            nowPercentPerHour: nowPercentPerHour,
+            nowSpan: nowSpan,
+            avgSpan: avgSpan,
+            nowAnchor: nowAnchor
         )
     }
 }
