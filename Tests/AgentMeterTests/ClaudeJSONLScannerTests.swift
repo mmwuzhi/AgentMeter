@@ -50,6 +50,68 @@ final class ClaudeJSONLScannerTests: XCTestCase {
         XCTAssertEqual(report.byModel.first?.tokens, 30, "per-model totals must apply the same cutoff")
     }
 
+    /// Resuming a session copies the earlier transcript into a new file, so the
+    /// same assistant message is present in both. Per-file dedup therefore inflated the counts.
+    func testDropsARecordAlreadyCountedInAnotherFile() async throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("claude-resume-\(UUID().uuidString)")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+        let ts = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3_600))
+        let shared = #"{"timestamp":"\#(ts)","requestId":"req-1","message":{"id":"msg-1","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":20}}}"#
+        let fresh = #"{"timestamp":"\#(ts)","requestId":"req-2","message":{"id":"msg-2","model":"claude-sonnet-4-20250514","usage":{"input_tokens":1,"output_tokens":2}}}"#
+        let original = dir.appendingPathComponent("a-original.jsonl")
+        let resumed = dir.appendingPathComponent("b-resumed.jsonl")
+        try shared.write(to: original, atomically: true, encoding: .utf8)
+        try [shared, fresh].joined(separator: "\n").write(to: resumed, atomically: true, encoding: .utf8)
+
+        let report = await ClaudeJSONLScanner.usageReport(files: [original, resumed])
+
+        XCTAssertEqual(report.totalTokens, 33, "the replayed message must be counted once, not twice")
+    }
+
+    /// Records without a `message.id` cannot be deduplicated, so they must keep
+    /// summing — dropping them would under-count instead.
+    func testKeepsEveryRecordThatHasNoMessageID() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory.appendingPathComponent("claude-nokey-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+        let ts = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3_600))
+        let line = #"{"timestamp":"\#(ts)","message":{"model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":0}}}"#
+        try [line, line, line].joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+
+        let report = await ClaudeJSONLScanner.usageReport(files: [url])
+
+        XCTAssertEqual(report.totalTokens, 30)
+    }
+
+    func testWindowedScanIsNotMarkedAsCompleteHistory() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory.appendingPathComponent("claude-flag-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+        let ts = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3_600))
+        try #"{"timestamp":"\#(ts)","requestId":"r","message":{"id":"m","model":"claude-sonnet-4-20250514","usage":{"input_tokens":1,"output_tokens":0}}}"#
+            .write(to: url, atomically: true, encoding: .utf8)
+
+        let windowed = await ClaudeJSONLScanner.usageReport(files: [url])
+        let complete = await ClaudeJSONLScanner.usageReport(files: [url], completeHistory: true)
+
+        XCTAssertFalse(windowed.isCompleteHistory)
+        XCTAssertTrue(complete.isCompleteHistory)
+    }
+
+    /// Scan provenance describes one read, not stored state; restoring it from a
+    /// cache would let a stale flag lower ledger days it never actually saw.
+    func testCompleteHistoryFlagIsNotPersisted() throws {
+        let report = UsageReport(provider: .claude, buckets: [], totalCostUSD: 0,
+                                 totalTokens: 0, byModel: [], isCompleteHistory: true)
+
+        let decoded = try JSONDecoder().decode(
+            UsageReport.self, from: try JSONEncoder().encode(report))
+
+        XCTAssertFalse(decoded.isCompleteHistory)
+    }
+
     func testRollingThirtyDayCutoffIncludesTodayAndPreviousTwentyNineDays() async throws {
         let fm = FileManager.default
         let url = fm.temporaryDirectory.appendingPathComponent("claude-jsonl-boundary-\(UUID().uuidString).jsonl")

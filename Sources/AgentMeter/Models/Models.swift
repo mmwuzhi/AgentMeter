@@ -215,6 +215,15 @@ struct UsageReport: Codable, Sendable, Equatable {
     let totalCostUSD: Double            // rolling last `totalsWindowDays` days
     let totalTokens: Int                // rolling last `totalsWindowDays` days
     var byModel: [ModelSpend] = []      // rolling last `totalsWindowDays` days, sorted by cost descending
+    /// True when `buckets` came from reading every log file rather than the
+    /// scanner's recent-file window. Only such a report may lower a stored
+    /// `LifetimeSpendTracker` day. Provenance of one scan, not state — kept out
+    /// of `CodingKeys` so it is never restored from a cache.
+    var isCompleteHistory = false
+
+    private enum CodingKeys: String, CodingKey {
+        case provider, buckets, totalCostUSD, totalTokens, byModel
+    }
 
     static func empty(_ provider: Provider) -> UsageReport {
         UsageReport(provider: provider, buckets: [], totalCostUSD: 0, totalTokens: 0)

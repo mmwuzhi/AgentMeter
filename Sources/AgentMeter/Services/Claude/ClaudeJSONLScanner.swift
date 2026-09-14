@@ -5,17 +5,28 @@ import Foundation
 /// computes cost from PricingService. Fully local — no network.
 enum ClaudeJSONLScanner {
     /// Keep the always-on menu bar refresh cheap. The UI presents local day,
-    /// 7-day, and 30-day windows, so background refreshes only need logs that
-    /// could affect those windows. A full historical index should be a separate,
-    /// persisted/on-demand feature rather than work done every minute.
+    /// 7-day, and 30-day windows, so most refreshes only need logs that could
+    /// affect those windows.
     private static let usageHistoryDays = 31
 
+    /// ...but a windowed refresh silently drops a day once its files stop being
+    /// touched, and the heatmap and the persisted ledger want every day that
+    /// ever had activity. So periodically read everything instead. At a few
+    /// seconds for a multi-GB corpus that is affordable a handful of times a
+    /// day — it was not when this scanner went through `String` per line.
+    private static let fullHistoryInterval: TimeInterval = 6 * 3600
+
     private struct FileUsageSummary: Sendable {
-        var byDayModel: [String: DayModelUsage] = [:]
-        /// message.id|requestId keys already counted. Carried in the cache so an
-        /// incremental tail parse keeps the same per-file dedup the whole-file
-        /// parse had, instead of recounting a duplicate that straddles the resume.
-        var seenDedupKeys: Set<String> = []
+        /// One entry per deduplicated record, keyed by `message.id|requestId`.
+        /// Kept per record rather than pre-aggregated so `usageReport(files:)`
+        /// can drop a record another file already contributed: resuming a
+        /// session copies the earlier transcript into a new file, so the same
+        /// assistant message appears in both. Aggregating first hid that and
+        /// counted those messages twice.
+        var byDedupKey: [String: DayModelUsage] = [:]
+        /// Records carrying no `message.id`, which cannot be deduplicated at
+        /// all; summed per (day, model) instead.
+        var unkeyed: [String: DayModelUsage] = [:]
     }
 
     private struct DayModelUsage: Sendable {
@@ -79,37 +90,47 @@ enum ClaudeJSONLScanner {
     }
 
     static func usageReport() async -> UsageReport {
+        let now = Date()
+        let all = jsonlFiles()
+        if await fullScanClock.claimFullScan(now: now, interval: fullHistoryInterval) {
+            return await usageReport(files: all, completeHistory: true)
+        }
         let cutoff = Calendar.current.date(
             byAdding: .day,
             value: -usageHistoryDays,
-            to: Calendar.current.startOfDay(for: Date())
+            to: Calendar.current.startOfDay(for: now)
         ) ?? Date.distantPast
-        return await usageReport(files: recentLogFiles(jsonlFiles(), modifiedSince: cutoff))
+        return await usageReport(files: recentLogFiles(all, modifiedSince: cutoff))
     }
 
-    static func usageReport(files: [URL]) async -> UsageReport {
+    static func usageReport(files: [URL], completeHistory: Bool = false) async -> UsageReport {
         // (day, model) -> counts, so cost uses the right model price.
         var byDayModel: [String: (day: Date, model: String, counts: TokenCounts)] = [:]
 
-        let fingerprints = files.compactMap { url -> (URL, LogFileFingerprint)? in
-            guard let fingerprint = LogFileFingerprint.current(for: url) else { return nil }
-            return (url, fingerprint)
-        }
+        // Sorted so which file "wins" a record shared with another file is the
+        // same on every launch. The duplicates carry identical usage, so the
+        // totals don't depend on the order — only reproducibility does.
+        let fingerprints = files.sorted { $0.path < $1.path }
+            .compactMap { url -> (URL, LogFileFingerprint)? in
+                guard let fingerprint = LogFileFingerprint.current(for: url) else { return nil }
+                return (url, fingerprint)
+            }
         await usageCache.prune(keeping: fingerprints.map(\.1))
+
+        // Records already contributed by an earlier file. Per-file dedup is not
+        // enough once a resumed session's transcript replays another file's
+        // messages: over the full corpus that double-counted ~10% of all tokens,
+        // and nearly doubled the oldest days.
+        var seenDedupKeys = Set<String>()
 
         for (url, fingerprint) in fingerprints {
             let summary = await cachedUsageSummary(in: url, fingerprint: fingerprint)
-            for (key, usage) in summary.byDayModel {
-                if var existing = byDayModel[key] {
-                    existing.counts.input += usage.counts.input
-                    existing.counts.output += usage.counts.output
-                    existing.counts.cacheRead += usage.counts.cacheRead
-                    existing.counts.cacheWrite5m += usage.counts.cacheWrite5m
-                    existing.counts.cacheWrite1h += usage.counts.cacheWrite1h
-                    byDayModel[key] = existing
-                } else {
-                    byDayModel[key] = (usage.day, usage.model, usage.counts)
-                }
+            for (dedupKey, usage) in summary.byDedupKey {
+                guard seenDedupKeys.insert(dedupKey).inserted else { continue }
+                accumulate(usage, into: &byDayModel)
+            }
+            for (_, usage) in summary.unkeyed {
+                accumulate(usage, into: &byDayModel)
             }
         }
 
@@ -160,8 +181,43 @@ enum ClaudeJSONLScanner {
             .map { ModelSpend(model: $0.key, tokens: $0.value.tokens, costUSD: $0.value.cost) }
             .sorted { $0.costUSD > $1.costUSD }
         return UsageReport(provider: .claude, buckets: buckets, totalCostUSD: totalCost,
-                           totalTokens: totalTokens, byModel: byModel)
+                           totalTokens: totalTokens, byModel: byModel,
+                           isCompleteHistory: completeHistory)
     }
+
+    private static func accumulate(
+        _ usage: DayModelUsage,
+        into byDayModel: inout [String: (day: Date, model: String, counts: TokenCounts)]
+    ) {
+        let key = "\(usage.day.timeIntervalSince1970)|\(usage.model)"
+        guard var existing = byDayModel[key] else {
+            byDayModel[key] = (usage.day, usage.model, usage.counts)
+            return
+        }
+        existing.counts.input += usage.counts.input
+        existing.counts.output += usage.counts.output
+        existing.counts.cacheRead += usage.counts.cacheRead
+        existing.counts.cacheWrite5m += usage.counts.cacheWrite5m
+        existing.counts.cacheWrite1h += usage.counts.cacheWrite1h
+        byDayModel[key] = existing
+    }
+
+    /// Tracks when the last unwindowed scan ran. An actor because overlapping
+    /// refreshes can enter `usageReport()` at the same time, and only one of
+    /// them should pay for the full read.
+    private actor FullScanClock {
+        private var lastFullScan: Date?
+
+        /// True at most once per `interval`, and always on the first call after
+        /// launch — a fresh process has no ledger-correcting scan behind it.
+        func claimFullScan(now: Date, interval: TimeInterval) -> Bool {
+            if let lastFullScan, now.timeIntervalSince(lastFullScan) < interval { return false }
+            lastFullScan = now
+            return true
+        }
+    }
+
+    private static let fullScanClock = FullScanClock()
 
     static func recentLogFiles(_ files: [URL], modifiedSince cutoff: Date) -> [URL] {
         files.filter { url in
@@ -220,10 +276,6 @@ enum ClaudeJSONLScanner {
 
         let mid = (message["id"] as? String) ?? ""
         let rid = (obj["requestId"] as? String) ?? ""
-        let dedupKey = mid + "|" + rid
-        if !mid.isEmpty {
-            guard summary.seenDedupKeys.insert(dedupKey).inserted else { return }
-        }
 
         var counts = TokenCounts()
         counts.input = (usage["input_tokens"] as? Int) ?? 0
@@ -238,16 +290,28 @@ enum ClaudeJSONLScanner {
 
         let ts = (obj["timestamp"] as? String).flatMap(CodexRolloutReader.parseISO) ?? Date()
         let day = cal.startOfDay(for: ts)
-        let key = "\(day.timeIntervalSince1970)|\(model)"
-        if var existing = summary.byDayModel[key] {
-            existing.counts.input += counts.input
-            existing.counts.output += counts.output
-            existing.counts.cacheRead += counts.cacheRead
-            existing.counts.cacheWrite5m += counts.cacheWrite5m
-            existing.counts.cacheWrite1h += counts.cacheWrite1h
-            summary.byDayModel[key] = existing
-        } else {
-            summary.byDayModel[key] = DayModelUsage(day: day, model: model, counts: counts)
+        let entry = DayModelUsage(day: day, model: model, counts: counts)
+
+        guard !mid.isEmpty else {
+            // No message id to dedup on; fold it into the per-(day, model) bucket.
+            let key = "\(day.timeIntervalSince1970)|\(model)"
+            if var existing = summary.unkeyed[key] {
+                existing.counts.input += counts.input
+                existing.counts.output += counts.output
+                existing.counts.cacheRead += counts.cacheRead
+                existing.counts.cacheWrite5m += counts.cacheWrite5m
+                existing.counts.cacheWrite1h += counts.cacheWrite1h
+                summary.unkeyed[key] = existing
+            } else {
+                summary.unkeyed[key] = entry
+            }
+            return
+        }
+        // First occurrence wins; a repeat inside this file is a replay of the
+        // same message, and `usageReport(files:)` drops repeats across files.
+        let dedupKey = mid + "|" + rid
+        if summary.byDedupKey[dedupKey] == nil {
+            summary.byDedupKey[dedupKey] = entry
         }
     }
 }

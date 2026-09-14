@@ -51,7 +51,16 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
 - Coalesce concurrent credential cache misses into one read. Sleep/wake and a
   stalled refresh can overlap, but must never queue multiple Keychain prompts.
 - Usage/spend comes from `ClaudeJSONLScanner` over
-  `~/.claude/projects/**/*.jsonl`, deduplicated by `message.id`.
+  `~/.claude/projects/**/*.jsonl`, deduplicated by `message.id|requestId`.
+  Dedup is global across files, not per file: resuming a session copies the
+  earlier transcript into a new file, so the same assistant message is present
+  in both. Per-file dedup double-counted ~10% of all tokens and nearly doubled
+  the oldest days.
+- Most refreshes read only files touched in the last `usageHistoryDays` (31).
+  Every `fullHistoryInterval` (6 h), and once per launch, the scan reads every
+  file instead and marks the report `isCompleteHistory`. Only such a report may
+  lower a stored `LifetimeSpendTracker` day; a windowed one can only grow days,
+  since a day shrinking there just means its files left the window.
 - Scanners must not touch log lines through `String`. `JSONLLineReader` hands
   each record over as a `LogLine` of raw bytes: `String(data:encoding:)`
   validated every byte and `String.contains` resolved to
