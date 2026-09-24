@@ -538,12 +538,8 @@ struct ProviderSection: View {
             HStack(spacing: 6) {
                 Circle().fill(tint).frame(width: 7, height: 7)
                 Text(state.provider.displayName).font(.subheadline.weight(.semibold))
-                if let plan = state.quota.planType {
-                    Text(plan.uppercased())
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                if let badge = state.quota.planBadge {
+                    planBadgeView(badge)
                 }
                 Spacer()
                 Text(sourceLabel).font(.caption2).foregroundStyle(.tertiary)
@@ -640,6 +636,23 @@ struct ProviderSection: View {
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
+        }
+    }
+
+    /// The plan capsule beside the provider name. Text and tooltip are both
+    /// decided by `QuotaSnapshot.planBadge`; this only draws them, and attaches
+    /// the tooltip only when there is one, so no badge carries an empty `.help`.
+    @ViewBuilder
+    private func planBadgeView(_ badge: PlanBadge) -> some View {
+        let capsule = Text(badge.text)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(Capsule().fill(Color.primary.opacity(0.06)))
+        if let help = badge.help {
+            capsule.help(help)
+        } else {
+            capsule
         }
     }
 

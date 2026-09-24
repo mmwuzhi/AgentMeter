@@ -279,6 +279,9 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
     let windows: [QuotaWindow]
     let source: SourceKind
     let planType: String?       // e.g. "free", "pro"
+    /// Claude-only: the login's rate-limit tier, e.g. `default_claude_max_5x`;
+    /// nil for other providers and for caches written before this key.
+    let rateLimitTier: String?
     let resetCreditsAvailable: Int? // Codex-only reset credits, when exposed
     let resetCreditsExpiresAt: Date? // Codex-only, nil when the protocol omits expiry
     /// Claude-only pay-as-you-go spend past plan limits, in USD.
@@ -291,6 +294,7 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
         windows: [QuotaWindow],
         source: SourceKind,
         planType: String?,
+        rateLimitTier: String? = nil,
         resetCreditsAvailable: Int? = nil,
         resetCreditsExpiresAt: Date? = nil,
         extraUsageSpentUSD: Double? = nil,
@@ -301,6 +305,7 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
         self.windows = windows
         self.source = source
         self.planType = planType
+        self.rateLimitTier = rateLimitTier
         self.resetCreditsAvailable = resetCreditsAvailable
         self.resetCreditsExpiresAt = resetCreditsExpiresAt
         self.extraUsageSpentUSD = extraUsageSpentUSD
@@ -321,6 +326,7 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
             windows: windows,
             source: source,
             planType: planType,
+            rateLimitTier: rateLimitTier,
             resetCreditsAvailable: resetCreditsAvailable,
             resetCreditsExpiresAt: expiresAt,
             extraUsageSpentUSD: extraUsageSpentUSD,
@@ -332,6 +338,74 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
     static func unavailable(_ provider: Provider, note: String) -> QuotaSnapshot {
         QuotaSnapshot(provider: provider, windows: [], source: .unavailable,
                       planType: nil, fetchedAt: Date(), note: note)
+    }
+}
+
+/// The plan string as it may be shown: what `ClaudeCredentials` reads from
+/// the login, what `ClaudeOAuthFetcher` accepts from a response, and what the
+/// badge uppercases. One rule for every source, so a value is bounded before
+/// it reaches `Text`, the plan note or `last-state.json`.
+enum PlanLabel {
+    /// Real values are "pro", "max", "team" and "enterprise"; a space or a
+    /// dash leaves room for a compound name. Anchored, ASCII, at most 32
+    /// characters — so a stack of combining marks, a newline, a NUL or a bidi
+    /// override is not a plan.
+    static let pattern = "^[a-z][a-z0-9_ -]{0,31}$"
+
+    /// Trimmed and lowercased, or nil when the result does not match
+    /// `pattern`.
+    static func normalized(_ raw: String) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return wholeMatch(value, pattern) ? value : nil
+    }
+
+    /// True when `pattern` matches all of `value`, not a prefix or a
+    /// substring: `$` alone still matches before a final line terminator, so
+    /// the range is checked as well as found.
+    static func wholeMatch(_ value: String, _ pattern: String) -> Bool {
+        guard let match = value.range(of: pattern, options: .regularExpression) else { return false }
+        return match == value.startIndex..<value.endIndex
+    }
+}
+
+/// What the popover's provider header shows next to the provider name.
+struct PlanBadge: Equatable, Sendable {
+    let text: String
+    /// Tooltip; nil when there is nothing beyond `text` to say.
+    let help: String?
+}
+
+extension QuotaSnapshot {
+    /// The rate-limit tier Claude Code pairs with `subscriptionType == "team"`
+    /// to recognise a Team premium seat (its check is literally
+    /// `team && default_claude_max_5x`; no field spells "premium").
+    static let teamPremiumRateLimitTier = "default_claude_max_5x"
+
+    /// nil when the plan is unknown. `TEAM PREMIUM` for a Team premium seat;
+    /// otherwise the plan uppercased, as before. The raw tier rides in the
+    /// tooltip whenever it is known, so Max seats can read 5x/20x without a
+    /// second rule. Decided here so the view never re-derives it.
+    var planBadge: PlanBadge? {
+        // Every live source normalises through `PlanLabel`; the trim and
+        // lowercase here cover a value decoded from a cache written before
+        // that rule. A blank plan is as unknown as a missing one: no empty
+        // capsule.
+        guard let plan = planType?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !plan.isEmpty else { return nil }
+        // Claude's rule, so it is guarded on the provider: Codex's raw
+        // `plan_type` could read "team", and a tier Codex never reports must
+        // not promote it.
+        if provider == .claude, plan.lowercased() == "team",
+           rateLimitTier == Self.teamPremiumRateLimitTier {
+            return PlanBadge(
+                text: "TEAM PREMIUM",
+                help: "Team premium seat · rate limit tier \(Self.teamPremiumRateLimitTier)"
+            )
+        }
+        return PlanBadge(
+            text: plan.uppercased(),
+            help: rateLimitTier.map { "Rate limit tier \($0)" }
+        )
     }
 }
 

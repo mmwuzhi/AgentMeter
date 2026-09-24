@@ -155,6 +155,12 @@ usage presentation, cached state, or Claude live-session integration.
 - `ProviderSection` shows the red triangle only when
   `quota.source == .unavailable`. A successful source with no windows uses the
   neutral info icon.
+- The header's plan badge text and tooltip come from `QuotaSnapshot.planBadge`,
+  never from the view: `TEAM PREMIUM` when the plan is `team` and
+  `rateLimitTier` is `default_claude_max_5x` (Claude Code's own test for a
+  Team premium seat), otherwise the plan uppercased with the raw tier in the
+  tooltip when it is known. `ProviderSection` attaches `.help` only when the
+  badge carries one, so there are no empty tooltips.
 - The popover's provider sections live in a `ScrollView` capped to the hosting
   screen's visible height (`MenuView.sectionsCap`, fed by
   `AppViewModel.popoverScreenVisibleHeight`, which the status item controller

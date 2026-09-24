@@ -11,8 +11,15 @@ enum ClaudeCredentials {
         /// Plan Claude Code recorded at login: "pro", "max", "team", or
         /// "enterprise", lowercased. `/api/oauth/usage` carries no plan key, so
         /// this is the authoritative value for the plan badge. Nil when the
-        /// credential omits it.
+        /// credential omits it or the value is not fit to display
+        /// (`PlanLabel`).
         var subscriptionType: String? = nil
+        /// Claude Code's rate-limit tier for this login, e.g.
+        /// `default_claude_max_5x` / `default_claude_max_20x`. Together with
+        /// `subscriptionType` it is how Claude Code itself tells a Team premium
+        /// seat apart: nothing in the credential spells "premium". Nil when the
+        /// credential omits it or the value fails `rateLimitTierPattern`.
+        var rateLimitTier: String? = nil
 
         var isExpired: Bool {
             guard let expiresAt else { return false }
@@ -99,7 +106,7 @@ enum ClaudeCredentials {
 
     // MARK: - Parse
 
-    /// Shape: { "claudeAiOauth": { "accessToken", "refreshToken", "expiresAt" (ms epoch), "subscriptionType" } }
+    /// Shape: { "claudeAiOauth": { "accessToken", "refreshToken", "expiresAt" (ms epoch), "subscriptionType", "rateLimitTier" } }
     static func parse(_ data: Data) -> Token? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let oauth = (obj["claudeAiOauth"] as? [String: Any]) ?? obj
@@ -113,15 +120,24 @@ enum ClaudeCredentials {
             expires = Date(timeIntervalSince1970: ms / 1000.0)
         }
         // The plan is rendered uppercased in the popover badge, so treat it as
-        // untrusted display text: normalize it and refuse anything oversized.
-        var subscription: String?
-        if let raw = oauth["subscriptionType"] as? String {
+        // untrusted display text: `PlanLabel` keeps only an ASCII name.
+        let subscription = (oauth["subscriptionType"] as? String).flatMap(PlanLabel.normalized)
+        // The tier is a bare identifier Claude Code validates with this same
+        // pattern before trusting it, and it can reach a tooltip, so anything
+        // that does not match is dropped rather than shown.
+        var rateLimitTier: String?
+        if let raw = oauth["rateLimitTier"] as? String {
             let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if !normalized.isEmpty, normalized.count <= 32 {
-                subscription = normalized
+            if PlanLabel.wholeMatch(normalized, rateLimitTierPattern) {
+                rateLimitTier = normalized
             }
         }
         return Token(accessToken: access, refreshToken: refresh, expiresAt: expires,
-                     subscriptionType: subscription)
+                     subscriptionType: subscription, rateLimitTier: rateLimitTier)
     }
+
+    /// What a `rateLimitTier` may look like — Claude Code's own check for the
+    /// field. Anchored, and `parse` also requires the match to span the whole
+    /// value, so a partial hit never gets through.
+    static let rateLimitTierPattern = "^[a-z][a-z0-9_]{0,63}$"
 }

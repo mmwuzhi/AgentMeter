@@ -52,7 +52,8 @@ struct ClaudeService: Sendable {
 
     private func fetchQuota(previous: QuotaSnapshot?) async -> QuotaSnapshot {
         // 1. OAuth (preferred): file token first, then Keychain.
-        if let token = await ClaudeCredentials.load() {
+        let token = await ClaudeCredentials.load()
+        if let token {
             do {
                 return try await ClaudeOAuthFetcher.fetch(token: token)
             } catch {
@@ -67,9 +68,12 @@ struct ClaudeService: Sendable {
                 }
             }
         }
-        // 2. CLI scrape fallback.
+        // 2. CLI scrape fallback. The panel names no plan, so the badge keeps
+        //    what the credential said — a rejected token still knew its plan.
         if ClaudeCLIScraper.isAvailable {
-            if let snap = try? await ClaudeCLIScraper.fetch() { return snap }
+            if let snap = try? await ClaudeCLIScraper.fetch(
+                planType: token?.subscriptionType, rateLimitTier: token?.rateLimitTier
+            ) { return snap }
         }
         // 3. Spend-only degrade.
         return .unavailable(.claude, note: "Live quota unavailable — showing usage only")

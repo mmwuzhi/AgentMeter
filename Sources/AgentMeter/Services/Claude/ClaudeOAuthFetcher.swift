@@ -23,7 +23,8 @@ enum ClaudeOAuthFetcher {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw URLError(.cannotParseResponse)
         }
-        return try parseSnapshot(from: obj, credentialPlan: token.subscriptionType)
+        return try parseSnapshot(from: obj, credentialPlan: token.subscriptionType,
+                                 credentialRateLimitTier: token.rateLimitTier)
     }
 
     static func responseError(forStatusCode statusCode: Int) -> URLError.Code? {
@@ -43,9 +44,14 @@ enum ClaudeOAuthFetcher {
     /// failure, so an empty `windows` result is still returned rather than thrown.
     /// `credentialPlan` is the plan Claude Code recorded in the login credential
     /// (`ClaudeCredentials.Token.subscriptionType`); see `planType` for how it ranks.
+    /// `credentialRateLimitTier` is the same credential's `rateLimitTier`
+    /// (`ClaudeCredentials.Token.rateLimitTier`). The response never states it,
+    /// so it is carried through as-is for `QuotaSnapshot.planBadge` to read; it
+    /// plays no part in choosing `planType`.
     static func parseSnapshot(
         from obj: [String: Any],
         credentialPlan: String? = nil,
+        credentialRateLimitTier: String? = nil,
         captureDebugResponse: Bool = true
     ) throws -> QuotaSnapshot {
         guard !obj.isEmpty else { throw URLError(.cannotParseResponse) }
@@ -98,7 +104,8 @@ enum ClaudeOAuthFetcher {
         }
 
         return QuotaSnapshot(provider: .claude, windows: windows, source: .oauth,
-                             planType: plan, extraUsageSpentUSD: extraUsage,
+                             planType: plan, rateLimitTier: credentialRateLimitTier,
+                             extraUsageSpentUSD: extraUsage,
                              fetchedAt: Date(), note: note)
     }
 
@@ -202,7 +209,9 @@ enum ClaudeOAuthFetcher {
     ///
     /// 1. An explicit plan field in the response, top-level or nested under
     ///    `subscription`/`account`/`organization`/`user`. When the server ever
-    ///    states the plan, that is its current word and wins.
+    ///    states the plan, that is its current word and wins — provided it is
+    ///    fit to display (`PlanLabel.normalized`); an unfit value is treated
+    ///    as unstated, the same rule the credential gets.
     /// 2. `credentialPlan`: what Claude Code recorded at login as
     ///    `claudeAiOauth.subscriptionType`. `/api/oauth/usage` carries no plan
     ///    key today, so in practice this decides the badge.
@@ -217,31 +226,32 @@ enum ClaudeOAuthFetcher {
         credentialPlan: String? = nil
     ) -> String? {
         let directKeys = ["plan_type", "planType", "plan", "subscription_type", "subscriptionType"]
-        if let explicit = firstString(in: obj, keys: directKeys) {
+        if let explicit = firstPlan(in: obj, keys: directKeys) {
             return explicit
         }
 
         for key in ["subscription", "account", "organization", "user"] {
             guard let nested = obj[key] as? [String: Any],
-                  let explicit = firstString(in: nested, keys: directKeys + ["tier"]) else {
+                  let explicit = firstPlan(in: nested, keys: directKeys + ["tier"]) else {
                 continue
             }
             return explicit
         }
 
-        if let credential = credentialPlan?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !credential.isEmpty {
+        if let credential = credentialPlan.flatMap(PlanLabel.normalized) {
             return credential
         }
 
         return inferredPlanType(from: windows)
     }
 
-    private static func firstString(in obj: [String: Any], keys: [String]) -> String? {
+    /// The first of `keys` holding a plan fit to display (`PlanLabel`). A key
+    /// that is present but unfit — blank, oversized, control characters — is
+    /// skipped rather than shown.
+    private static func firstPlan(in obj: [String: Any], keys: [String]) -> String? {
         for key in keys {
-            if let value = obj[key] as? String {
-                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { return trimmed }
+            if let value = obj[key] as? String, let plan = PlanLabel.normalized(value) {
+                return plan
             }
         }
         return nil

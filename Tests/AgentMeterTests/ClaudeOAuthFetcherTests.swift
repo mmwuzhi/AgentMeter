@@ -47,6 +47,24 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         XCTAssertNil(plan)
     }
 
+    /// A response field is bounded like the credential: a value unfit to
+    /// display is treated as unstated rather than shown.
+    func testPlanTypeTreatsAnUndisplayableResponseFieldAsUnstated() {
+        let plan = ClaudeOAuthFetcher.planType(
+            in: ["plan_type": "Pro\nMax"],
+            windows: [QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 0, resetsAt: nil)],
+            credentialPlan: "team"
+        )
+
+        XCTAssertEqual(plan, "team")
+    }
+
+    func testPlanTypeNormalizesAnExplicitResponseField() {
+        let plan = ClaudeOAuthFetcher.planType(in: ["plan_type": " Max "], windows: [])
+
+        XCTAssertEqual(plan, "max")
+    }
+
     func testPlanTypeInfersMaxFromModelSpecificWeeklyWindows() {
         let plan = ClaudeOAuthFetcher.planType(
             in: [:],
@@ -267,6 +285,35 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         )
 
         XCTAssertEqual(snapshot.planType, "pro")
+    }
+
+    /// The credential's tier rides through untouched; what the badge makes of
+    /// it is `PlanBadgeTests`' business.
+    func testParseSnapshotCarriesCredentialRateLimitTier() throws {
+        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
+            from: [
+                "five_hour": ["utilization": 45.0, "resets_at": "2025-01-03T10:00:00.123456+00:00"],
+                "seven_day": ["utilization": 87.0, "resets_at": "2025-01-07T12:00:00.123457+00:00"]
+            ],
+            credentialPlan: "team",
+            credentialRateLimitTier: "default_claude_max_5x",
+            captureDebugResponse: false
+        )
+
+        XCTAssertEqual(snapshot.rateLimitTier, "default_claude_max_5x")
+    }
+
+    func testParseSnapshotWithoutCredentialRateLimitTierLeavesItNil() throws {
+        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
+            from: [
+                "five_hour": ["utilization": 45.0, "resets_at": "2025-01-03T10:00:00.123456+00:00"],
+                "seven_day": ["utilization": 87.0, "resets_at": "2025-01-07T12:00:00.123457+00:00"]
+            ],
+            credentialPlan: "team",
+            captureDebugResponse: false
+        )
+
+        XCTAssertNil(snapshot.rateLimitTier)
     }
 
     /// Exercises a synthetic response: the model-scoped weekly limit (Fable) only

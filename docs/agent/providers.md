@@ -61,6 +61,26 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   `.credentials.json`) > `inferredPlanType` window-shape guess. A Team premium
   seat's windows (`five_hour`, `seven_day`, `seven_day_fable`) make the guess
   say pro, which is why the credential outranks it.
+  The credential is read with the token and cached with it
+  (`ClaudeCredentials.Cache`), so after a plan change the badge can lag the
+  live windows for the token's remaining life — until expiry, a 401 or a
+  relaunch re-reads the Keychain — where the window-shape guess it replaced
+  tracked the response within a tick. Accepted: a plan change is rare and a
+  relaunch corrects it, while re-reading on disagreement would re-prompt every
+  tick for a Team seat, whose guess ("pro") never agrees with its credential.
+  Every plan source — credential, response field — passes
+  `PlanLabel.normalized` (ASCII, at most 32 characters) or counts as unstated,
+  and the CLI scrape carries the credential's plan and tier the OAuth path
+  held when it failed, so the badge survives the tick a rejected token spends
+  on the scrape.
+- `ClaudeCredentials` also reads `claudeAiOauth.rateLimitTier` (e.g.
+  `default_claude_max_5x`), validated against `^[a-z][a-z0-9_]{0,63}$` —
+  Claude Code's own check for the field — and carries it on
+  `QuotaSnapshot.rateLimitTier`. `QuotaSnapshot.planBadge` marks a Team
+  premium seat as `team` + `default_claude_max_5x`, the exact test Claude
+  Code's binary uses; no field spells "premium", and `seatTier` in
+  `~/.claude.json` is opaque and unused. Any other plan keeps the plan
+  uppercased, with the raw tier in the badge tooltip when it is known.
 - Claude Code may persist `expiresAt: 0` as an unknown-expiry sentinel. Keep
   that token cached until a real HTTP 401; rate limits and transient server
   errors must not invalidate it because the next Keychain read may prompt.

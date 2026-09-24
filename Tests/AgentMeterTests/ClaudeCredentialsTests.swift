@@ -81,6 +81,81 @@ final class ClaudeCredentialsTests: XCTestCase {
 
         XCTAssertEqual(token.subscriptionType, "team")
     }
+
+    /// One grapheme cluster can stack thousands of combining marks: a
+    /// cluster count let 100 KB through as "four characters".
+    func testParseBoundsSubscriptionTypeInBytesNotGraphemes() throws {
+        let bomb = "t" + String(repeating: "\u{0301}", count: 5_000) + "eam"
+        let data = Data(#"{"claudeAiOauth":{"accessToken":"token","subscriptionType":"\#(bomb)"}}"#.utf8)
+
+        let token = try XCTUnwrap(ClaudeCredentials.parse(data))
+
+        XCTAssertEqual(token.accessToken, "token", "a bad plan never costs the token")
+        XCTAssertNil(token.subscriptionType)
+    }
+
+    /// An embedded newline, a NUL and a bidi override each survived
+    /// end-trimming and would have reached the badge and the cache.
+    func testParseDropsSubscriptionTypeWithControlOrFormatCharacters() throws {
+        for hostile in ["pro\\nmax", "te\\u0000am", "\\u202Exam"] {
+            let json = "{\"claudeAiOauth\":{\"accessToken\":\"token\",\"subscriptionType\":\"\(hostile)\"}}"
+
+            let token = try XCTUnwrap(ClaudeCredentials.parse(Data(json.utf8)), hostile)
+
+            XCTAssertNil(token.subscriptionType, hostile)
+        }
+    }
+
+    /// The badge shows an ASCII name or nothing: a plan outside
+    /// `PlanLabel.pattern` is treated as unstated.
+    func testParseDropsSubscriptionTypeOutsideTheAllowList() throws {
+        let cases: [(String, String?)] = [
+            ("prö", nil), ("pro!", nil), ("team-premium", "team-premium"), ("max 20x", "max 20x")
+        ]
+        for (raw, expected) in cases {
+            let json = "{\"claudeAiOauth\":{\"accessToken\":\"token\",\"subscriptionType\":\"\(raw)\"}}"
+
+            let token = try XCTUnwrap(ClaudeCredentials.parse(Data(json.utf8)), raw)
+
+            XCTAssertEqual(token.subscriptionType, expected, raw)
+        }
+    }
+
+    func testParseReadsRateLimitTier() throws {
+        let data = Data(#"{"claudeAiOauth":{"accessToken":"token","subscriptionType":"team","rateLimitTier":"default_claude_max_5x"}}"#.utf8)
+
+        let token = try XCTUnwrap(ClaudeCredentials.parse(data))
+
+        XCTAssertEqual(token.rateLimitTier, "default_claude_max_5x")
+    }
+
+    /// The tier is checked against Claude Code's own `^[a-z][a-z0-9_]{0,63}$`
+    /// before it can reach a tooltip: spaces, punctuation or an oversized value
+    /// leave it nil, and never reject the token itself.
+    func testParseRejectsMalformedRateLimitTier() throws {
+        let punctuated = Data(#"{"claudeAiOauth":{"accessToken":"token","rateLimitTier":"Default Tier!"}}"#.utf8)
+        let seventyChars = String(repeating: "a", count: 70)
+        let oversized = Data(#"{"claudeAiOauth":{"accessToken":"token","rateLimitTier":"\#(seventyChars)"}}"#.utf8)
+
+        XCTAssertNil(try XCTUnwrap(ClaudeCredentials.parse(punctuated)).rateLimitTier)
+        XCTAssertNil(try XCTUnwrap(ClaudeCredentials.parse(oversized)).rateLimitTier)
+    }
+
+    func testParseLowercasesRateLimitTier() throws {
+        let data = Data(#"{"claudeAiOauth":{"accessToken":"token","rateLimitTier":" Default_Claude_Max_5x\n"}}"#.utf8)
+
+        let token = try XCTUnwrap(ClaudeCredentials.parse(data))
+
+        XCTAssertEqual(token.rateLimitTier, "default_claude_max_5x")
+    }
+
+    func testParseWithoutRateLimitTierLeavesItNil() throws {
+        let data = Data(#"{"claudeAiOauth":{"accessToken":"token","subscriptionType":"team"}}"#.utf8)
+
+        let token = try XCTUnwrap(ClaudeCredentials.parse(data))
+
+        XCTAssertNil(token.rateLimitTier)
+    }
 }
 
 private final class BlockingCredentialLoader: @unchecked Sendable {

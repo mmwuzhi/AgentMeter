@@ -39,6 +39,19 @@ final class StateCacheTests: XCTestCase {
         XCTAssertEqual(window.remainingPercent, 90)
     }
 
+    /// `last-state.json` written before the Claude badge knew about the
+    /// rate-limit tier must keep decoding; the tier is simply unknown for that
+    /// row, and the badge falls back to the plan alone.
+    func testQuotaSnapshotDecodesWithoutARateLimitTierKey() throws {
+        let data = Data(#"{"provider":"claude","windows":[{"id":"five_hour","label":"5-hour","usedPercent":10}],"source":"oauth","planType":"team","fetchedAt":0}"#.utf8)
+
+        let snapshot = try JSONDecoder().decode(QuotaSnapshot.self, from: data)
+
+        XCTAssertNil(snapshot.rateLimitTier)
+        XCTAssertEqual(snapshot.planType, "team")
+        XCTAssertEqual(snapshot.planBadge, PlanBadge(text: "TEAM", help: nil))
+    }
+
     func testSnapshotPreservesCodexResetCreditState() throws {
         let now = Date(timeIntervalSince1970: 1_782_000_000)
         let state = CodexResetCreditState(

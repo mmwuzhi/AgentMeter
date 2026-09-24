@@ -41,15 +41,31 @@ enum ClaudeCLIScraper {
 
     static var isAvailable: Bool { resolveBinary() != nil }
 
-    static func fetch(timeout: TimeInterval = 30) async throws -> QuotaSnapshot {
+    static func fetch(
+        timeout: TimeInterval = 30,
+        planType: String? = nil,
+        rateLimitTier: String? = nil
+    ) async throws -> QuotaSnapshot {
         guard let bin = resolveBinary() else { throw URLError(.fileDoesNotExist) }
         let raw = try await run(bin: bin, args: ["/usage"], timeout: timeout)
         let text = stripANSI(raw)
         let windows = parse(text)
         guard !windows.isEmpty else { throw URLError(.cannotParseResponse) }
-        return QuotaSnapshot(provider: .claude, windows: windows, source: .cli,
-                             planType: nil, fetchedAt: Date(),
-                             note: "Scraped from `claude /usage`")
+        return snapshot(windows: windows, planType: planType, rateLimitTier: rateLimitTier)
+    }
+
+    /// The scraped panel names no plan, so the plan and tier are whatever the
+    /// login credential said when the OAuth path gave up; without them every
+    /// tick spent on the scrape dropped the badge.
+    static func snapshot(
+        windows: [QuotaWindow],
+        planType: String?,
+        rateLimitTier: String?,
+        fetchedAt: Date = Date()
+    ) -> QuotaSnapshot {
+        QuotaSnapshot(provider: .claude, windows: windows, source: .cli,
+                      planType: planType, rateLimitTier: rateLimitTier,
+                      fetchedAt: fetchedAt, note: "Scraped from `claude /usage`")
     }
 
     private static func run(bin: URL, args: [String], timeout: TimeInterval) async throws -> String {
