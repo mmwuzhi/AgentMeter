@@ -82,6 +82,49 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         XCTAssertNil(plan)
     }
 
+    /// A Team premium seat: `five_hour`, `seven_day`, and the model-scoped
+    /// `seven_day_fable` from the `limits` array, with no opus/sonnet key. The
+    /// window-shape guess reads that as pro; the credential must win.
+    func testPlanTypePrefersCredentialOverWindowShapeGuess() {
+        let plan = ClaudeOAuthFetcher.planType(
+            in: [:],
+            windows: [
+                QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 0, resetsAt: nil),
+                QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 0, resetsAt: nil),
+                QuotaWindow(id: "seven_day_fable", label: "Weekly (Fable)", usedPercent: 0, resetsAt: nil)
+            ],
+            credentialPlan: "team"
+        )
+
+        XCTAssertEqual(plan, "team")
+    }
+
+    func testPlanTypeExplicitResponseFieldBeatsCredential() {
+        let plan = ClaudeOAuthFetcher.planType(
+            in: ["plan_type": "max"],
+            windows: [
+                QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 0, resetsAt: nil),
+                QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 0, resetsAt: nil)
+            ],
+            credentialPlan: "team"
+        )
+
+        XCTAssertEqual(plan, "max")
+    }
+
+    func testPlanTypeIgnoresBlankCredentialPlan() {
+        let plan = ClaudeOAuthFetcher.planType(
+            in: [:],
+            windows: [
+                QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 0, resetsAt: nil),
+                QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 0, resetsAt: nil)
+            ],
+            credentialPlan: "  "
+        )
+
+        XCTAssertEqual(plan, "pro")
+    }
+
     func testParseSnapshotWithNoWindowsAndKnownPlanDoesNotThrow() throws {
         let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
             from: ["plan_type": "enterprise"],
@@ -195,6 +238,35 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
         XCTAssertEqual(snapshot.windows.count, 2)
         XCTAssertEqual(snapshot.planType, "pro")
         XCTAssertNil(snapshot.note)
+    }
+
+    func testParseSnapshotCarriesCredentialPlan() throws {
+        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
+            from: [
+                "five_hour": ["utilization": 45.0, "resets_at": "2025-01-03T10:00:00.123456+00:00"],
+                "seven_day": ["utilization": 87.0, "resets_at": "2025-01-07T12:00:00.123457+00:00"]
+            ],
+            credentialPlan: "team",
+            captureDebugResponse: false
+        )
+
+        XCTAssertEqual(snapshot.planType, "team")
+        XCTAssertEqual(snapshot.source, .oauth)
+        XCTAssertEqual(snapshot.windows.count, 2)
+    }
+
+    /// Pins the fallback: with no plan in the response and none from the
+    /// credential, the window-shape guess still decides.
+    func testParseSnapshotWithoutCredentialPlanStillGuesses() throws {
+        let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
+            from: [
+                "five_hour": ["utilization": 45.0, "resets_at": "2025-01-03T10:00:00.123456+00:00"],
+                "seven_day": ["utilization": 87.0, "resets_at": "2025-01-07T12:00:00.123457+00:00"]
+            ],
+            captureDebugResponse: false
+        )
+
+        XCTAssertEqual(snapshot.planType, "pro")
     }
 
     /// Exercises a synthetic response: the model-scoped weekly limit (Fable) only

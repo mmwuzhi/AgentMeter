@@ -23,7 +23,7 @@ enum ClaudeOAuthFetcher {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw URLError(.cannotParseResponse)
         }
-        return try parseSnapshot(from: obj)
+        return try parseSnapshot(from: obj, credentialPlan: token.subscriptionType)
     }
 
     static func responseError(forStatusCode statusCode: Int) -> URLError.Code? {
@@ -41,8 +41,11 @@ enum ClaudeOAuthFetcher {
     /// Plans without session-based rate limits (e.g. Enterprise, which is spend-limited
     /// instead) legitimately have no `five_hour`/`seven_day*` keys — that is not a parse
     /// failure, so an empty `windows` result is still returned rather than thrown.
+    /// `credentialPlan` is the plan Claude Code recorded in the login credential
+    /// (`ClaudeCredentials.Token.subscriptionType`); see `planType` for how it ranks.
     static func parseSnapshot(
         from obj: [String: Any],
+        credentialPlan: String? = nil,
         captureDebugResponse: Bool = true
     ) throws -> QuotaSnapshot {
         guard !obj.isEmpty else { throw URLError(.cannotParseResponse) }
@@ -83,7 +86,7 @@ enum ClaudeOAuthFetcher {
         // either way.
         addLimits(from: obj, into: &windows)
 
-        let plan = planType(in: obj, windows: windows)
+        let plan = planType(in: obj, windows: windows, credentialPlan: credentialPlan)
         let extraUsage = extraUsageSpentUSD(in: obj)
 
         var note: String?
@@ -195,7 +198,24 @@ enum ClaudeOAuthFetcher {
     /// of persisting an oversized body verbatim (e.g. from a misbehaving proxy).
     private static let maxDebugCaptureBytes = 256 * 1024
 
-    static func planType(in obj: [String: Any], windows: [QuotaWindow]) -> String? {
+    /// Resolves the plan badge in this order:
+    ///
+    /// 1. An explicit plan field in the response, top-level or nested under
+    ///    `subscription`/`account`/`organization`/`user`. When the server ever
+    ///    states the plan, that is its current word and wins.
+    /// 2. `credentialPlan`: what Claude Code recorded at login as
+    ///    `claudeAiOauth.subscriptionType`. `/api/oauth/usage` carries no plan
+    ///    key today, so in practice this decides the badge.
+    /// 3. `inferredPlanType`, a guess from the window shape, as a last resort.
+    ///    It only tells max (a `seven_day_opus`/`seven_day_sonnet` window) from
+    ///    pro (`seven_day` alone). A Team premium seat has `five_hour`,
+    ///    `seven_day`, `seven_day_fable` and no opus/sonnet key, so the guess
+    ///    reads it as pro, which is why the credential outranks it.
+    static func planType(
+        in obj: [String: Any],
+        windows: [QuotaWindow],
+        credentialPlan: String? = nil
+    ) -> String? {
         let directKeys = ["plan_type", "planType", "plan", "subscription_type", "subscriptionType"]
         if let explicit = firstString(in: obj, keys: directKeys) {
             return explicit
@@ -207,6 +227,11 @@ enum ClaudeOAuthFetcher {
                 continue
             }
             return explicit
+        }
+
+        if let credential = credentialPlan?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !credential.isEmpty {
+            return credential
         }
 
         return inferredPlanType(from: windows)

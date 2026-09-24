@@ -54,6 +54,13 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   when that fails, prints the `cachedUsageUtilization` it keeps in
   `~/.claude.json` — a scrape under a 429 is never fresher than the live
   reading it would replace, and it costs a full Claude Code session start.
+- `/api/oauth/usage` carries no plan field. `ClaudeOAuthFetcher.planType`
+  precedence is explicit response key >
+  `ClaudeCredentials.Token.subscriptionType` (Claude Code's
+  `claudeAiOauth.subscriptionType`, from the same Keychain item /
+  `.credentials.json`) > `inferredPlanType` window-shape guess. A Team premium
+  seat's windows (`five_hour`, `seven_day`, `seven_day_fable`) make the guess
+  say pro, which is why the credential outranks it.
 - Claude Code may persist `expiresAt: 0` as an unknown-expiry sentinel. Keep
   that token cached until a real HTTP 401; rate limits and transient server
   errors must not invalidate it because the next Keychain read may prompt.

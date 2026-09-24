@@ -48,6 +48,39 @@ final class ClaudeCredentialsTests: XCTestCase {
             accuracy: 0.001
         )
     }
+
+    func testParseReadsSubscriptionType() throws {
+        let data = Data(#"{"claudeAiOauth":{"accessToken":"token","refreshToken":"refresh","expiresAt":2000000000000,"subscriptionType":"team"}}"#.utf8)
+
+        let token = try XCTUnwrap(ClaudeCredentials.parse(data))
+
+        XCTAssertEqual(token.accessToken, "token")
+        XCTAssertEqual(token.subscriptionType, "team")
+    }
+
+    func testParseWithoutSubscriptionTypeLeavesItNil() throws {
+        let data = Data(#"{"claudeAiOauth":{"accessToken":"token","expiresAt":0}}"#.utf8)
+
+        let token = try XCTUnwrap(ClaudeCredentials.parse(data))
+
+        XCTAssertNil(token.subscriptionType)
+    }
+
+    func testParseDropsBlankSubscriptionType() throws {
+        let data = Data(#"{"claudeAiOauth":{"accessToken":"token","subscriptionType":"   "}}"#.utf8)
+
+        let token = try XCTUnwrap(ClaudeCredentials.parse(data))
+
+        XCTAssertNil(token.subscriptionType)
+    }
+
+    func testParseLowercasesSubscriptionType() throws {
+        let data = Data(#"{"claudeAiOauth":{"accessToken":"token","subscriptionType":"Team"}}"#.utf8)
+
+        let token = try XCTUnwrap(ClaudeCredentials.parse(data))
+
+        XCTAssertEqual(token.subscriptionType, "team")
+    }
 }
 
 private final class BlockingCredentialLoader: @unchecked Sendable {

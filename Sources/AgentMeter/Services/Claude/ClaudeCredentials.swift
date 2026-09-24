@@ -8,6 +8,11 @@ enum ClaudeCredentials {
         let accessToken: String
         let refreshToken: String?
         let expiresAt: Date?
+        /// Plan Claude Code recorded at login: "pro", "max", "team", or
+        /// "enterprise", lowercased. `/api/oauth/usage` carries no plan key, so
+        /// this is the authoritative value for the plan badge. Nil when the
+        /// credential omits it.
+        var subscriptionType: String? = nil
 
         var isExpired: Bool {
             guard let expiresAt else { return false }
@@ -94,7 +99,7 @@ enum ClaudeCredentials {
 
     // MARK: - Parse
 
-    /// Shape: { "claudeAiOauth": { "accessToken", "refreshToken", "expiresAt" (ms epoch) } }
+    /// Shape: { "claudeAiOauth": { "accessToken", "refreshToken", "expiresAt" (ms epoch), "subscriptionType" } }
     static func parse(_ data: Data) -> Token? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let oauth = (obj["claudeAiOauth"] as? [String: Any]) ?? obj
@@ -107,6 +112,16 @@ enum ClaudeCredentials {
         if let ms = oauth["expiresAt"] as? Double, ms.isFinite, ms > 0 {
             expires = Date(timeIntervalSince1970: ms / 1000.0)
         }
-        return Token(accessToken: access, refreshToken: refresh, expiresAt: expires)
+        // The plan is rendered uppercased in the popover badge, so treat it as
+        // untrusted display text: normalize it and refuse anything oversized.
+        var subscription: String?
+        if let raw = oauth["subscriptionType"] as? String {
+            let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !normalized.isEmpty, normalized.count <= 32 {
+                subscription = normalized
+            }
+        }
+        return Token(accessToken: access, refreshToken: refresh, expiresAt: expires,
+                     subscriptionType: subscription)
     }
 }
