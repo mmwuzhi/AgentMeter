@@ -108,13 +108,25 @@ usage presentation, cached state, or Claude live-session integration.
   the measured `avg` decides the colour instead; the figure is still rendered,
   it just does not set the colour.
 - The pace line renders per `QuotaRunway.paceStyle`, which only
-  `QuotaTrendTracker` decides (windows resetting within `longWindowHorizon`
-  compare drain vs the even-spread budget; longer ones drop the budget segment
-  and turn orange only on an `.atRisk` runway — a weekly window's even-spread
-  rate sits below any active use, so a raw pace > budget check would stay
-  orange whenever the user is working at all). Views must not re-derive
-  window-horizon semantics from reset dates. Inside the tracker, what still
-  depends on the style — `averageSpan(for:)` — is an exhaustive `switch` on
+  `QuotaTrendTracker` decides. It keys first on the window's stated refill
+  `cycle` when that is credible (the reset no further than one cycle away): a
+  cycle longer than `longWindowHorizon` reads pace only, a shorter one compares
+  drain vs the even-spread budget. Time-to-reset decides only for windows that
+  state no cycle — Copilot allowances, one-time credits, caches written before
+  `cycle` existed — or whose stated cycle is not credible (a reset further
+  away than one cycle), on the same 24 h split. Long windows drop the budget
+  segment and turn orange only on an `.atRisk` runway because a weekly
+  window's even-spread rate sits below any active use, so a raw pace > budget
+  check would stay orange whenever the user is working at all — and that holds
+  however little of the week is left, which is where time-to-reset alone
+  failed: a weekly in its final day gained a budget segment, went orange on
+  `now`, and had its `avg` shrink from the 24 h span to a 20-minute one. The
+  span cuts both ways: the 24 h reading can carry a run-out the 20-minute one
+  had just lost, so keying on the cycle is not purely warning-suppressing (the
+  `cycle` rule in providers.md says exactly what it adds). Views must not
+  re-derive window-horizon semantics from reset dates. Inside the tracker,
+  what still depends on the style — `averageSpan(for:)` — is an exhaustive
+  `switch` on
   `QuotaPaceStyle`, never an `== .paceOnly` / `!= .paceVersusBudget` test:
   two negations of a three-case enum once disagreed on `.hidden`, giving a
   nil-reset window a long-horizon `avg` and a short-horizon `now` from one call.

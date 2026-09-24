@@ -263,8 +263,22 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   than raise a false one. `CodexRolloutReader.cycle(forMinutes:)` therefore
   reports anything outside `minimumCycle`…`maximumCycle` (5 min … 31 days, NaN
   and infinity included) as no cadence stated, which every consumer already
-  handles, and the run-out horizon below carries its own independent floor. Any
-  new rule keyed on `cycle` needs the same treatment.
+  handles, and the run-out horizon below carries its own independent floor.
+  `QuotaTrendTracker.paceStyle` is keyed on it as well, with one exception to
+  that shape that is stated rather than hidden: it reads the cycle only when
+  credible (the reset no further than one cycle away), and since a credible
+  short cycle also puts the reset inside `longWindowHorizon`, it can only turn
+  `.paceVersusBudget` into `.paceOnly` — dropping the budget comparison and
+  its orange — never the reverse. But the style also picks the `avg` span, and
+  the 24 h span can carry a run-out the 20-minute span had just lost: a weekly
+  in its last day that drained hard and then idled reads "pace steady" on the
+  short span and "would run out in 5h" on the long one (the intended,
+  consistent weekly reading), and a wrong *long* cycle on a 5-hour window
+  would raise that alarm rather than hide one. Both are pinned in
+  `QuotaTrendTrackerTests` (`testWeeklyInItsLastDayKeepsTheLongSpanRunOut`,
+  `testAnInflatedCycleRaisesRatherThanHidesARunOut`). Any new rule keyed on
+  `cycle` needs the same treatment: suppress-only, or say exactly what it can
+  add.
 - A run-out date further ahead than `actionableHorizonCycles` (2) x the shortest
   peer cycle drops to `.watch` with no date: past a couple of the peer's refills
   the projection only says "if you hold this pace through several full peer
@@ -276,6 +290,7 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   far below any real cadence, so one bad `cycle` cannot hide a run-out an hour
   out.
 - Extrapolation is trusted only up to `maxExtrapolationMultiplier` (6x) the
-  observed span, and a window resetting beyond `longWindowHorizon` also needs
+  observed span, and a long-cycle window — one the pace line reads pace-only,
+  a weekly in its last day included — also needs
   `longWindowMinimumAtRiskEvidence` (30 min) of history. Failing either
   downgrades `.atRisk` to `.watch`.

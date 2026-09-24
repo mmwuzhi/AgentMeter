@@ -229,25 +229,6 @@ final class QuotaRowTests: XCTestCase {
         XCTAssertNil(pace(runway(nowPercentPerHour: 9, percentPerHour: nil, safePercentPerHour: 4)))
     }
 
-    func testTrackerClassifiesPaceStyleByResetHorizon() {
-        let now = Date(timeIntervalSince1970: 1_000)
-        XCTAssertEqual(QuotaTrendTracker.paceStyle(resetsAt: nil, now: now), .hidden)
-        XCTAssertEqual(
-            QuotaTrendTracker.paceStyle(resetsAt: now.addingTimeInterval(3 * 3600), now: now),
-            .paceVersusBudget
-        )
-        XCTAssertEqual(
-            QuotaTrendTracker.paceStyle(
-                resetsAt: now.addingTimeInterval(QuotaTrendTracker.longWindowHorizon), now: now),
-            .paceVersusBudget,
-            "exactly at the horizon still counts as a short window"
-        )
-        XCTAssertEqual(
-            QuotaTrendTracker.paceStyle(resetsAt: now.addingTimeInterval(6 * 24 * 3600), now: now),
-            .paceOnly
-        )
-    }
-
     private func pace(_ runway: QuotaRunway?) -> QuotaRow.PaceLine? {
         QuotaRow.pace(runway)
     }

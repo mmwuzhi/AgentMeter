@@ -70,10 +70,10 @@ struct QuotaRow: View {
 
     /// Always-visible pace readout: `now · avg · budget`, rendered per the
     /// runway's `paceStyle` (decided by `QuotaTrendTracker`). `now` is the
-    /// short-window drain and is omitted when the tracker has nothing recent
-    /// enough; `avg` is the long-window drain behind the run-out estimate.
-    /// Short windows also show the even-spread "budget" rate and turn orange
-    /// when `now` (or `avg`, if `now` is missing) exceeds it; long-horizon
+    /// short-span drain and is omitted when the tracker has nothing recent
+    /// enough; `avg` is the long-span drain behind the run-out estimate.
+    /// Short-cycle windows also show the even-spread "budget" rate and turn
+    /// orange when `now` (or `avg`, if `now` is missing) exceeds it; long-cycle
     /// windows omit the budget and turn orange only on an at-risk runway,
     /// because their even-spread rate sits below any active use. Nil when the
     /// avg rate or budget is unknown, so the row stays clean on first launch or

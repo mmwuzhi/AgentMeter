@@ -40,8 +40,12 @@ struct QuotaWindow: Identifiable, Codable, Sendable, Equatable {
     /// and anything else that names no cadence. `resetsAt` says when the
     /// window next refills, not how often, and the trend tracker needs the
     /// latter to know how much a shorter peer can hand a longer window per
-    /// refill. Optional so cached `QuotaWindow` JSON written before this key
-    /// still decodes.
+    /// refill. The pace style is keyed on it too
+    /// (`QuotaTrendTracker.paceStyle`): a credible long cycle reads pace-only
+    /// however little of the current cycle is left; a window stating no cycle,
+    /// or one whose stated cycle is not credible (a reset further away than
+    /// one cycle), falls back to its time to reset. Optional so cached
+    /// `QuotaWindow` JSON written before this key still decodes.
     var cycle: TimeInterval? = nil
 
     var remainingPercent: Double { max(0, min(100, 100 - usedPercent)) }
@@ -85,12 +89,14 @@ enum QuotaRunwayStatus: String, Codable, Sendable, Equatable {
 enum QuotaPaceStyle: String, Codable, Sendable {
     /// No reset date: no even-spread budget exists, show no pace line.
     case hidden
-    /// Resets soon: remaining% spread over the hours left is a real spending
-    /// guide — show "now · avg · budget", orange when `now` (or `avg`, if the
-    /// recent history is too sparse for a `now`) exceeds budget.
+    /// Short refill cycle (or, with no stated cycle, a reset inside a day):
+    /// remaining% spread over the hours left is a real spending guide — show
+    /// "now · avg · budget", orange when `now` (or `avg`, if the recent history
+    /// is too sparse for a `now`) exceeds budget.
     case paceVersusBudget
-    /// Long-horizon window: the even-spread rate sits below any active use, so
-    /// drop the budget segment and turn orange only on an at-risk runway.
+    /// Long refill cycle (weekly), or no stated cycle and a reset more than a
+    /// day out: the even-spread rate sits below any active use, so drop the
+    /// budget segment and turn orange only on an at-risk runway.
     case paceOnly
 }
 

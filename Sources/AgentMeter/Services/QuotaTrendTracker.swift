@@ -26,11 +26,12 @@ enum QuotaTrendTracker {
 
     // MARK: Rates
 
-    /// `avg` span for windows that reset within `longWindowHorizon`. Bounds how
-    /// far the run-out estimate can reach, via `maxExtrapolationMultiplier`:
-    /// 20 minutes of evidence projects at most 2 hours.
+    /// `avg` span for short-cycle windows (5-hour). Bounds how far the run-out
+    /// estimate can reach, via `maxExtrapolationMultiplier`: 20 minutes of
+    /// evidence projects at most 2 hours.
     static let shortAverageSpan: TimeInterval = 20 * 60
-    /// `avg` span for longer-horizon windows (weekly, one-time credits).
+    /// `avg` span for long-cycle windows (weekly), plus anything stating no
+    /// cycle that resets beyond `longWindowHorizon` (a one-time credit).
     static let longAverageSpan: TimeInterval = 24 * 60 * 60
     /// `now` walks back until this many percentage points have drained. Provider
     /// APIs report whole-percent utilization in practice, so a single tick says
@@ -85,9 +86,11 @@ enum QuotaTrendTracker {
     /// (a few minutes of history) should not be linearly projected for hours —
     /// that produces "would run out" alarms no sustained usage pattern would hit.
     static let maxExtrapolationMultiplier: Double = 6
-    /// Long reset windows need a little absolute history before we claim an
-    /// immediate depletion time. A weekly quota can move in coarse server-side
-    /// steps, so a few minutes of evidence should stay informational.
+    /// Long-cycle windows (read pace-only) need a little absolute history
+    /// before we claim an immediate depletion time. A weekly quota can move in
+    /// coarse server-side steps, so a few minutes of evidence should stay
+    /// informational. Keyed on the pace style, not the reset date, so "long
+    /// window" means one thing throughout the tracker.
     static let longWindowMinimumAtRiskEvidence: TimeInterval = 30 * 60
     static let longWindowHorizon: TimeInterval = 24 * 60 * 60
     /// How many of the shortest peer cycles a run-out date may sit ahead before
@@ -218,7 +221,7 @@ enum QuotaTrendTracker {
                     && sameResetEpoch(observation.resetsAt, window.resetsAt)
             }
             .sorted { $0.observedAt < $1.observedAt }
-        let style = paceStyle(resetsAt: window.resetsAt, now: now)
+        let style = paceStyle(resetsAt: window.resetsAt, cycle: window.cycle, now: now)
         let budget = safePercentPerHour(window: window, now: now)
 
         func make(
@@ -277,8 +280,7 @@ enum QuotaTrendTracker {
            shouldDowngradeAtRisk(
                hoursToDepletion: hoursToDepletion,
                evidenceHours: average.hours,
-               reset: window.resetsAt,
-               observedAt: latest.observedAt
+               style: style
            ) {
             // Not enough averaged history to trust a projection this far out — report
             // the pace without the "would run out" alarm or a specific depletion date.
@@ -597,9 +599,48 @@ enum QuotaTrendTracker {
     /// Decides how the pace line reads a window. Lives here — beside
     /// `longWindowHorizon` and the at-risk downgrade rules — so views never
     /// re-derive window-horizon semantics from reset dates.
-    static func paceStyle(resetsAt: Date?, now: Date) -> QuotaPaceStyle {
+    ///
+    /// The window's stated refill `cycle` decides, not its time to reset. The
+    /// split exists because a week-long window's even-spread rate sits below
+    /// any active use however little of the week is left: a weekly at 47% with
+    /// 14 h to go budgets 3.4%/h against a working pace of 6-7%/h. Keyed on
+    /// time-to-reset, a weekly therefore *gained* a budget segment in its final
+    /// day, turned orange whenever `now` cleared that rate, and — through
+    /// `averageSpan(for:)` — had its `avg` silently shrink from a 24-hour span
+    /// to a 20-minute one. Windows that state no cycle (Copilot allowances,
+    /// one-time credits, caches written before `cycle` existed), or whose
+    /// stated cycle is not credible, keep the time-to-reset rule. `.hidden`
+    /// still comes first: a CLI-scraped Claude window states a cycle but no
+    /// reset, and with no reset there is no budget to compare against.
+    ///
+    /// The cycle is read only when it is credible — the test
+    /// `statesACredibleCycle` applies to peers: a reset can never sit more than
+    /// one cycle away, so a cycle claiming otherwise is not describing a
+    /// cadence, and the time rule takes over. A reset already in the past is
+    /// stale data rather than a cadence too — a snapshot kept through an OAuth
+    /// failure, or the seconds before the next tick — and falls through the
+    /// same way, where the time rule's nil budget keeps the pace line off the
+    /// row as it always did. A credible short cycle also
+    /// implies a reset inside `longWindowHorizon`, so at the level of the
+    /// style this rule can only ever turn `.paceVersusBudget` into
+    /// `.paceOnly`, never the reverse. That is not the same as only ever
+    /// removing a warning: the style also selects the `avg` span
+    /// (`averageSpan(for:)`), and the 24-hour reading can carry a run-out the
+    /// 20-minute one had just lost sight of — a weekly that drained hard for
+    /// three hours and then sat idle for twenty minutes reads "pace steady" on
+    /// the short span and "would run out in 5h" on the long one. For a weekly
+    /// that is the intended, consistent reading; it is also why a wrong *long*
+    /// cycle on a short window would raise an alarm rather than hide one.
+    /// Both are pinned in `QuotaTrendTrackerTests`, so `cycle` here is trusted
+    /// exactly as far as the provider's own statement of it (see the `cycle`
+    /// rule in docs/agent/providers.md).
+    static func paceStyle(resetsAt: Date?, cycle: TimeInterval?, now: Date) -> QuotaPaceStyle {
         guard let resetsAt else { return .hidden }
-        return resetsAt.timeIntervalSince(now) > longWindowHorizon ? .paceOnly : .paceVersusBudget
+        let untilReset = resetsAt.timeIntervalSince(now)
+        if let cycle, cycle > 0, (0...cycle).contains(untilReset) {
+            return cycle > longWindowHorizon ? .paceOnly : .paceVersusBudget
+        }
+        return untilReset > longWindowHorizon ? .paceOnly : .paceVersusBudget
     }
 
     // MARK: Per-style policy
@@ -851,17 +892,21 @@ enum QuotaTrendTracker {
     private static func shouldDowngradeAtRisk(
         hoursToDepletion: Double,
         evidenceHours: Double,
-        reset: Date?,
-        observedAt: Date
+        style: QuotaPaceStyle
     ) -> Bool {
         if hoursToDepletion > evidenceHours * maxExtrapolationMultiplier {
             return true
         }
-        guard let reset else { return false }
-        let remainingWindow = reset.timeIntervalSince(observedAt)
-        let evidenceSeconds = evidenceHours * 3600
-        return remainingWindow > longWindowHorizon
-            && evidenceSeconds < longWindowMinimumAtRiskEvidence
+        // "Long window" means one thing in this file: the classification the
+        // pace line already uses, not a second reading of the reset date. So a
+        // weekly in its last day, read pace-only on its cycle, is still held
+        // to the long-window evidence minimum.
+        let isLongWindow: Bool
+        switch style {
+        case .paceOnly, .hidden: isLongWindow = true
+        case .paceVersusBudget: isLongWindow = false
+        }
+        return isLongWindow && evidenceHours * 3600 < longWindowMinimumAtRiskEvidence
     }
 
     private static func statusFor(

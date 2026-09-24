@@ -242,6 +242,54 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertEqual(paced.percentPerHour!, 12, accuracy: 0.01)
     }
 
+    /// The observed case: a weekly at 47% left, 14 h from its reset, the user
+    /// working at 6-7%/h. Keyed on time-to-reset the row read `now 6.7%/h ·
+    /// avg 6%/h · budget 3.4%/h` in orange with no run-out line — a budget
+    /// segment and a colour the pace-only split exists to remove — and its
+    /// `avg` had quietly dropped from the 24 h span to the 20-minute one. This
+    /// fixture sits the reset 6 h out, deeper inside the same last day; the
+    /// stated 7-day cycle keeps the window a long one to the end.
+    func testWeeklyInsideItsLastDayKeepsThePaceOnlyReading() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(6 * 3600)
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 53, resetsAt: reset, cycle: 7 * 24 * 3600)
+        // 6 points over the hour: 47 left at 6%/h lasts 7h 50m, past the reset.
+        let observations = staircase("seven_day", from: 53, to: 47, steps: 6, overMinutes: 60, now: now, resetsAt: reset)
+
+        let runway = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [window]
+        )
+
+        XCTAssertEqual(runway.paceStyle, .paceOnly)
+        // The long-span policy applied: under a 24 h span the hour of history
+        // is all there is, where the short policy would have stopped at 20 min.
+        XCTAssertGreaterThan(runway.avgSpan ?? -1, QuotaTrendTracker.shortAverageSpan)
+        XCTAssertEqual(runway.percentPerHour ?? -1, 6, accuracy: 0.01)
+        XCTAssertNotEqual(runway.status, .atRisk)
+        let pace = QuotaRow.pace(runway)
+        XCTAssertNotNil(pace)
+        XCTAssertFalse(pace?.text.contains("budget") ?? true, pace?.text ?? "")
+        XCTAssertEqual(pace?.overBudget, false)
+    }
+
+    /// Mirror: the 5-hour window the split was built for keeps its budget
+    /// segment and the 20-minute `avg`.
+    func testFiveHourWindowKeepsThePaceVersusBudgetReading() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(3 * 3600)
+        let window = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 53, resetsAt: reset, cycle: 5 * 3600)
+        let observations = staircase("five_hour", from: 53, to: 47, steps: 6, overMinutes: 60, now: now, resetsAt: reset)
+
+        let runway = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [window]
+        )
+
+        XCTAssertEqual(runway.paceStyle, .paceVersusBudget)
+        XCTAssertLessThanOrEqual(runway.avgSpan ?? .infinity, QuotaTrendTracker.shortAverageSpan)
+        let pace = QuotaRow.pace(runway)
+        XCTAssertTrue(pace?.text.contains("budget") ?? false, pace?.text ?? "")
+    }
+
     /// The reported case: a weekly reading "would run out in 17h 59m" next to a
     /// 5-hour window. That date assumes the pace holds through three full peer
     /// refills, which is not something the user can act on now, so the row
@@ -1537,6 +1585,157 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertEqual(
             (runway.estimatedDepletionAt ?? now).timeIntervalSince(now) / 3600, 73, accuracy: 0.5
         )
+    }
+
+    func testTrackerClassifiesPaceStyleByCycleThenResetHorizon() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let hour: TimeInterval = 3600
+        let day: TimeInterval = 24 * hour
+        func style(resetIn: TimeInterval?, cycle: TimeInterval?) -> QuotaPaceStyle {
+            QuotaTrendTracker.paceStyle(
+                resetsAt: resetIn.map { now.addingTimeInterval($0) }, cycle: cycle, now: now
+            )
+        }
+
+        // No stated cycle: time-to-reset decides, as it always did.
+        XCTAssertEqual(style(resetIn: nil, cycle: nil), .hidden)
+        XCTAssertEqual(style(resetIn: 3 * hour, cycle: nil), .paceVersusBudget)
+        XCTAssertEqual(
+            style(resetIn: QuotaTrendTracker.longWindowHorizon, cycle: nil),
+            .paceVersusBudget,
+            "exactly at the horizon still counts as a short window"
+        )
+        XCTAssertEqual(style(resetIn: 6 * day, cycle: nil), .paceOnly)
+
+        // A credible cycle decides ahead of the time to reset.
+        XCTAssertEqual(
+            style(resetIn: 6 * hour, cycle: 7 * day),
+            .paceOnly,
+            "a weekly inside its last day must not grow a budget segment — the case this rule exists for"
+        )
+        XCTAssertEqual(
+            style(resetIn: 7 * day, cycle: 7 * day),
+            .paceOnly,
+            "a reset exactly one cycle away is still credible"
+        )
+        XCTAssertEqual(style(resetIn: 3 * hour, cycle: 5 * hour), .paceVersusBudget)
+        XCTAssertEqual(
+            style(resetIn: 3 * hour, cycle: 7 * day),
+            .paceOnly,
+            "credible, so the cycle wins over a reset inside the horizon"
+        )
+        XCTAssertEqual(style(resetIn: nil, cycle: 7 * day), .hidden, "no reset means no budget, whatever the cycle")
+
+        // A reset further out than one cycle is not describing a cadence, so
+        // the time rule takes over.
+        XCTAssertEqual(style(resetIn: 30 * hour, cycle: 5 * hour), .paceOnly)
+        XCTAssertEqual(style(resetIn: 8 * day, cycle: 7 * day), .paceOnly)
+
+        // A reset already in the past is stale data, not a cadence: the time
+        // rule takes over and its nil budget keeps the line off the row.
+        XCTAssertEqual(style(resetIn: -1 * hour, cycle: 7 * day), .paceVersusBudget)
+    }
+
+    /// Keying the style on the cycle is not purely warning-suppressing: the
+    /// style also picks the `avg` span, and the 24 h span can carry a run-out
+    /// the 20-minute span had just lost. A weekly in its last day that drained
+    /// 75 → 45 over three hours and then idled for twenty minutes reads "pace
+    /// steady" with no cycle (the old time-to-reset rule, still the fallback)
+    /// and "would run out" with its 7-day cycle — the intended, consistent
+    /// weekly reading, pinned here so the docs can say exactly that.
+    func testWeeklyInItsLastDayKeepsTheLongSpanRunOut() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(6 * 3600)
+        var history = staircase(
+            "seven_day", from: 75, to: 45, steps: 30, overMinutes: 180,
+            now: now.addingTimeInterval(-20 * 60), resetsAt: reset
+        )
+        for minutesAgo in [15.0, 10, 5, 0] {
+            history.append(observation("seven_day", remaining: 45, minutesAgo: minutesAgo, from: now, resetsAt: reset))
+        }
+        let timeRuled = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 55, resetsAt: reset, cycle: nil)
+        let cycleRuled = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 55, resetsAt: reset, cycle: 7 * 24 * 3600)
+
+        let short = QuotaTrendTracker.runway(
+            provider: .claude, window: timeRuled, observations: history, now: now, peerWindows: [timeRuled]
+        )
+        let long = QuotaTrendTracker.runway(
+            provider: .claude, window: cycleRuled, observations: history, now: now, peerWindows: [cycleRuled]
+        )
+
+        XCTAssertEqual(short.paceStyle, .paceVersusBudget)
+        XCTAssertNotEqual(short.status, .atRisk, "the 20-minute span saw only the idle tail")
+        XCTAssertNil(QuotaRow.alertLine(short, now: now))
+        XCTAssertEqual(long.paceStyle, .paceOnly)
+        XCTAssertEqual(long.status, .atRisk, "the 24 h span still carries the three-hour drain")
+        XCTAssertNotNil(QuotaRow.alertLine(long, now: now))
+    }
+
+    /// The other side of the same coin: a wrong *long* cycle on a short window
+    /// raises an alarm rather than hiding one. A 5-hour window draining 50 → 30
+    /// over two hours with 3.5 h to reset reads `.watch` on its true cycle
+    /// (twenty minutes of evidence cannot project three hours) and `.atRisk`
+    /// with a date once the cycle claims a week. Pinned so the `cycle` rule in
+    /// providers.md can say what this rule adds instead of claiming it only
+    /// suppresses.
+    func testAnInflatedCycleRaisesRatherThanHidesARunOut() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(3.5 * 3600)
+        let history = staircase("five_hour", from: 50, to: 30, steps: 20, overMinutes: 120, now: now, resetsAt: reset)
+        let trueCycle = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 70, resetsAt: reset, cycle: 5 * 3600)
+        let inflated = QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 70, resetsAt: reset, cycle: 7 * 24 * 3600)
+
+        let honest = QuotaTrendTracker.runway(
+            provider: .claude, window: trueCycle, observations: history, now: now, peerWindows: [trueCycle]
+        )
+        let lying = QuotaTrendTracker.runway(
+            provider: .claude, window: inflated, observations: history, now: now, peerWindows: [inflated]
+        )
+
+        XCTAssertEqual(honest.status, .watch)
+        XCTAssertNil(honest.estimatedDepletionAt)
+        XCTAssertEqual(lying.status, .atRisk)
+        XCTAssertNotNil(lying.estimatedDepletionAt)
+    }
+
+    /// A weekly whose reset has already passed — a snapshot kept through an
+    /// OAuth failure, or the seconds between the reset and the next tick — is
+    /// stale data, not a cadence. Without a lower bound on the credibility
+    /// test, `untilReset <= cycle` held for a negative `untilReset`, and the
+    /// row grew an "avg" line beside "resets now" where the time rule's nil
+    /// budget had always kept it clean.
+    func testWeeklyPastItsResetShowsNoPaceLine() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(-3600)
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 53, resetsAt: reset, cycle: 7 * 24 * 3600)
+        let observations = staircase("seven_day", from: 53, to: 47, steps: 6, overMinutes: 60, now: now, resetsAt: reset)
+
+        let runway = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [window]
+        )
+
+        XCTAssertEqual(runway.paceStyle, .paceVersusBudget)
+        XCTAssertNil(QuotaRow.pace(runway))
+    }
+
+    /// The evidence gate follows the pace style, so a weekly in its last day
+    /// is still held to the long-window minimum: twenty minutes of a fast
+    /// drain project a run-out inside the 6x extrapolation limit, but stay
+    /// informational until half an hour of history backs them. Keyed on the
+    /// reset date, this fixture read `.atRisk` with a date.
+    func testLongCycleWindowInItsLastDayStillNeedsEvidenceForARunOut() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let reset = now.addingTimeInterval(6 * 3600)
+        let window = QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 80, resetsAt: reset, cycle: 7 * 24 * 3600)
+        let observations = staircase("seven_day", from: 30, to: 20, steps: 4, overMinutes: 20, now: now, resetsAt: reset)
+
+        let runway = QuotaTrendTracker.runway(
+            provider: .claude, window: window, observations: observations, now: now, peerWindows: [window]
+        )
+
+        XCTAssertEqual(runway.paceStyle, .paceOnly)
+        XCTAssertEqual(runway.status, .watch)
+        XCTAssertNil(runway.estimatedDepletionAt)
     }
 
     // MARK: Helpers
