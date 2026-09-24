@@ -207,7 +207,12 @@ struct ActiveAgentsSection: View {
                     .foregroundStyle(.tertiary)
             }
 
-            VStack(spacing: 8) {
+            // Stated, not defaulted: a flat group's `ActiveAgentNodeRows` emits its
+            // session row, disclosure button and children as siblings straight into
+            // this stack, and the `.center` default floated the narrow "1 subagent"
+            // button to the middle while the grouped path's leading stack kept its
+            // twin at the left.
+            VStack(alignment: .leading, spacing: 8) {
                 ForEach(groups) { group in
                     if group.isFlat {
                         // Still the node view: a lone session's subagents live

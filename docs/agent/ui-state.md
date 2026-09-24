@@ -345,3 +345,8 @@ usage presentation, cached state, or Claude live-session integration.
   and how many are still running ("3 subagents · 2 working"); the rows behind
   it stay collapsed unless a child process needs the user, as before. The
   tooltip brackets the subagent share to clarify that it is already included in the session total.
+  `ActiveAgentNodeRows` is a multi-view builder, so its rows take the
+  alignment of whatever stack receives them. The flat path's container in
+  `ActiveAgentsSection` states `.leading` explicitly: left to the `.center`
+  default, the narrow disclosure button floated to the middle of the row while
+  its twin under a group header sat at the left.
