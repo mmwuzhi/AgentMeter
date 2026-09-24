@@ -232,7 +232,28 @@ final class ActiveAgentGroupingTests: XCTestCase {
         let group = ActiveAgentGrouping.group([parent, agent(pid: 2, cwd: "/Users/me/alpha", status: .idle)])[0]
 
         XCTAssertEqual(group.collapsedSummary, "2 · 1 working · 2.5M · $1.20")
-        XCTAssertEqual(parent.session?.subagentUsageText, "incl. 2 subagents · 1M · $0.50")
+        XCTAssertEqual(parent.session?.subagentUsageText, "incl. 2 subagents (1M · $0.50 of the total)")
+    }
+
+    func testChildRowLabelCountsTheRowsAndHowManyStillRun() {
+        let groups = ActiveAgentGrouping.group([
+            agent(pid: 100, cwd: "/Users/me/alpha", subagents: [
+                subagent("a", age: 10),
+                subagent("b", age: 30),
+                subagent("settled", age: 400),
+            ]),
+            agent(pid: 200, cwd: "/Users/me/alpha", subagents: [subagent("only", age: 400)]),
+            agent(pid: 300, cwd: "/Users/me/beta", subagents: [subagent("lone", age: 5)]),
+        ])
+        let alpha = groups.first { $0.projectName == "alpha" }!
+        let beta = groups.first { $0.projectName == "beta" }!
+
+        XCTAssertEqual(alpha.nodes.first { $0.agent.pid == 100 }?.childRowLabel, "3 subagents · 2 working")
+        XCTAssertEqual(alpha.nodes.first { $0.agent.pid == 200 }?.childRowLabel, "1 subagent",
+                       "finished within the linger window: listed, not running")
+        XCTAssertTrue(beta.isFlat, "one session, no child processes")
+        XCTAssertTrue(beta.nodes[0].hasChildRows, "a flat group still has subagent rows to disclose")
+        XCTAssertEqual(beta.nodes[0].childRowLabel, "1 subagent · 1 working")
     }
 
     func testInvalidParentCycleDoesNotHideAgents() {

@@ -217,8 +217,8 @@ usage presentation, cached state, or Claude live-session integration.
   `agentCount`, which stays a process count; the "N subagents" label counts
   both kinds. Title, agent type, model and effort are provider text and go
   through `SessionLabel` / `ModelLabel`. The parent's tooltip ends with
-  "incl. N subagents · tokens · $cost" over every subagent the session ran,
-  listed or not.
+  "incl. N subagents (tokens · $cost of the total)" over every subagent the
+  session ran, listed or not.
 
 ## Spend and usage
 
@@ -306,3 +306,11 @@ usage presentation, cached state, or Claude live-session integration.
   under a 64 KB cap), else the first user prompt's opening words. Finished
   subagents stay in the total forever, like finished turns; only the listing
   ages out. The spend scanner's recursive glob already counted these files.
+- Listed subagents render through `ActiveAgentNodeRows` on both paths: under
+  an expanded group header and for a flat group (one session, no child
+  processes). The flat path once drew a bare `ActiveAgentRow`, so a project
+  with a single session never showed its subagents at all and the tooltip's
+  "incl. N subagents" was the only trace. The disclosure label counts the rows
+  and how many are still running ("3 subagents · 2 working"); the rows behind
+  it stay collapsed unless a child process needs the user, as before. The
+  tooltip brackets the subagent share to clarify that it is already included in the session total.

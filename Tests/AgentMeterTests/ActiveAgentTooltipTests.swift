@@ -145,7 +145,7 @@ final class ActiveAgentTooltipTests: XCTestCase {
                 subagent("b", tokens: 500_000, cost: 0.50),
                 subagent("c", tokens: nil, cost: nil),
             ])),
-            "Active, click to jump to this session\nPID #504 · Session b26e035f · claude-fable-5-1 · xhigh · incl. 3 subagents · 1.5M · $2.50"
+            "Active, click to jump to this session\nPID #504 · Session b26e035f · claude-fable-5-1 · xhigh · incl. 3 subagents (1.5M · $2.50 of the total)"
         )
         XCTAssertEqual(
             ActiveAgentTooltip.text(for: agent([subagent("a", tokens: nil, cost: nil)])),

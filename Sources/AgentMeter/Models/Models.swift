@@ -427,8 +427,11 @@ struct ActiveAgentSession: Codable, Sendable, Equatable {
         String(id.prefix(8))
     }
 
-    /// "incl. 2 subagents · 1.2M · $3.45" for the tooltip: how much of the
-    /// session's total the subagents account for. Nil without any.
+    /// "incl. 2 subagents (1.2M · $3.45 of the total)" for the tooltip: how
+    /// much of the session's total the subagents account for. The share is
+    /// bracketed and says so, because "incl. 7 subagents · 5.5M" beside the session total
+    /// can otherwise look like additional usage.
+    /// Nil without any.
     var subagentUsageText: String? {
         guard !subagents.isEmpty else { return nil }
         let count = subagents.count
@@ -436,7 +439,7 @@ struct ActiveAgentSession: Codable, Sendable, Equatable {
         let tokens = subagents.compactMap(\.tokenCount).reduce(0, +)
         if tokens > 0 {
             let cost = subagents.compactMap(\.estimatedCostUSD).reduce(0, +)
-            text += " · " + TokenFormat.usage(tokens, costUSD: cost)
+            text += " (" + TokenFormat.usage(tokens, costUSD: cost) + " of the total)"
         }
         return text
     }

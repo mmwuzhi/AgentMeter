@@ -81,6 +81,19 @@ extension ActiveAgentNode {
     /// Rows behind the node's disclosure: child processes and listed subagents.
     var childRowCount: Int { children.count + subagents.count }
     var hasChildRows: Bool { childRowCount > 0 }
+
+    /// Text on the disclosure that hides the child rows: how many there are
+    /// and, while any is still running, how many of those. The count alone
+    /// read the same for a session whose agents finished minutes ago and one
+    /// with a workflow fanned out underneath it, which is what the line is
+    /// there to tell apart.
+    var childRowLabel: String {
+        var label = childRowCount == 1 ? "1 subagent" : "\(childRowCount) subagents"
+        let working = children.filter { $0.displayStatus == .working }.count
+            + subagents.filter(\.isWorking).count
+        if working > 0 { label += " · \(working) working" }
+        return label
+    }
 }
 
 enum ActiveAgentGrouping {

@@ -172,7 +172,9 @@ struct ActiveAgentsSection: View {
             VStack(spacing: 8) {
                 ForEach(groups) { group in
                     if group.isFlat {
-                        ActiveAgentRow(agent: group.nodes[0].agent)
+                        // Still the node view: a lone session's subagents live
+                        // behind the same disclosure as one under a group header.
+                        ActiveAgentNodeRows(node: group.nodes[0], showsProjectTitle: true)
                     } else {
                         ActiveAgentGroupRow(group: group)
                     }
@@ -237,9 +239,13 @@ private struct ActiveAgentGroupRow: View {
 
 /// A top-level session row plus its subagents — child processes and the
 /// transcript-derived `ActiveSubagent`s — which stay collapsed behind a small
-/// disclosure unless one of the processes needs the user.
+/// disclosure unless one of the processes needs the user. Used both under an
+/// expanded group header and for a flat group, so a project with one session
+/// shows that session's subagents the same way.
 private struct ActiveAgentNodeRows: View {
     let node: ActiveAgentNode
+    /// True for a flat group, whose row is the only place the project is named.
+    var showsProjectTitle = false
     @Environment(AppViewModel.self) private var model
 
     /// Same automatic-until-toggled behavior as the group disclosure.
@@ -248,7 +254,7 @@ private struct ActiveAgentNodeRows: View {
     }
 
     var body: some View {
-        ActiveAgentRow(agent: node.agent, showsProjectTitle: false)
+        ActiveAgentRow(agent: node.agent, showsProjectTitle: showsProjectTitle)
         if node.hasChildRows {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) {
@@ -259,7 +265,7 @@ private struct ActiveAgentNodeRows: View {
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.semibold))
                         .rotationEffect(.degrees(showsChildren ? 90 : 0))
-                    Text(node.childRowCount == 1 ? "1 subagent" : "\(node.childRowCount) subagents")
+                    Text(node.childRowLabel)
                 }
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
