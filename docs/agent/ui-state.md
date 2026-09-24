@@ -148,6 +148,19 @@ usage presentation, cached state, or Claude live-session integration.
   `AppViewModel.popoverScreenVisibleHeight`, which the status item controller
   records on each open); header and footer stay fixed. Never let popover
   content grow the window past the screen, including a smaller secondary one.
+- The header's refresh arrow spins through `RefreshGlyph`: a `SpinningArrow`
+  that exists only while `AppViewModel.isRefreshing` is true and rotates from
+  the clock (`TimelineView(.animation)`), swapped for a still image otherwise.
+  No SwiftUI animation may drive it, and no `repeatForever` may exist in the
+  app (`MenuViewTests.testNoRepeatingAnimationInSources`). A repeating
+  animation lives on the transaction it starts in, and the transaction that
+  inserts the spinner is the one that lays out the popover, because
+  `showPopover()` starts a refresh right before showing it. Scoped with
+  `.animation(_, value:)` the repeat captured the arrow's move between rows
+  and slid it bottom-to-top forever; started with `withAnimation` in
+  `onAppear` it captured every frame and the whole popover drifted. Both kept
+  the process at 12-20% CPU with the popover closed, since the hosting
+  controller lives for the app's lifetime.
 - A session row names the model behind its newest tokens
   (`ActiveAgentSession.model`, shortened by `ModelLabel.short`), because which
   model a session is burning is what decides whether its spend is reasonable,

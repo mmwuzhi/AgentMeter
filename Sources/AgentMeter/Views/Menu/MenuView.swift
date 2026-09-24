@@ -94,10 +94,7 @@ struct MenuView: View {
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             Button(action: onRefresh) {
-                Image(systemName: "arrow.clockwise")
-                    .rotationEffect(.degrees(model.isRefreshing ? 360 : 0))
-                    .animation(model.isRefreshing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default,
-                               value: model.isRefreshing)
+                RefreshGlyph(spinning: model.isRefreshing)
             }
             .buttonStyle(.borderless)
             .help("Refresh now")
@@ -146,6 +143,47 @@ struct MenuView: View {
         f.minimumFractionDigits = 2
         f.maximumFractionDigits = 2
         return "$" + (f.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value))
+    }
+}
+
+/// The header's refresh arrow: a spinning copy while a refresh runs, a still
+/// one otherwise. The spin must never come from a SwiftUI animation. A
+/// `repeatForever` animation lives on the transaction it starts in, and the
+/// transaction that brings the spinner in is never just the spinner's own:
+/// `showPopover()` starts a refresh right before it shows the popover, so the
+/// update that inserts the arrow is the one that lays the whole popover out.
+/// Attached with `.animation(_, value:)` the repeat captured the arrow's own
+/// move between rows and slid it bottom-to-top forever; started with
+/// `withAnimation` in `onAppear` it captured every frame in the popover and
+/// the whole interface drifted. Both kept running with the popover closed,
+/// because the hosting controller lives for the app's lifetime. `SpinningArrow`
+/// therefore reads the clock instead, and no `repeatForever` exists in the app
+/// (`MenuViewTests.testNoRepeatingAnimationInSources` keeps it that way).
+private struct RefreshGlyph: View {
+    let spinning: Bool
+
+    var body: some View {
+        if spinning {
+            SpinningArrow()
+        } else {
+            Image(systemName: "arrow.clockwise")
+        }
+    }
+}
+
+/// One full turn a second, computed from the frame's timestamp. Nothing here
+/// is animated: each tick sets the angle outright, so there is no transaction
+/// that could carry the rotation into anyone else's layout. `start` is state
+/// so the turn begins upright and stays continuous across body updates; the
+/// view exists only while refreshing, and the schedule stops with it.
+private struct SpinningArrow: View {
+    @State private var start = Date()
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+            Image(systemName: "arrow.clockwise")
+                .rotationEffect(.degrees(context.date.timeIntervalSince(start) * 360))
+        }
     }
 }
 
