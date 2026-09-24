@@ -1412,6 +1412,81 @@ final class ActiveAgentServiceTests: XCTestCase {
 
     /// `<main dir>/<main name>/subagents/agent-<id>.jsonl` (+ `.meta.json`),
     /// the layout Claude Code writes beside a session transcript.
+    func testSubagentTranscriptsIncludeWorkflowRunsOneLevelDown() throws {
+        let main = try makeTempFile(contents: "", filename: "s4.jsonl")
+        _ = try writeSubagent(id: "direct", beside: main, meta: nil, transcript: "")
+        let run = try writeWorkflowAgent(id: "w2", run: "wf_33060b5a-94e", beside: main, meta: nil, transcript: "")
+            .deletingLastPathComponent()
+        _ = try writeWorkflowAgent(id: "w1", run: "wf_33060b5a-94e", beside: main, meta: nil, transcript: "")
+        _ = try writeWorkflowAgent(id: "v1", run: "wf_0000aaaa-000", beside: main, meta: nil, transcript: "")
+        // The run's journal is not a transcript; a run named outside the
+        // session-id charset, a symlinked run, and anything deeper are ignored.
+        try "{}".data(using: .utf8)?.write(to: run.appendingPathComponent("journal.jsonl"))
+        _ = try writeWorkflowAgent(id: "bad", run: "wf bad", beside: main, meta: nil, transcript: "")
+        let workflows = run.deletingLastPathComponent()
+        try FileManager.default.createSymbolicLink(
+            at: workflows.appendingPathComponent("wf_link", isDirectory: true),
+            withDestinationURL: run
+        )
+        let deeper = run.appendingPathComponent("nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: deeper, withIntermediateDirectories: true)
+        try "{}".data(using: .utf8)?.write(to: deeper.appendingPathComponent("agent-deep.jsonl"))
+
+        let found = ActiveAgentService.subagentTranscripts(for: main.path, provider: .claude)
+        let base = main.deletingPathExtension().path + "/"
+        XCTAssertEqual(
+            found.map { $0.path.replacingOccurrences(of: base, with: "") },
+            [
+                "subagents/agent-direct.jsonl",
+                "subagents/workflows/wf_0000aaaa-000/agent-v1.jsonl",
+                "subagents/workflows/wf_33060b5a-94e/agent-w1.jsonl",
+                "subagents/workflows/wf_33060b5a-94e/agent-w2.jsonl",
+            ]
+        )
+    }
+
+    func testWorkflowAgentsCountIntoTheSessionAndListUnderIt() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let main = try makeTempFile(contents: """
+        {"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50}}}
+
+        """, filename: "s5.jsonl")
+        let transcript = """
+        {"timestamp":"2026-07-05T00:01:00Z","requestId":"r9","message":{"id":"m9","model":"claude-haiku-4","usage":{"input_tokens":20,"output_tokens":10}}}
+
+        """
+        _ = try writeWorkflowAgent(
+            id: "w1", run: "wf_33060b5a-94e", beside: main,
+            meta: #"{"agentType":"workflow-subagent","description":"verify:impact:16","workflowPhase":"Verify"}"#,
+            transcript: transcript
+        )
+        let agent = claudeAgent(logPath: main.path)
+
+        let enriched = await ActiveAgentService.enrichSessionUsage([agent])
+
+        let session = enriched.first?.session
+        XCTAssertEqual(session?.tokenCount, 180, "the workflow agent's tokens join the row total")
+        let child = session?.subagents.first
+        XCTAssertEqual(child?.id, "w1")
+        XCTAssertEqual(child?.description, "verify:impact:16")
+        XCTAssertEqual(child?.agentType, "workflow-subagent")
+        XCTAssertEqual(child?.tokenCount, 30)
+    }
+
+    private func writeWorkflowAgent(id: String, run: String, beside main: URL, meta: String?, transcript: String) throws -> URL {
+        let directory = main.deletingPathExtension()
+            .appendingPathComponent("subagents", isDirectory: true)
+            .appendingPathComponent("workflows", isDirectory: true)
+            .appendingPathComponent(run, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("agent-\(id).jsonl")
+        try transcript.data(using: .utf8)?.write(to: file)
+        if let meta {
+            try meta.data(using: .utf8)?.write(to: directory.appendingPathComponent("agent-\(id).meta.json"))
+        }
+        return file
+    }
+
     private func writeSubagent(id: String, beside main: URL, meta: String?, transcript: String) throws -> URL {
         let directory = main.deletingPathExtension().appendingPathComponent("subagents", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

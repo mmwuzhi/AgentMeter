@@ -287,11 +287,15 @@ usage presentation, cached state, or Claude live-session integration.
   value would count it again once it is complete. `enrichSessionUsage` prunes
   the cache to the running sessions, because each entry now holds a dedup set.
 - A Claude session's tokens and cost include its subagent transcripts,
-  `<projectKey>/<sessionID>/subagents/agent-<id>.jsonl`
-  (`ActiveAgentService.subagentTranscripts(for:provider:)`), found only by
-  walking from the already-attributed `logPath` — never from hook input — and
-  only for names in the session-id charset; meta files, symlinks and anything
-  else in the directory are skipped. Each file is its own cached partial
+  `<projectKey>/<sessionID>/subagents/agent-<id>.jsonl`, and the agents of
+  its Workflow runs, which Claude Code files one level further down as
+  `subagents/workflows/<runID>/agent-<id>.jsonl` beside a `journal.jsonl`
+  (`ActiveAgentService.subagentTranscripts(for:provider:)`). Both are found
+  only by walking from the already-attributed `logPath` — never from hook
+  input — and only for names (file and run directory alike) in the session-id
+  charset; meta files, symlinks, the journal and anything deeper are skipped.
+  A workflow of a hundred agents that read as a lone "working now" row with
+  its pre-workflow total was the case this came from. Each file is its own cached partial
   parse with its own dedup set (a sidechain's messages are never replayed into
   the main transcript, so no cross-file dedup is needed), and the prune keeps
   main *and* subagent fingerprints — dropping the latter would re-read every

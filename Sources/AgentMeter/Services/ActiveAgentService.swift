@@ -802,17 +802,31 @@ enum ActiveAgentService {
     }
 
     /// Subagent transcripts of a Claude session: `agent-<id>.jsonl` under the
-    /// `subagents/` directory named after the main transcript. Derived from an
-    /// already-attributed `logPath` only — never from hook input — so it adds
-    /// no path component the hook could choose; the filename is still checked
-    /// against the same charset as a session id, and anything else in the
-    /// directory (meta files, symlinks, a stray file) is ignored. Sorted by name
-    /// so a tick reads them in one order.
+    /// `subagents/` directory named after the main transcript, plus the agents
+    /// of every Workflow run, which Claude Code files one level further down as
+    /// `subagents/workflows/<runID>/agent-<id>.jsonl` (the `journal.jsonl`
+    /// beside them is not a transcript and fails the name check). Derived from
+    /// an already-attributed `logPath` only — never from hook input — so it
+    /// adds no path component the hook could choose; the filename and the run
+    /// directory are still checked against the same charset as a session id,
+    /// and anything else in the directories (meta files, symlinks, a stray
+    /// file, a deeper directory) is ignored. Direct subagents first, then each
+    /// run in name order, so a tick reads them in one order.
     static func subagentTranscripts(for logPath: String, provider: Provider) -> [URL] {
         guard provider == .claude else { return [] }
         let directory = URL(fileURLWithPath: logPath)
             .deletingPathExtension()
             .appendingPathComponent("subagents", isDirectory: true)
+        let workflows = directory.appendingPathComponent("workflows", isDirectory: true)
+        return agentTranscripts(in: directory)
+            + subdirectories(of: workflows)
+                .filter { isSafeSessionFilename($0) }
+                .sorted()
+                .flatMap { agentTranscripts(in: workflows.appendingPathComponent($0, isDirectory: true)) }
+    }
+
+    /// The `agent-<id>.jsonl` regular files directly inside `directory`, by name.
+    private static func agentTranscripts(in directory: URL) -> [URL] {
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.isRegularFileKey],
@@ -829,6 +843,21 @@ enum ActiveAgentService {
             // session's own file is.
             .map { directory.appendingPathComponent($0.lastPathComponent, isDirectory: false) }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Names of the real (non-symlink) subdirectories of `directory`; empty
+    /// when it does not exist.
+    private static func subdirectories(of directory: URL) -> [String] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return entries.compactMap { url in
+            guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                  values.isDirectory == true, values.isSymbolicLink != true else { return nil }
+            return url.lastPathComponent
+        }
     }
 
     /// `agent-<id>.jsonl` → `<id>`, for names in the session-id charset only.
