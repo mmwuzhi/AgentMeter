@@ -152,6 +152,13 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
 - A forced popover refresh must survive refresh coalescing. Queue its scoped
   usage request behind an in-flight refresh instead of dropping it, and do not
   scan unrelated providers merely because their menu-bar slots are visible.
+- When the 30 s escape starts a second refresh beside a stalled one, only the
+  latest-started refresh may land its result. A superseded refresh that
+  finishes later is discarded whole (state, trend samples, cache,
+  notifications, refresh markers): `QuotaTrendTracker` stamps samples at
+  landing time, so a replayed older reading looks like a rise and wipes the
+  window's sample pool. "Latest landed" would not do, because a refresh
+  merges into the snapshots it captured at its start.
 - A forced (popover-open, wake) refresh skips the quota fetch for a provider
   whose last live reading is younger than
   `ProviderRefreshPlan.minimumForcedQuotaSpacing` (20 s); usage and

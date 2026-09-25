@@ -128,6 +128,12 @@ final class RefreshCoordinator {
             let (c, cl, cp, agents, resetCredits, status) = await (
                 codexState, claudeState, copilotState, activeAgents, realResetCredits, statusResult
             )
+            // The 30 s escape above can start a second refresh beside a stalled
+            // one. Only the latest-started refresh may land: a superseded one that
+            // finishes later would replay older windows as a rise (the trend
+            // tracker stamps samples at landing time), move the refresh markers
+            // backwards and overwrite the cache with the older snapshots.
+            guard refreshStartedAt == startedAt else { return }
             let now = Date()
             if let status {
                 viewModel.providerStatus = Self.mergeProviderStatus(viewModel.providerStatus, with: status)
