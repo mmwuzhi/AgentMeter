@@ -9,6 +9,14 @@ usage presentation, cached state, or Claude live-session integration.
   `RefreshCoordinator` fetches providers in parallel, updates the model, records
   quota observations, persists state through `StateCache`, and evaluates
   notifications.
+- `NotificationManager` asks for permission the first time an alert would
+  fire and parks that evaluation behind the prompt. The parked pass
+  evaluates the windows the provider handed over most recently, never the
+  ones captured before the prompt: it can stay open for hours, and the
+  captured reading may have reset by then, which would announce a stale
+  window and store its old `resetsAt`, posting a false recovery on the next
+  refresh. Delivery goes through the same `NotificationAuthorizationCenter`
+  seam as the request, so tests observe posts without the real center.
 - `@AppStorage` keys are a compatibility contract. Current keys include
   `menuBarItemsConfig` (plus per-slot `menuBarItemsConfig.<slot>` variants),
   `menuBarSlotsConfig`, `menuBarShowCaptions`, `refreshIntervalSeconds`,

@@ -6,9 +6,17 @@ protocol NotificationAuthorizationCenter: AnyObject {
     var delegate: (any UNUserNotificationCenterDelegate)? { get set }
 
     func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool
+    /// Delivery goes through the same seam as the permission request, so a
+    /// test can see what would have been posted without touching the real
+    /// center.
+    func post(_ request: UNNotificationRequest)
 }
 
-extension UNUserNotificationCenter: NotificationAuthorizationCenter {}
+extension UNUserNotificationCenter: NotificationAuthorizationCenter {
+    func post(_ request: UNNotificationRequest) {
+        add(request, withCompletionHandler: nil)
+    }
+}
 
 struct QuotaNotificationState: Equatable {
     var criticalNotified: Set<String> = []
@@ -137,15 +145,23 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         authorized = (try? await authorizationCenter.requestAuthorization(options: [.alert, .sound])) ?? false
     }
 
+    /// The windows each provider last handed to `evaluate`. The permission
+    /// prompt below can stay open for hours, and the reading captured before
+    /// it may have reset or recovered by the time it resolves; the deferred
+    /// pass evaluates these instead, so it never notifies on a stale window
+    /// or stores its old `resetsAt` (which would post a false recovery next).
+    private var latestWindows: [Provider: [QuotaWindow]] = [:]
+
     /// Evaluate one provider's windows and notify on downward threshold crossings.
     func evaluate(provider: Provider, windows: [QuotaWindow]) {
+        latestWindows[provider] = windows
         // Ask for permission at the moment the first alert would actually fire,
         // instead of ambushing the user at launch. Denial sets `requested`, so
         // this runs at most once.
         if !requested, hasBundle, wouldNotify(provider: provider, windows: windows) {
             Task { @MainActor in
                 await requestAuthorizationIfNeeded()
-                self.evaluate(provider: provider, windows: windows)
+                self.evaluate(provider: provider, windows: self.latestWindows[provider] ?? windows)
             }
             return
         }
@@ -194,7 +210,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let request = UNNotificationRequest(
             identifier: "agentmeter.\(provider.rawValue).\(window.id).\(Int(Date().timeIntervalSince1970))",
             content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        authorizationCenter.post(request)
         return true
     }
 
@@ -209,7 +225,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let request = UNNotificationRequest(
             identifier: "agentmeter.\(provider.rawValue).\(window.id).recovered.\(Int(Date().timeIntervalSince1970))",
             content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
+        authorizationCenter.post(request)
         return true
     }
 
