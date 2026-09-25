@@ -179,11 +179,20 @@ usage presentation, cached state, or Claude live-session integration.
   `AppViewModel.popoverScreenVisibleHeight`, which the status item controller
   records on each open); header and footer stay fixed. Never let popover
   content grow the window past the screen, including a smaller secondary one.
-- The header's refresh arrow spins through `RefreshGlyph`: a `SpinningArrow`
+- The header's refresh arrow spins through `RefreshGlyph`. On macOS 15 and
+  later that is the symbol's own rotate effect
+  (`.symbolEffect(.rotate, options: .repeat(.continuous).speed(2), isActive:)`),
+  which turns `arrow.clockwise` about the anchor SF Symbols defines for it;
+  a `rotationEffect` pivots on the frame centre, which the arrowhead pushes
+  off the arc, so the arc wobbled around it. The effect's own pace is one
+  turn per 2 s (measured by frame autocorrelation), so `speed(2)` keeps the
+  one turn per second of the fallback. On macOS 14 it is a `SpinningArrow`
   that exists only while `AppViewModel.isRefreshing` is true and rotates from
   the clock (`TimelineView(.animation)`), swapped for a still image otherwise.
-  No SwiftUI animation may drive it, and no `repeatForever` may exist in the
-  app (`MenuViewTests.testNoRepeatingAnimationInSources`). A repeating
+  No SwiftUI transaction animation may drive it (a symbol effect is not one:
+  it runs on the symbol's layer and captures no layout), and no
+  `repeatForever` may exist in the app
+  (`MenuViewTests.testNoRepeatingAnimationInSources`). A repeating
   animation lives on the transaction it starts in, and the transaction that
   inserts the spinner is the one that lays out the popover, because
   `showPopover()` starts a refresh right before showing it. Scoped with

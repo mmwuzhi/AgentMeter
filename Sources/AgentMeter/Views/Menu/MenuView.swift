@@ -163,7 +163,16 @@ private struct RefreshGlyph: View {
     let spinning: Bool
 
     var body: some View {
-        if spinning {
+        if #available(macOS 15, *) {
+            // The symbol's own rotate effect turns about the anchor SF Symbols
+            // defines for `arrow.clockwise`. A `rotationEffect` pivots on the
+            // frame centre, which the arrowhead pushes off the arc, so the arc
+            // wobbled around it by about a point. The effect's own pace is one
+            // turn per 2 s (measured); speed 2 keeps the one turn per second
+            // the clock-driven fallback below has always had.
+            Image(systemName: "arrow.clockwise")
+                .symbolEffect(.rotate, options: .repeat(.continuous).speed(2), isActive: spinning)
+        } else if spinning {
             SpinningArrow()
         } else {
             Image(systemName: "arrow.clockwise")
@@ -171,6 +180,8 @@ private struct RefreshGlyph: View {
     }
 }
 
+/// macOS 14 fallback, where symbol effects cannot rotate.
+///
 /// One full turn a second, computed from the frame's timestamp. Nothing here
 /// is animated: each tick sets the angle outright, so there is no transaction
 /// that could carry the rotation into anyone else's layout. `start` is state
