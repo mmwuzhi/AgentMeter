@@ -226,6 +226,21 @@ final class MenuBarLayoutTests: XCTestCase {
         )
     }
 
+    func testMenuBarWidthIsSteadyAcrossDigitsOfTheSameCount() {
+        // The popover is anchored to the status item and the item's length
+        // follows the text exactly, so a proportional "1" against an "8" moved
+        // the popover sideways whenever a refresh changed a digit.
+        for showCaptions in [false, true] {
+            let narrow = MenuBarSegment(label: "5h", value: "11%", remaining: 11, alertLevel: .none)
+            let wide = MenuBarSegment(label: "5h", value: "88%", remaining: 88, alertLevel: .none)
+            XCTAssertEqual(
+                MenuBarContentView.columnWidth(narrow, showCaptions: showCaptions),
+                MenuBarContentView.columnWidth(wide, showCaptions: showCaptions),
+                "captions \(showCaptions): digits of one count must render at one width"
+            )
+        }
+    }
+
     func testStatusLengthCoversFullVisualWidth() {
         // Regression: declaring the item narrower than the drawn width clips
         // the status item replica on non-active displays.

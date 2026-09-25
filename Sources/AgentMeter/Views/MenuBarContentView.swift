@@ -31,8 +31,12 @@ final class MenuBarContentView: NSView {
 
     // iStat-style compact two-line readout: balanced captions and restrained values.
     static func captionFont() -> NSFont { .systemFont(ofSize: 8.5, weight: .regular) }
+    /// Tabular digits: `statusItem.length` follows the text exactly, the menu
+    /// bar is right-anchored and the popover is anchored to the item, so with
+    /// proportional digits a refresh that turned a "1" into a "3" moved the
+    /// item, and the open popover with it, by a point sideways.
     static func valueFont(showCaptions: Bool) -> NSFont {
-        .systemFont(ofSize: showCaptions ? 11 : 14, weight: .regular)
+        .monospacedDigitSystemFont(ofSize: showCaptions ? 11 : 14, weight: .regular)
     }
 
     override var isFlipped: Bool { false }

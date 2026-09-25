@@ -40,6 +40,11 @@ usage presentation, cached state, or Claude live-session integration.
 - Never draw beyond `statusItem.length`. Secondary displays clip replicas to
   the declared width. Tighten slot gaps through the registered
   `NSStatusItemSpacing` / `NSStatusItemSelectionPadding` defaults instead.
+- The value font uses tabular digits (`monospacedDigitSystemFont`). The
+  length follows the text exactly, the menu bar is right-anchored and the
+  popover is anchored to the item, so proportional digits moved the open
+  popover sideways whenever a refresh changed a digit's width. Only a change
+  in digit count or an alert pad may move it now.
 - Draw with native backing scale and baseline-anchored attributed strings.
   Resolve color from `NSAppearance.currentDrawing()` (`white` or
   `.textColor`).
