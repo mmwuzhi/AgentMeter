@@ -165,6 +165,40 @@ final class CodexRolloutReaderTests: XCTestCase {
         XCTAssertEqual(second.byModel.first?.model, "gpt-5.1-codex-max")
     }
 
+    /// Same contract as the Claude scanner: `dayModels` carries the counts
+    /// behind every bucket split by model — the session's model at the time of
+    /// each `token_count` — and priced under the scan's own table they give
+    /// back the scan-time dollars exactly.
+    func testUsageReportCarriesPerDayModelCountsThatPriceLikeItsBuckets() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory.appendingPathComponent("codex-daymodels-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+        let iso = ISO8601DateFormatter()
+        let recent = iso.string(from: Date().addingTimeInterval(-3_600))
+        let earlier = iso.string(from: Date().addingTimeInterval(-3 * 86_400))
+        let payload = [
+            #"{"timestamp":"\#(earlier)","payload":{"model":"gpt-5-codex"}}"#,
+            #"{"timestamp":"\#(earlier)","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50,"cached_input_tokens":10,"output_tokens":5}}}}"#,
+            #"{"timestamp":"\#(recent)","payload":{"model":"gpt-5.1-codex-max"}}"#,
+            #"{"timestamp":"\#(recent)","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30}}}}"#
+        ].joined(separator: "\n")
+        try payload.write(to: url, atomically: true, encoding: .utf8)
+
+        let report = await CodexRolloutReader.usageReport(files: [url])
+
+        XCTAssertEqual(report.buckets.count, 2)
+        XCTAssertEqual(Set(report.dayModels.map(\.model)), ["gpt-5-codex", "gpt-5.1-codex-max"],
+                       "each day's counts stay under the model the session named")
+        for bucket in report.buckets {
+            let counted = report.dayModels.filter { $0.day == bucket.day }.reduce(0) { $0 + $1.counts.total }
+            XCTAssertEqual(counted, bucket.totalTokens, "the day's per-model counts must add up to its bucket")
+        }
+        let table = await PricingService.shared.snapshot()
+        XCTAssertEqual(report.costUSD(from: nil, table: table),
+                       report.buckets.reduce(0) { $0 + $1.costUSD }, accuracy: 1e-6,
+                       "the counts priced under the scan's table must give back the scan-time dollars")
+    }
+
     func testRecentRolloutFilesFiltersOldFilesByModificationDate() throws {
         let fm = FileManager.default
         let base = fm.temporaryDirectory.appendingPathComponent("codex-recent-\(UUID().uuidString)")

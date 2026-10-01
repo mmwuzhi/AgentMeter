@@ -12,12 +12,6 @@ enum CodexRolloutReader {
     /// belongs in a persisted index or explicit on-demand action.
     private static let usageHistoryDays = 31
 
-    private struct DayModelUsage: Sendable {
-        let day: Date
-        let model: String
-        var counts: TokenCounts
-    }
-
     private struct FileUsageSummary: Sendable {
         // (day, model) -> counts, so a day that mixed models prices each correctly
         // instead of last-writer-wins on a single per-day model.
@@ -160,7 +154,7 @@ enum CodexRolloutReader {
 
     static func usageReport(files: [URL]) async -> UsageReport {
         // (day, model) -> counts across all files, so cost uses each model's price.
-        var byDayModel: [String: (day: Date, model: String, counts: TokenCounts)] = [:]
+        var byDayModel: [String: DayModelUsage] = [:]
 
         let fingerprints = files.compactMap { url -> (URL, LogFileFingerprint)? in
             guard let fingerprint = LogFileFingerprint.current(for: url) else { return nil }
@@ -172,59 +166,19 @@ enum CodexRolloutReader {
             let summary = await cachedUsageSummary(in: url, fingerprint: fingerprint)
             for (key, usage) in summary.byDayModel {
                 if var existing = byDayModel[key] {
-                    existing.counts.input += usage.counts.input
-                    existing.counts.cacheRead += usage.counts.cacheRead
-                    existing.counts.output += usage.counts.output
+                    existing.counts.add(usage.counts)
                     byDayModel[key] = existing
                 } else {
-                    byDayModel[key] = (usage.day, usage.model, usage.counts)
+                    byDayModel[key] = usage
                 }
             }
         }
 
-        // totalCostUSD/totalTokens/byModel are surfaced as the "30-day" totals
-        // (ModelBreakdown), so they must use the same rolling 30-day cutoff as
-        // SpendWindows.lastDays(UsageReport.totalsWindowDays) — not every day the buffered
-        // file scan happened to pick up — or the two "30-day" figures disagree.
-        let thirtyDayCutoff = Calendar.current.date(
-            byAdding: .day,
-            value: -(UsageReport.totalsWindowDays - 1),
-            to: Calendar.current.startOfDay(for: Date())
-        ) ?? Date.distantPast
-
-        var bucketByDay: [Date: UsageBucket] = [:]
-        var modelTotals: [String: (tokens: Int, cost: Double)] = [:]
-        var totalCost = 0.0
-        for (_, entry) in byDayModel {
-            let cost = await PricingService.shared.cost(model: entry.model, counts: entry.counts)
-            let b = bucketByDay[entry.day] ?? UsageBucket(day: entry.day, inputTokens: 0, outputTokens: 0,
-                        cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, costUSD: 0)
-            bucketByDay[entry.day] = UsageBucket(day: entry.day,
-                            inputTokens: b.inputTokens + entry.counts.input,
-                            outputTokens: b.outputTokens + entry.counts.output,
-                            cacheWrite5m: b.cacheWrite5m + entry.counts.cacheWrite5m,
-                            cacheWrite1h: b.cacheWrite1h + entry.counts.cacheWrite1h,
-                            cacheRead: b.cacheRead + entry.counts.cacheRead,
-                            costUSD: b.costUSD + cost)
-
-            guard entry.day >= thirtyDayCutoff else { continue }
-            totalCost += cost
-            let entryTokens = entry.counts.input + entry.counts.output
-                + entry.counts.cacheWrite5m + entry.counts.cacheWrite1h + entry.counts.cacheRead
-            var mt = modelTotals[entry.model] ?? (0, 0)
-            mt.tokens += entryTokens
-            mt.cost += cost
-            modelTotals[entry.model] = mt
-        }
-        let buckets = bucketByDay.values.sorted { $0.day < $1.day }
-        let totalTokens = buckets
-            .filter { $0.day >= thirtyDayCutoff }
-            .reduce(0) { $0 + $1.totalTokens }
-        let byModel = modelTotals
-            .map { ModelSpend(model: $0.key, tokens: $0.value.tokens, costUSD: $0.value.cost) }
-            .sorted { $0.costUSD > $1.costUSD }
-        return UsageReport(provider: .codex, buckets: buckets, totalCostUSD: totalCost,
-                           totalTokens: totalTokens, byModel: byModel)
+        // Dollars are computed where they are shown, under the table current
+        // then; the rollup prices once now only for the fields older builds
+        // still read out of `last-state.json`.
+        let table = await PricingService.shared.snapshot()
+        return UsageRollup.report(provider: .codex, entries: Array(byDayModel.values), table: table)
     }
 
     static func recentRolloutFiles(_ files: [URL], modifiedSince cutoff: Date) -> [URL] {
@@ -298,9 +252,7 @@ enum CodexRolloutReader {
         let day = cal.startOfDay(for: ts)
         let key = "\(day.timeIntervalSince1970)|\(summary.lastModel)"
         if var existing = summary.byDayModel[key] {
-            existing.counts.input += counts.input
-            existing.counts.cacheRead += counts.cacheRead
-            existing.counts.output += counts.output
+            existing.counts.add(counts)
             summary.byDayModel[key] = existing
         } else {
             summary.byDayModel[key] = DayModelUsage(day: day, model: summary.lastModel, counts: counts)

@@ -29,12 +29,6 @@ enum ClaudeJSONLScanner {
         var unkeyed: [String: DayModelUsage] = [:]
     }
 
-    private struct DayModelUsage: Sendable {
-        let day: Date
-        let model: String
-        var counts: TokenCounts
-    }
-
     private static let usageCache = LogFileParseCache<FileUsageSummary>()
 
     /// Cheap pre-filter: most records in a transcript carry no usage block, and
@@ -105,7 +99,7 @@ enum ClaudeJSONLScanner {
 
     static func usageReport(files: [URL], completeHistory: Bool = false) async -> UsageReport {
         // (day, model) -> counts, so cost uses the right model price.
-        var byDayModel: [String: (day: Date, model: String, counts: TokenCounts)] = [:]
+        var byDayModel: [String: DayModelUsage] = [:]
 
         // Sorted so which file "wins" a record shared with another file is the
         // same on every launch. The duplicates carry identical usage, so the
@@ -134,71 +128,24 @@ enum ClaudeJSONLScanner {
             }
         }
 
-        // Roll up per-day (summing across models, cost computed per model) and
-        // per-model (for the spend breakdown, "30-day" labeled).
-        // totalCostUSD/totalTokens/byModel feed the "30-day" totals
-        // (ModelBreakdown), so they must use the same rolling cutoff as
-        // SpendWindows.lastDays(UsageReport.totalsWindowDays) — not every day
-        // the buffered file scan happened to pick up — or the two "30-day"
-        // figures disagree.
-        let thirtyDayCutoff = Calendar.current.date(
-            byAdding: .day,
-            value: -(UsageReport.totalsWindowDays - 1),
-            to: Calendar.current.startOfDay(for: Date())
-        ) ?? Date.distantPast
-
-        var bucketByDay: [Date: UsageBucket] = [:]
-        var modelTotals: [String: (tokens: Int, cost: Double)] = [:]
-        var totalCost = 0.0
-        for (_, entry) in byDayModel {
-            let cost = await PricingService.shared.cost(model: entry.model, counts: entry.counts)
-            var b = bucketByDay[entry.day] ?? UsageBucket(day: entry.day, inputTokens: 0, outputTokens: 0,
-                        cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 0, costUSD: 0)
-            b = UsageBucket(day: entry.day,
-                            inputTokens: b.inputTokens + entry.counts.input,
-                            outputTokens: b.outputTokens + entry.counts.output,
-                            cacheWrite5m: b.cacheWrite5m + entry.counts.cacheWrite5m,
-                            cacheWrite1h: b.cacheWrite1h + entry.counts.cacheWrite1h,
-                            cacheRead: b.cacheRead + entry.counts.cacheRead,
-                            costUSD: b.costUSD + cost)
-            bucketByDay[entry.day] = b
-
-            guard entry.day >= thirtyDayCutoff else { continue }
-            totalCost += cost
-            let entryTokens = entry.counts.input + entry.counts.output
-                + entry.counts.cacheWrite5m + entry.counts.cacheWrite1h + entry.counts.cacheRead
-            var mt = modelTotals[entry.model] ?? (0, 0)
-            mt.tokens += entryTokens
-            mt.cost += cost
-            modelTotals[entry.model] = mt
-        }
-
-        let buckets = bucketByDay.values.sorted { $0.day < $1.day }
-        let totalTokens = buckets
-            .filter { $0.day >= thirtyDayCutoff }
-            .reduce(0) { $0 + $1.totalTokens }
-        let byModel = modelTotals
-            .map { ModelSpend(model: $0.key, tokens: $0.value.tokens, costUSD: $0.value.cost) }
-            .sorted { $0.costUSD > $1.costUSD }
-        return UsageReport(provider: .claude, buckets: buckets, totalCostUSD: totalCost,
-                           totalTokens: totalTokens, byModel: byModel,
-                           isCompleteHistory: completeHistory)
+        // Dollars are computed where they are shown, under the table current
+        // then; the rollup prices once now only for the fields older builds
+        // still read out of `last-state.json`.
+        let table = await PricingService.shared.snapshot()
+        return UsageRollup.report(provider: .claude, entries: Array(byDayModel.values),
+                                  table: table, isCompleteHistory: completeHistory)
     }
 
     private static func accumulate(
         _ usage: DayModelUsage,
-        into byDayModel: inout [String: (day: Date, model: String, counts: TokenCounts)]
+        into byDayModel: inout [String: DayModelUsage]
     ) {
         let key = "\(usage.day.timeIntervalSince1970)|\(usage.model)"
         guard var existing = byDayModel[key] else {
-            byDayModel[key] = (usage.day, usage.model, usage.counts)
+            byDayModel[key] = usage
             return
         }
-        existing.counts.input += usage.counts.input
-        existing.counts.output += usage.counts.output
-        existing.counts.cacheRead += usage.counts.cacheRead
-        existing.counts.cacheWrite5m += usage.counts.cacheWrite5m
-        existing.counts.cacheWrite1h += usage.counts.cacheWrite1h
+        existing.counts.add(usage.counts)
         byDayModel[key] = existing
     }
 
@@ -296,11 +243,7 @@ enum ClaudeJSONLScanner {
             // No message id to dedup on; fold it into the per-(day, model) bucket.
             let key = "\(day.timeIntervalSince1970)|\(model)"
             if var existing = summary.unkeyed[key] {
-                existing.counts.input += counts.input
-                existing.counts.output += counts.output
-                existing.counts.cacheRead += counts.cacheRead
-                existing.counts.cacheWrite5m += counts.cacheWrite5m
-                existing.counts.cacheWrite1h += counts.cacheWrite1h
+                existing.counts.add(counts)
                 summary.unkeyed[key] = existing
             } else {
                 summary.unkeyed[key] = entry

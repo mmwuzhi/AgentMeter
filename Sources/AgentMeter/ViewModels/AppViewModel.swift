@@ -18,6 +18,12 @@ final class AppViewModel {
     var codexResetCreditState = CodexResetCreditState()
     var activeAgents: [ActiveAgent] = []
     var lifetimeSpend: [LifetimeDayRecord] = []
+    /// The price table every dollar figure on screen is computed with, so the
+    /// all-time footer, the day/7-day/30-day grid, the by-model rows and the
+    /// menu-bar spend readout can never disagree with one another. Starts from
+    /// the local table so restored state is priced at once; `RefreshCoordinator`
+    /// replaces it once the network table has arrived.
+    var priceTable: PriceTable = PricingService.localTable()
     /// Not persisted (like `activeAgents`) — a stale "outage" shown from a launch
     /// days ago would be misleading, so this starts empty and fills in on first refresh.
     var providerStatus: [Provider: ProviderStatusResult] = [:]
@@ -58,7 +64,8 @@ final class AppViewModel {
             codexResetCreditState = snap.codexResetCreditState
             lifetimeSpend = storedLifetimeSpend.isEmpty ? snap.lifetimeSpend : storedLifetimeSpend
             if lifetimeSpend.isEmpty {
-                lifetimeSpend = LifetimeSpendTracker.bootstrapFromLegacyReports([codex.usage, claude.usage])
+                lifetimeSpend = LifetimeSpendTracker.bootstrapFromLegacyReports(
+                    [codex.usage, claude.usage], table: priceTable)
             }
             if !lifetimeSpend.isEmpty {
                 LifetimeSpendStore.save(lifetimeSpend)
@@ -68,13 +75,10 @@ final class AppViewModel {
         }
     }
 
-    /// All-time observed spend for one provider, from the persisted ledger.
+    /// All-time observed spend for one provider: the ledger's counts priced
+    /// under `priceTable`, like every other dollar figure.
     func lifetimeSpendUSD(for provider: Provider) -> Double {
-        LifetimeSpendTracker.totalCostUSD(lifetimeSpend, provider: provider)
-    }
-
-    var totalSpendUSD: Double {
-        codex.usage.totalCostUSD + claude.usage.totalCostUSD + copilot.usage.totalCostUSD
+        LifetimeSpendTracker.totalCostUSD(lifetimeSpend, provider: provider, table: priceTable)
     }
 
     /// The provider chosen for the menu bar (default Codex).
@@ -91,8 +95,7 @@ final class AppViewModel {
 
     /// Today's (local-day) spend for a provider, used by the optional menu-bar spend readout.
     func todaySpendUSD(for state: ProviderState) -> Double {
-        let start = Calendar.current.startOfDay(for: Date())
-        return state.usage.buckets.first { $0.day == start }?.costUSD ?? 0
+        state.usage.costUSD(on: Calendar.current.startOfDay(for: Date()), table: priceTable)
     }
 
     func runway(for provider: Provider, window: QuotaWindow, now: Date = Date()) -> QuotaRunway {

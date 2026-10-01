@@ -17,7 +17,9 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   `~/.codex/sessions/` and flat `~/.codex/archived_sessions/`, deduplicated by
   filename. Codex CLI ≥0.142 can archive an active session mid-day; omitting
   archived sessions makes current-day usage and spend collapse.
-- Usage/spend comes from per-day `last_token_usage` in rollout logs.
+- Usage/spend comes from per-day `last_token_usage` in rollout logs, each
+  delta attributed to the model the session last named, and rolled up per
+  (day, model) through `UsageRollup` like Claude's.
 - Codex quota source authority is `oauth` > `appServer` > `rolloutFile`. On a
   fallback, preserve only higher-authority windows that are still live in the
   same reset epoch; accept new epochs, unrelated windows, and current snapshot
@@ -92,11 +94,23 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   earlier transcript into a new file, so the same assistant message is present
   in both. Per-file dedup double-counted ~10% of all tokens and nearly doubled
   the oldest days.
+- Both scanners hand their per-(day, model) counts to
+  `UsageRollup.report(provider:entries:table:)`. The report carries the counts
+  themselves (`dayModels`: what the spend ledger stores and what every
+  on-screen dollar figure is priced from, see [ui-state.md](ui-state.md))
+  beside `buckets`, `totalCostUSD` and `byModel`, which are priced once under
+  the scan's `PricingService.snapshot()` only for older builds reading
+  `last-state.json`. Nothing in this build reads those dollars back.
 - Most refreshes read only files touched in the last `usageHistoryDays` (31).
   Every `fullHistoryInterval` (6 h), and once per launch, the scan reads every
   file instead and marks the report `isCompleteHistory`. Only such a report may
   lower a stored `LifetimeSpendTracker` day; a windowed one can only grow days,
-  since a day shrinking there just means its files left the window.
+  since a day shrinking there just means its files left the window. Either
+  way the ledger takes the day's counts (tokens decide whether a windowed day
+  has grown); the `costUSD` written beside them is for older builds only and
+  nothing here reads it back. A complete scan once re-priced every stored
+  dollar figure under the table the process held, and that is how the
+  all-time total moved by $1,400 with no usage behind it.
 - Scanners must not touch log lines through `String`. `JSONLLineReader` hands
   each record over as a `LogLine` of raw bytes: `String(data:encoding:)`
   validated every byte and `String.contains` resolved to
@@ -168,8 +182,29 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
 
 ## Pricing and quota trends
 
-- `PricingService` fallback order is LiteLLM → models.dev → bundled
-  `Resources/embedded-pricing.json`; cache results under Application Support.
+- `PricingService` layers one `PriceTable`: the bundled
+  `Resources/embedded-pricing.json`, the cached network table (`pricing.json`
+  under Application Support) merged over it, then whatever `refresh()` fetches
+  — LiteLLM, else models.dev — persisted back to that cache. `localTable()`
+  (bundle + cache, readable without the actor) loads the cache however old it
+  is: age decides nothing now, `refresh()` re-fetches at every launch anyway,
+  and a stale cache still knows every model the network did where the bundle
+  alone may not. `snapshot()` is the table as it stands;
+  `AppViewModel.priceTable` holds the one every on-screen dollar figure uses
+  (see [ui-state.md](ui-state.md)), starting from `localTable()` so restored
+  state is priced at once.
+- The bundled `embedded-pricing.json` must list every model in current use
+  with its own cache-read price — 0.1× input as a rule, 0.025× on Fable 5.1,
+  0.05× on Opus 5.5 — checked against
+  https://platform.claude.com/docs/en/about-claude/pricing. A model missing
+  from it prices at the `default` 3/15 entry, which is what a launch whose
+  network table had not arrived priced the whole ledger under.
+  `PriceTableTests.testBundledTableCarriesTheModelsInUse` pins the entries.
+- `PriceTable.price(for:)` takes the exact id, else the longest key that is a
+  prefix of the id or that the id is a prefix of (a transcript's dated
+  `claude-opus-4-8-20260101` finds `claude-opus-4-8`; a bare `claude-opus-5`
+  finds `claude-opus-5-5` only while no `claude-opus-5` key exists), equal
+  lengths alphabetical, else `default`, else `PriceTable.unknownModelPrice`.
 - `QuotaTrendTracker` bounds observations per `(provider, windowID)`, never
   globally: every sample inside `fullFidelitySpan` (60 min) is kept, older ones
   are decimated to one per `decimationInterval` (5 min), anything past

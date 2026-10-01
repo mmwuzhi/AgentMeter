@@ -42,7 +42,13 @@ final class RefreshCoordinator {
     }
 
     func start() {
-        Task { await PricingService.shared.refresh() }
+        Task {
+            await PricingService.shared.refresh()
+            // Every figure on screen is priced under the view model's table, so
+            // the network table reaches the UI here, once, and not through any
+            // stored dollar amount.
+            viewModel.priceTable = await PricingService.shared.snapshot()
+        }
         // Notification permission is requested lazily by NotificationManager
         // the first time an alert actually needs to fire, not at launch.
         seedBackgroundRefreshDates(at: Date())
@@ -190,7 +196,8 @@ final class RefreshCoordinator {
             )
             viewModel.lifetimeSpend = LifetimeSpendTracker.merge(
                 existing: viewModel.lifetimeSpend,
-                reports: [viewModel.codex.usage, viewModel.claude.usage]
+                reports: [viewModel.codex.usage, viewModel.claude.usage],
+                table: viewModel.priceTable
             )
             LifetimeSpendStore.save(viewModel.lifetimeSpend)
             viewModel.lastRefresh = Date()

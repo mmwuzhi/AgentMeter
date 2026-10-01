@@ -45,7 +45,9 @@ struct MenuView: View {
                 ProviderSection(
                     state: providerState,
                     historyPoints: LifetimeSpendTracker.dayPoints(
-                        ledger: model.lifetimeSpend, report: providerState.usage),
+                        ledger: model.lifetimeSpend, report: providerState.usage,
+                        table: model.priceTable),
+                    priceTable: model.priceTable,
                     activeAgents: model.activeAgents.filter { $0.provider == p },
                     tint: PopoverOrder.tint(p),
                     codexResetCredits: p == .codex ? model.codexResetCreditState.credits : [],
@@ -533,6 +535,8 @@ struct ProviderSection: View {
     /// lifetime ledger and this refresh's report, so the heatmap keeps days whose
     /// log files have aged out of the scanner's window.
     let historyPoints: [UsageDayPoint]
+    /// Prices the dollars at display time, so every figure on screen shares one table.
+    let priceTable: PriceTable
     let activeAgents: [ActiveAgent]
     var tint: Color
     /// Codex-only real (or locally inferred, when the live fetch is unavailable)
@@ -645,8 +649,8 @@ struct ProviderSection: View {
 
             if showHeatmap {
                 VStack(alignment: .leading, spacing: 10) {
-                    SpendBreakdownGrid(usage: state.usage)
-                    ModelBreakdown(usage: state.usage)
+                    SpendBreakdownGrid(usage: state.usage, table: priceTable)
+                    ModelBreakdown(usage: state.usage, table: priceTable)
                     UsageHeatmap(points: historyPoints, tint: tint)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }

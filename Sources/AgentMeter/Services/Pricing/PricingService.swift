@@ -1,7 +1,7 @@
 import Foundation
 
 /// Normalized price for a model, USD per 1,000,000 tokens.
-struct ModelPrice: Codable, Sendable {
+struct ModelPrice: Codable, Sendable, Equatable {
     var input: Double
     var output: Double
     var cacheWrite5m: Double
@@ -9,53 +9,50 @@ struct ModelPrice: Codable, Sendable {
     var cacheRead: Double
 }
 
-/// Token counts for one accounting unit (a message or a day).
-struct TokenCounts: Sendable {
+/// Token counts for one accounting unit: a message, or one model's share of a
+/// day. Codable because the spend ledger stores these, not dollars.
+struct TokenCounts: Codable, Sendable, Equatable {
     var input = 0
     var output = 0
     var cacheWrite5m = 0
     var cacheWrite1h = 0
     var cacheRead = 0
+
+    var total: Int { input + output + cacheWrite5m + cacheWrite1h + cacheRead }
+
+    mutating func add(_ other: TokenCounts) {
+        input += other.input
+        output += other.output
+        cacheWrite5m += other.cacheWrite5m
+        cacheWrite1h += other.cacheWrite1h
+        cacheRead += other.cacheRead
+    }
 }
 
-/// Resolves model pricing and computes spend.
-///
-/// Order of truth: cached file (fresh) → embedded snapshot, refreshed in the
-/// background from LiteLLM (fallback models.dev). All sources normalized to
-/// `ModelPrice` (USD per 1M tokens).
-actor PricingService {
-    static let shared = PricingService()
+/// A price table as a value. Every dollar figure the app shows is token counts
+/// priced under one of these at the moment of display: the scanners and the
+/// spend ledger keep counts, and no persisted dollar amount is read back into
+/// the UI. Before that, a complete log scan re-priced the whole ledger under
+/// whatever table the process held, and the bundled snapshot lacked the models
+/// in use, so a launch whose network table had not arrived yet moved the
+/// all-time total by over a thousand dollars with no usage behind it.
+struct PriceTable: Sendable, Equatable {
+    /// Price for a model nothing in the table matches; also the fallback for a
+    /// table without a `default` entry.
+    static let unknownModelPrice = ModelPrice(input: 3, output: 15, cacheWrite5m: 3.75, cacheWrite1h: 6, cacheRead: 0.3)
 
-    private var table: [String: ModelPrice] = [:]
-    private var loaded = false
+    var models: [String: ModelPrice] = [:]
 
-    private let liteLLMURL = URL(string: "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json")!
-    private let modelsDevURL = URL(string: "https://models.dev/api.json")!
-
-    private var cacheURL: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AgentMeter", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("pricing.json")
-    }
-
-    /// Loads embedded + cached pricing synchronously-ish (idempotent).
-    func ensureLoaded() {
-        guard !loaded else { return }
-        loaded = true
-        loadEmbedded()
-        loadCache()
-    }
-
-    /// Best-effort price lookup: exact id, then longest matching prefix, then default.
+    /// Best-effort lookup: the exact id, else the longest id that is a prefix
+    /// of the model or that the model is a prefix of (a log's dated
+    /// `claude-opus-4-8-20260101` finds `claude-opus-4-8`), else `default`.
     func price(for model: String) -> ModelPrice {
-        if let exact = table[model] { return exact }
-        // Prefix match: e.g. log "claude-opus-4-8-20260101" -> "claude-opus-4-8"
-        let candidates = table.keys
+        if let exact = models[model] { return exact }
+        let candidates = models.keys
             .filter { $0 != "default" && (model.hasPrefix($0) || $0.hasPrefix(model)) }
-            .sorted { $0.count > $1.count }
-        if let best = candidates.first { return table[best]! }
-        return table["default"] ?? ModelPrice(input: 3, output: 15, cacheWrite5m: 3.75, cacheWrite1h: 6, cacheRead: 0.3)
+            .sorted { a, b in a.count != b.count ? a.count > b.count : a < b }
+        if let best = candidates.first, let price = models[best] { return price }
+        return models["default"] ?? Self.unknownModelPrice
     }
 
     /// Cost in USD for a set of token counts under a model.
@@ -69,37 +66,83 @@ actor PricingService {
              + Double(counts.cacheRead)   * p.cacheRead    / m
     }
 
-    // MARK: - Loading
+    /// Cost of one day's counts split by model.
+    func cost(_ usage: [String: TokenCounts]) -> Double {
+        usage.reduce(0) { $0 + cost(model: $1.key, counts: $1.value) }
+    }
+}
 
-    private func loadEmbedded() {
-        // In the packaged .app the JSON sits in Contents/Resources (Bundle.main), the only
-        // location codesign accepts. Under `swift run`/debug it lives in the SPM resource
-        // bundle next to the binary (Bundle.module). Try both.
-        guard let url = Bundle.main.url(forResource: "embedded-pricing", withExtension: "json")
-                ?? Bundle.module.url(forResource: "embedded-pricing", withExtension: "json"),
-              let data = try? Data(contentsOf: url) else { return }
-        merge(parseNormalized(data))
+/// Owns the live price table: the bundled snapshot, the cached network table
+/// over it, then whatever `refresh()` fetches from LiteLLM (fallback
+/// models.dev). All sources are normalized to `ModelPrice` (USD per 1M tokens).
+actor PricingService {
+    static let shared = PricingService()
+
+    private var table = PriceTable()
+    private var loaded = false
+
+    private static let liteLLMURL = URL(string: "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json")!
+    private static let modelsDevURL = URL(string: "https://models.dev/api.json")!
+
+    nonisolated private static var cacheURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AgentMeter", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("pricing.json")
     }
 
-    private func loadCache() {
-        // Use cache only if newer than 24h; otherwise it'll be refreshed by refresh().
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: cacheURL.path),
-              let mtime = attrs[.modificationDate] as? Date,
-              Date().timeIntervalSince(mtime) < 60 * 60 * 24,
-              let data = try? Data(contentsOf: cacheURL) else { return }
-        merge(parseNormalized(data))
+    /// The table a launch starts from: the bundled snapshot with the cached
+    /// network table merged over it, however old that cache is. A stale cache
+    /// still knows every model the network table did; the snapshot alone may
+    /// not, and pricing under it is what made the all-time total jump. Readable
+    /// without the actor so `AppViewModel` can price its restored state at init.
+    nonisolated static func localTable() -> PriceTable {
+        var table = bundledTable()
+        table.models.merge(cachedModels()) { $1 }
+        return table
+    }
+
+    /// The bundled snapshot alone: what a launch with neither a cache nor a
+    /// network answer prices under, and what `PriceTableTests` pins to the
+    /// official price page.
+    nonisolated static func bundledTable() -> PriceTable {
+        PriceTable(models: embeddedModels())
+    }
+
+    /// Loads the local table once (idempotent).
+    func ensureLoaded() {
+        guard !loaded else { return }
+        loaded = true
+        table.models.merge(Self.localTable().models) { $1 }
+    }
+
+    /// The table as it stands: the local sources plus whatever `refresh()` has fetched.
+    func snapshot() -> PriceTable {
+        ensureLoaded()
+        return table
+    }
+
+    func price(for model: String) -> ModelPrice {
+        ensureLoaded()
+        return table.price(for: model)
+    }
+
+    /// Cost in USD for a set of token counts under a model.
+    func cost(model: String, counts: TokenCounts) -> Double {
+        ensureLoaded()
+        return table.cost(model: model, counts: counts)
     }
 
     /// Fetches fresh pricing from the network and updates the cache. Safe to call on launch.
     func refresh() async {
         ensureLoaded()
-        if let data = try? await fetch(liteLLMURL), let parsed = parseLiteLLM(data), !parsed.isEmpty {
-            merge(parsed)
+        if let data = try? await fetch(Self.liteLLMURL), let parsed = Self.parseLiteLLM(data), !parsed.isEmpty {
+            table.models.merge(parsed) { $1 }
             persist()
             return
         }
-        if let data = try? await fetch(modelsDevURL), let parsed = parseModelsDev(data), !parsed.isEmpty {
-            merge(parsed)
+        if let data = try? await fetch(Self.modelsDevURL), let parsed = Self.parseModelsDev(data), !parsed.isEmpty {
+            table.models.merge(parsed) { $1 }
             persist()
         }
     }
@@ -114,28 +157,43 @@ actor PricingService {
         return data
     }
 
-    private func merge(_ newer: [String: ModelPrice]) {
-        for (k, v) in newer { table[k] = v }
-    }
-
     private func persist() {
-        struct Wrapper: Codable { let models: [String: ModelPrice] }
-        if let data = try? JSONEncoder().encode(Wrapper(models: table)) {
-            try? data.write(to: cacheURL)
+        // Atomic: `localTable()` loads this file on every launch, and a
+        // half-written one would parse as nothing and drop every network price.
+        if let data = try? JSONEncoder().encode(NormalizedTable(models: table.models)) {
+            try? data.write(to: Self.cacheURL, options: .atomic)
         }
     }
 
-    // MARK: - Parsers
+    // MARK: - Local sources
 
     /// Our normalized format: { "models": { id: ModelPrice } }.
-    private func parseNormalized(_ data: Data) -> [String: ModelPrice] {
-        struct Wrapper: Codable { let models: [String: ModelPrice] }
-        return (try? JSONDecoder().decode(Wrapper.self, from: data))?.models ?? [:]
+    private struct NormalizedTable: Codable { let models: [String: ModelPrice] }
+
+    nonisolated private static func embeddedModels() -> [String: ModelPrice] {
+        // In the packaged .app the JSON sits in Contents/Resources (Bundle.main), the only
+        // location codesign accepts. Under `swift run`/debug it lives in the SPM resource
+        // bundle next to the binary (Bundle.module). Try both.
+        guard let url = Bundle.main.url(forResource: "embedded-pricing", withExtension: "json")
+                ?? Bundle.module.url(forResource: "embedded-pricing", withExtension: "json"),
+              let data = try? Data(contentsOf: url) else { return [:] }
+        return parseNormalized(data)
     }
+
+    nonisolated private static func cachedModels() -> [String: ModelPrice] {
+        guard let data = try? Data(contentsOf: cacheURL) else { return [:] }
+        return parseNormalized(data)
+    }
+
+    nonisolated private static func parseNormalized(_ data: Data) -> [String: ModelPrice] {
+        (try? JSONDecoder().decode(NormalizedTable.self, from: data))?.models ?? [:]
+    }
+
+    // MARK: - Network parsers
 
     /// LiteLLM model_prices_and_context_window.json: top-level keys are model ids,
     /// values carry per-token costs. Convert to per-1M.
-    private func parseLiteLLM(_ data: Data) -> [String: ModelPrice]? {
+    nonisolated private static func parseLiteLLM(_ data: Data) -> [String: ModelPrice]? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         var out: [String: ModelPrice] = [:]
         let m = 1_000_000.0
@@ -154,7 +212,7 @@ actor PricingService {
     }
 
     /// models.dev api.json: providers -> models with cost block (per 1M tokens).
-    private func parseModelsDev(_ data: Data) -> [String: ModelPrice]? {
+    nonisolated private static func parseModelsDev(_ data: Data) -> [String: ModelPrice]? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         var out: [String: ModelPrice] = [:]
         for (_, providerRaw) in root {

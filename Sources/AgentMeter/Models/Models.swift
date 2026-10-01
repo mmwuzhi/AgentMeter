@@ -423,6 +423,15 @@ struct UsageBucket: Identifiable, Codable, Sendable, Equatable {
     var totalTokens: Int { inputTokens + outputTokens + cacheWrite5m + cacheWrite1h + cacheRead }
 }
 
+/// One day's token counts under one model: what the scanners emit, a report
+/// carries, and the spend ledger stores. Dollars are derived from these under
+/// the `PriceTable` current at display time, never stored and read back.
+struct DayModelUsage: Codable, Sendable, Equatable {
+    let day: Date               // start-of-day (local)
+    let model: String
+    var counts: TokenCounts
+}
+
 /// One day of activity for the heatmap and sparkline: tokens and spend only.
 /// Recent days come from `UsageReport.buckets`; older ones come from the
 /// persisted lifetime ledger, which reaches back past the scanner's file window
@@ -452,21 +461,109 @@ struct UsageReport: Codable, Sendable, Equatable {
 
     let provider: Provider
     let buckets: [UsageBucket]          // sorted ascending by day
-    let totalCostUSD: Double            // rolling last `totalsWindowDays` days
+    /// Scan-time dollars for the rolling window. Compatibility output for older
+    /// builds reading `last-state.json`; this build prices `dayModels` instead.
+    let totalCostUSD: Double
     let totalTokens: Int                // rolling last `totalsWindowDays` days
-    var byModel: [ModelSpend] = []      // rolling last `totalsWindowDays` days, sorted by cost descending
+    var byModel: [ModelSpend] = []      // scan-time dollars per model; compat, like `totalCostUSD`
+    /// The counts behind `buckets`, split by model, so every dollar figure can
+    /// be computed under the table current at display time. Empty in a report
+    /// restored from a cache an older build wrote; the spend helpers then fall
+    /// back to that build's scan-time dollars until the first refresh.
+    var dayModels: [DayModelUsage] = []
     /// True when `buckets` came from reading every log file rather than the
     /// scanner's recent-file window. Only such a report may lower a stored
     /// `LifetimeSpendTracker` day. Provenance of one scan, not state — kept out
     /// of `CodingKeys` so it is never restored from a cache.
     var isCompleteHistory = false
 
+    init(
+        provider: Provider,
+        buckets: [UsageBucket],
+        totalCostUSD: Double,
+        totalTokens: Int,
+        byModel: [ModelSpend] = [],
+        dayModels: [DayModelUsage] = [],
+        isCompleteHistory: Bool = false
+    ) {
+        self.provider = provider
+        self.buckets = buckets
+        self.totalCostUSD = totalCostUSD
+        self.totalTokens = totalTokens
+        self.byModel = byModel
+        self.dayModels = dayModels
+        self.isCompleteHistory = isCompleteHistory
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case provider, buckets, totalCostUSD, totalTokens, byModel
+        case provider, buckets, totalCostUSD, totalTokens, byModel, dayModels
+    }
+
+    /// Tolerates caches written before `dayModels` existed.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try c.decode(Provider.self, forKey: .provider)
+        buckets = try c.decode([UsageBucket].self, forKey: .buckets)
+        totalCostUSD = try c.decode(Double.self, forKey: .totalCostUSD)
+        totalTokens = try c.decode(Int.self, forKey: .totalTokens)
+        byModel = try c.decodeIfPresent([ModelSpend].self, forKey: .byModel) ?? []
+        dayModels = try c.decodeIfPresent([DayModelUsage].self, forKey: .dayModels) ?? []
     }
 
     static func empty(_ provider: Provider) -> UsageReport {
         UsageReport(provider: provider, buckets: [], totalCostUSD: 0, totalTokens: 0)
+    }
+}
+
+/// Display-time spend. Everything here prices `dayModels` under the table it is
+/// handed, so two figures shown side by side always come from the same table;
+/// the scan-time `costUSD` fields are only a fallback for a report restored
+/// from an older build's cache, which carries no counts by model.
+extension UsageReport {
+    /// First day of the rolling `totalsWindowDays` window that ends today.
+    static func totalsCutoff(now: Date = Date(), calendar: Calendar = .current) -> Date {
+        calendar.date(byAdding: .day, value: -(totalsWindowDays - 1),
+                      to: calendar.startOfDay(for: now)) ?? .distantPast
+    }
+
+    /// Spend on the days on or after `cutoff` (every day when nil).
+    func costUSD(from cutoff: Date?, table: PriceTable) -> Double {
+        if dayModels.isEmpty {
+            return buckets.reduce(0) { $0 + (Self.includes(cutoff, $1.day) ? $1.costUSD : 0) }
+        }
+        return dayModels.reduce(0) {
+            $0 + (Self.includes(cutoff, $1.day) ? table.cost(model: $1.model, counts: $1.counts) : 0)
+        }
+    }
+
+    /// Spend on exactly `day`, a local start-of-day.
+    func costUSD(on day: Date, table: PriceTable) -> Double {
+        if dayModels.isEmpty {
+            return buckets.first { $0.day == day }?.costUSD ?? 0
+        }
+        return dayModels.reduce(0) {
+            $0 + ($1.day == day ? table.cost(model: $1.model, counts: $1.counts) : 0)
+        }
+    }
+
+    /// Per-model rollup of the days on or after `cutoff`, costliest first.
+    func modelSpend(from cutoff: Date, table: PriceTable) -> [ModelSpend] {
+        if dayModels.isEmpty { return byModel }
+        var totals: [String: (tokens: Int, cost: Double)] = [:]
+        for entry in dayModels where entry.day >= cutoff {
+            var t = totals[entry.model] ?? (0, 0)
+            t.tokens += entry.counts.total
+            t.cost += table.cost(model: entry.model, counts: entry.counts)
+            totals[entry.model] = t
+        }
+        return totals
+            .map { ModelSpend(model: $0.key, tokens: $0.value.tokens, costUSD: $0.value.cost) }
+            .sorted { $0.costUSD != $1.costUSD ? $0.costUSD > $1.costUSD : $0.model < $1.model }
+    }
+
+    private static func includes(_ cutoff: Date?, _ day: Date) -> Bool {
+        guard let cutoff else { return true }
+        return day >= cutoff
     }
 }
 

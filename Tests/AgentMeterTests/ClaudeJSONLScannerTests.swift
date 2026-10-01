@@ -175,6 +175,40 @@ final class ClaudeJSONLScannerTests: XCTestCase {
         try handle.close()
     }
 
+    /// The report must carry the counts behind its buckets split by model:
+    /// `dayModels` is what the spend ledger stores and what every dollar figure
+    /// is priced from at display time. Priced under the table the scan itself
+    /// used, they must give back the scan-time dollars exactly — counts and
+    /// buckets that disagree would move the all-time total with no usage
+    /// behind it, which is the bug this build replaced.
+    func testUsageReportCarriesPerDayModelCountsThatPriceLikeItsBuckets() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory.appendingPathComponent("claude-daymodels-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+        let iso = ISO8601DateFormatter()
+        let recent = iso.string(from: Date().addingTimeInterval(-3_600))
+        let earlier = iso.string(from: Date().addingTimeInterval(-3 * 86_400))
+        let payload = [
+            #"{"timestamp":"\#(recent)","requestId":"req-1","message":{"id":"msg-1","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation":{"ephemeral_5m_input_tokens":7,"ephemeral_1h_input_tokens":11}}}}"#,
+            #"{"timestamp":"\#(recent)","requestId":"req-2","message":{"id":"msg-2","model":"claude-opus-4-1-20250805","usage":{"input_tokens":100,"output_tokens":200}}}"#,
+            #"{"timestamp":"\#(earlier)","requestId":"req-3","message":{"id":"msg-3","model":"claude-sonnet-4-20250514","usage":{"input_tokens":1,"output_tokens":2}}}"#
+        ].joined(separator: "\n")
+        try payload.write(to: url, atomically: true, encoding: .utf8)
+
+        let report = await ClaudeJSONLScanner.usageReport(files: [url])
+
+        XCTAssertEqual(report.buckets.count, 2)
+        XCTAssertEqual(report.dayModels.count, 3, "two models on one day stay two entries")
+        for bucket in report.buckets {
+            let counted = report.dayModels.filter { $0.day == bucket.day }.reduce(0) { $0 + $1.counts.total }
+            XCTAssertEqual(counted, bucket.totalTokens, "the day's per-model counts must add up to its bucket")
+        }
+        let table = await PricingService.shared.snapshot()
+        XCTAssertEqual(report.costUSD(from: nil, table: table),
+                       report.buckets.reduce(0) { $0 + $1.costUSD }, accuracy: 1e-6,
+                       "the counts priced under the scan's table must give back the scan-time dollars")
+    }
+
     func testRecentLogFilesFiltersOldFilesByModificationDate() throws {
         let fm = FileManager.default
         let base = fm.temporaryDirectory.appendingPathComponent("claude-recent-\(UUID().uuidString)")

@@ -275,6 +275,29 @@ usage presentation, cached state, or Claude live-session integration.
 
 ## Spend and usage
 
+- Token counts are what is stored and carried; dollars are derived where they
+  are shown. `UsageReport.dayModels` holds one `DayModelUsage` per (day, model)
+  behind the buckets, and a `LifetimeDayRecord` keeps the same split in
+  `models`. Every on-screen figure prices those counts under
+  `AppViewModel.priceTable`, one table for the whole popover and menu bar: the
+  all-time footer (`lifetimeSpendUSD(for:)`), the day/7-day/30-day grid
+  (`SpendWindows`), the by-model rows (`UsageReport.modelSpend(from:table:)`),
+  the heatmap and sparkline points (`dayPoints(ledger:report:table:)`), and
+  the menu-bar `s:` readout (`todaySpendUSD(for:)`). Never read `costUSD`,
+  `totalCostUSD` or `byModel` in a view: they are scan-time compatibility
+  output for older builds reading `last-state.json` / `lifetime-spend.json`,
+  priced under whatever table the scan happened to hold. Mixing them with
+  live-priced figures re-creates the bug this replaced: a complete scan
+  re-priced every stored day under the table the process held at that moment,
+  the bundled snapshot lacked the models in use until the network table
+  arrived, and the all-time total moved by $1,400 with no usage behind it.
+- Ledger records written by older builds carry no per-model counts
+  (`models == nil`) and keep their stored dollars until a scan replaces the
+  day: a complete one, or a windowed one that saw at least as many tokens. A
+  report restored from an older build's `last-state.json`
+  has an empty `dayModels`, and the spend helpers fall back to its scan-time
+  dollars until the first refresh. Both fallbacks live inside the helpers;
+  neither is a reason for a view to read the compat fields itself.
 - The popover's all-time spend comes from `LifetimeSpendTracker`, not from a
   scan-window sum. It keeps one record per provider/day. A windowed scan can
   only grow a day; a scan flagged `UsageReport.isCompleteHistory` replaces the
@@ -283,23 +306,29 @@ usage presentation, cached state, or Claude live-session integration.
 - `LifetimeSpendStore` in `lifetime-spend.json` is authoritative. The
   `StateCache` copy exists only for compatibility because older builds rewrite
   `last-state.json` without unknown fields.
-- `UsageReport.totalCostUSD`, `totalTokens`, and `byModel` are clamped to
-  `UsageReport.totalsWindowDays` (30 days). `buckets` may retain older dates
-  because recently touched log files can contain old sessions, but that reach is
-  incidental — never rely on it for history.
+- `UsageReport.totalTokens`, `totalCostUSD`, and `byModel` are clamped to
+  `UsageReport.totalsWindowDays` (30 days); the cutoff is
+  `UsageReport.totalsCutoff()`, shared by `UsageRollup` and `ModelBreakdown` so
+  the by-model rows add up to the grid's 30-day column. `buckets` may retain
+  older dates because recently touched log files can contain old sessions, but
+  that reach is incidental — never rely on it for history.
 - The Activity sparkline and heatmap render `[UsageDayPoint]` from
-  `LifetimeSpendTracker.dayPoints(ledger:report:)`. The scanner's file window
-  (`ClaudeJSONLScanner.usageHistoryDays`) only bounds what one refresh re-reads,
-  so plotting `buckets` directly loses every day whose logs have not been touched
-  lately. The ledger decides every day it holds — the refresh merges the report
-  into it first, so it is already at least as complete, and a report restored
-  from `last-state.json` must not be able to resurrect a corrected over-count.
-  The report only fills days the ledger lacks. `dayPoints` drops the synthetic
-  `legacyFloorDay` record, and `UsageHeatmap` scales color from the cells it
-  draws, not from every point handed to it.
+  `LifetimeSpendTracker.dayPoints(ledger:report:table:)`. The scanner's file
+  window (`ClaudeJSONLScanner.usageHistoryDays`) only bounds what one refresh
+  re-reads, so plotting `buckets` directly loses every day whose logs have not
+  been touched lately. The ledger decides every day it holds — the refresh
+  merges the report into it first, so it is already at least as complete, and a
+  report restored from `last-state.json` must not be able to resurrect a
+  corrected over-count. The report only fills days the ledger lacks.
+  `dayPoints` drops the synthetic `legacyFloorDay` record, and `UsageHeatmap`
+  scales color from the cells it draws, not from every point handed to it.
 - Gate the Activity/Spend block on those points, not on `usage.buckets`: a
   provider idle longer than the file window has no buckets but real ledger days.
-- Any UI labeled “30-day” must use `SpendWindows`; never sum all buckets.
+- Any UI labeled “30-day” must use `SpendWindows`; never sum all buckets. Its
+  token side reads `buckets`; its dollar side goes through
+  `UsageReport.costUSD(on:table:)` / `costUSD(from:table:)`, so the headline
+  row and the grid agree on the window, and the grid and the footer agree on
+  the price.
 
 ## Claude live sessions
 
