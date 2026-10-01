@@ -438,14 +438,22 @@ enum QuotaTrendTracker {
     /// physically allow. Both windows count the same tokens, so their drains
     /// keep a near-constant ratio `r` (per plan; per model mix for a
     /// model-scoped weekly): the peer hands this window at most
-    /// `r × peer.remainingPercent` before the peer's reset and `r × 100` per
-    /// peer cycle after it. An `avg` projection sooner than that is a pace the
-    /// user cannot hold — the peer's limit would stop them first — so the
-    /// estimate becomes the floor: the even-pace reading of the peer refilling
-    /// and draining fully, cycle after cycle. A floor landing at or past this
-    /// window's own reset means it cannot run out at all, hence `.safe`. When the floor does
-    /// not bite, or no peer has the evidence for one, the older "hits first"
-    /// rule still applies.
+    /// `r × peer.remainingPercent` before the peer's reset and `r × 100` at
+    /// each peer reset after it. A refill lands whole, so the user spends it
+    /// at the `avg` pace and waits only once it is gone: the floor is the
+    /// refill that finally covers what is left, plus the time to spend the
+    /// rest of it. An `avg` projection sooner than that is a pace the user
+    /// cannot hold — the peer's limit would stop them first. A floor landing
+    /// at or past this window's own reset means it cannot run out at all,
+    /// hence `.safe`.
+    ///
+    /// Spreading a refill across its cycle can delay the projection too far.
+    ///
+    /// A peer whose ratio was measured has had its say here: when its floor
+    /// does not bite, the `avg` projection stands. Only a peer with no
+    /// evidence for a floor falls through to the older "hits first" rule,
+    /// which ignores the refill — a 5-hour window running dry seconds before
+    /// its reset would otherwise call the weekly safe just before refilling it.
     private static func pacedByShorterWindow(
         _ raw: QuotaRunway,
         provider: Provider,
@@ -456,10 +464,12 @@ enum QuotaTrendTracker {
     ) -> QuotaRunway {
         guard raw.status == .atRisk,
               let rawDepletion = raw.estimatedDepletionAt,
+              let pace = raw.percentPerHour, pace > 0,
               let reset = window.resetsAt else {
             return raw
         }
 
+        var measuredPeers: Set<String> = []
         let floor = peerWindows
             .compactMap { peer -> (QuotaWindow, Date)? in
                 // A peer already past its reset is stale data, and one sharing
@@ -473,13 +483,17 @@ enum QuotaTrendTracker {
                       let cycle = peer.cycle, cycle > 0,
                       let ratio = drainRatio(of: window, per: peer, provider: provider, observations: observations)
                 else { return nil }
+                measuredPeers.insert(peer.id)
                 let beforePeerReset = ratio * peer.remainingPercent
                 // The peer can still hand over enough to empty this window
                 // inside the current cycle, so it paces nothing.
                 guard beforePeerReset < window.remainingPercent else { return nil }
-                let ceilingPerHour = ratio * 100 / (cycle / 3600)
-                let hoursAfterPeerReset = (window.remainingPercent - beforePeerReset) / ceilingPerHour
-                return (peer, peerReset.addingTimeInterval(hoursAfterPeerReset * 3600))
+                let perRefill = ratio * 100
+                let afterPeerReset = window.remainingPercent - beforePeerReset
+                let wholeRefills = (afterPeerReset / perRefill).rounded(.up) - 1
+                let lastRefill = peerReset.addingTimeInterval(wholeRefills * cycle)
+                let rest = afterPeerReset - wholeRefills * perRefill
+                return (peer, lastRefill.addingTimeInterval(rest / pace * 3600))
             }
             .max { $0.1 < $1.1 }
 
@@ -490,7 +504,7 @@ enum QuotaTrendTracker {
                 window: window,
                 observations: observations,
                 now: now,
-                peerWindows: peerWindows
+                peerWindows: peerWindows.filter { !measuredPeers.contains($0.id) }
             )
         }
         if floor.1 >= reset {
@@ -521,6 +535,15 @@ enum QuotaTrendTracker {
     /// reset. Nil until both windows have moved enough whole points
     /// (`capacityMinimumWindowDrain`, `capacityMinimumPeerDrain`) for integer
     /// quantisation to stop dominating.
+    ///
+    /// A model-scoped weekly drains only while its own model runs, and the
+    /// peer points spent on other models while it sat still say nothing about
+    /// what a refill hands it: two hours on another model before twenty
+    /// minutes of Fable read 0.10 for a mix that ran at 0.17, and floored a
+    /// run-out hours late. Its pairs count only from its first move and while its last move
+    /// is within `modelScopedFlatThreshold`. Starting the count at a move
+    /// rather than at the stretch's true start reads a little high, which only
+    /// lowers the floor — the side that keeps a warning.
     static func drainRatio(
         of window: QuotaWindow,
         per peer: QuotaWindow,
@@ -548,12 +571,20 @@ enum QuotaTrendTracker {
             return sample.observedAt <= date ? sample.remainingPercent : nil
         }
 
+        let dormancy = window.isModelScoped == true ? modelScopedFlatThreshold : nil
+        var lastMove: Date?
         var peerDrain = 0.0
         var windowDrain = 0.0
         var previous = windowValue(atOrBefore: peerSamples[0].observedAt)
         for (earlier, later) in zip(peerSamples, peerSamples.dropFirst()) {
             let current = windowValue(atOrBefore: later.observedAt)
-            if let previous, let current,
+            if let previous, let current, current < previous {
+                lastMove = later.observedAt
+            }
+            let dormant = dormancy.map { threshold in
+                lastMove.map { later.observedAt.timeIntervalSince($0) > threshold } ?? true
+            } ?? false
+            if !dormant, let previous, let current,
                later.remainingPercent <= earlier.remainingPercent + 0.1,
                current <= previous + 0.1 {
                 peerDrain += earlier.remainingPercent - later.remainingPercent

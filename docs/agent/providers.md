@@ -310,13 +310,21 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
 - A shorter peer with a known `QuotaWindow.cycle` also floors the estimate:
   both windows count the same tokens, so the longer one can lose at most the
   measured drain ratio × the peer's remaining points before the peer refills
-  and ratio × 100 per peer cycle after — an `avg` projection sooner than that
-  even-pace floor is replaced by it (`QuotaRunway.pacedBy` names the peer), or
-  by `.safe` when the floor lands past the window's own reset. The ratio is
-  read over the raw per-window histories, skipping pairs where either window
-  rose, and needs 3 window points and 10 peer points before integer
-  quantisation stops dominating (measured: the weekly drains ~0.13 and the
-  Fable weekly ~0.24 points per 5-hour point). Codex fills `cycle` from
+  and ratio × 100 at each peer reset after. A refill lands whole and is spent
+  at the `avg` pace, so the floor is the refill that finally covers the rest
+  plus the time to spend it; an `avg` projection sooner than that is replaced
+  by it (`QuotaRunway.pacedBy` names the peer), or by `.safe` when the floor
+  lands past the window's own reset. Do not spread a refill evenly across its
+  cycle: that reads later than any real session can run. A peer
+  whose ratio was measured skips the "hits first" rule above when its floor
+  does not bite, since that rule ignores the refill. The ratio is read over
+  the raw per-window histories, skipping pairs where either window rose, and
+  needs 3 window points and 10 peer points before integer quantisation stops
+  dominating (measured: the weekly drains ~0.13 and the Fable weekly ~0.17-0.24
+  points per 5-hour point). A model-scoped weekly also skips pairs from before
+  its first move and from stretches it has sat still past
+  `modelScopedFlatThreshold`: peer points spent on other models meanwhile
+  diluted its ratio from 0.17 to 0.10. Codex fills `cycle` from
   `limit_window_seconds` / `windowDurationMins`, Claude from the window key,
   Copilot leaves it nil.
 - `cycle` is untrusted on every provider but Claude, whose value is derived from
