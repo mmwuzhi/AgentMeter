@@ -299,6 +299,25 @@ final class LifetimeSpendTrackerTests: XCTestCase {
         XCTAssertEqual(Set(record.keys), ["provider", "day", "costUSD", "tokens"])
     }
 
+    /// The store decodes the ledger as one array, so a single count missing
+    /// one key — written before a field existed, or by a build that left it
+    /// out — used to fail every record, and the first save after launch then
+    /// overwrote the file with only the days the scanner could still see.
+    func testLedgerCountsMissingAKeyReadAsZero() throws {
+        let json = Data(#"""
+        [{"provider":"claude","day":800000000,"costUSD":1,"tokens":30,
+          "models":{"claude-opus-5":{"input":10,"output":20}}},
+         {"provider":"claude","day":800086400,"costUSD":2,"tokens":5,
+          "models":{"claude-opus-5":{"input":1,"output":1,"cacheWrite5m":1,"cacheWrite1h":1,"cacheRead":1}}}]
+        """#.utf8)
+
+        let decoded = try JSONDecoder().decode([LifetimeDayRecord].self, from: json)
+
+        XCTAssertEqual(decoded.count, 2)
+        XCTAssertEqual(decoded[0].models?["claude-opus-5"], TokenCounts(input: 10, output: 20))
+        XCTAssertEqual(decoded[1].models?["claude-opus-5"]?.total, 5)
+    }
+
     /// A day stored by an older build is dollars frozen under whatever table
     /// that build held. The first windowed scan that sees at least as many
     /// tokens replaces it with counts, which price like every other day from

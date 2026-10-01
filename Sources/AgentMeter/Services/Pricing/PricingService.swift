@@ -29,6 +29,23 @@ struct TokenCounts: Codable, Sendable, Equatable {
     }
 }
 
+extension TokenCounts {
+    /// A missing key reads as zero. `LifetimeSpendStore` decodes the ledger as
+    /// one array, so a single count written before a field existed, or by a
+    /// build that left one out, would otherwise fail every record — and the
+    /// first save after launch would overwrite the file with only the days
+    /// the scanner can still see. Declared in an extension so the memberwise
+    /// initializer stays.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        input = try container.decodeIfPresent(Int.self, forKey: .input) ?? 0
+        output = try container.decodeIfPresent(Int.self, forKey: .output) ?? 0
+        cacheWrite5m = try container.decodeIfPresent(Int.self, forKey: .cacheWrite5m) ?? 0
+        cacheWrite1h = try container.decodeIfPresent(Int.self, forKey: .cacheWrite1h) ?? 0
+        cacheRead = try container.decodeIfPresent(Int.self, forKey: .cacheRead) ?? 0
+    }
+}
+
 /// A price table as a value. Every dollar figure the app shows is token counts
 /// priced under one of these at the moment of display: the scanners and the
 /// spend ledger keep counts, and no persisted dollar amount is read back into
