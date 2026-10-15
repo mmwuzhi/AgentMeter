@@ -780,13 +780,17 @@ extension QuotaSnapshot {
 }
 
 extension QuotaWindow {
+    /// How far two readings' `resetsAt` may drift apart and still describe
+    /// one epoch. Shared with `QuotaNotificationPolicy`, so the display and
+    /// the alerts agree on when a window has reset.
+    static let sameEpochTolerance: TimeInterval = 5 * 60
+
     func hasSameUsableEpoch(as previous: QuotaWindow, at date: Date) -> Bool {
-        let sameEpochTolerance: TimeInterval = 5 * 60
         guard id == previous.id,
               let previousReset = previous.resetsAt,
               let currentReset = resetsAt,
               previousReset > date,
-              abs(currentReset.timeIntervalSince(previousReset)) <= sameEpochTolerance else {
+              abs(currentReset.timeIntervalSince(previousReset)) <= Self.sameEpochTolerance else {
             return false
         }
         return true

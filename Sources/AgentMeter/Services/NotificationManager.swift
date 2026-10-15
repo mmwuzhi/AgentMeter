@@ -19,7 +19,10 @@ extension UNUserNotificationCenter: NotificationAuthorizationCenter {
 }
 
 struct QuotaNotificationState: Equatable {
+    /// Windows whose critical alert has gone out for their current epoch.
     var criticalNotified: Set<String> = []
+    /// The `resetsAt` of the epoch each alert went out for; absent while no
+    /// reading of that epoch has carried one.
     var criticalResetAt: [String: Date] = [:]
 }
 
@@ -47,25 +50,36 @@ enum QuotaNotificationPolicy {
 
         var events: [QuotaNotificationEvent] = []
         for window in windows {
+            // A reading whose own reset has passed describes an epoch that is
+            // over: last-state.json at launch, or a sibling carried along when
+            // a failed refresh keeps the last live snapshot whole.
+            if let reset = window.resetsAt, reset <= now { continue }
             let key = Self.key(provider: provider, windowID: window.id)
+            let notified = state.criticalNotified.contains(key)
+            let alertedReset = state.criticalResetAt[key]
             if window.remainingPercent <= threshold {
-                guard !state.criticalNotified.contains(key) else { continue }
-                state.criticalNotified.insert(key)
-                if let reset = window.resetsAt {
-                    state.criticalResetAt[key] = reset
-                } else {
-                    state.criticalResetAt.removeValue(forKey: key)
-                }
-                events.append(.critical(provider: provider, window: window))
-            } else {
-                if state.criticalNotified.contains(key),
-                   hasRecoveredAfterReset(previousReset: state.criticalResetAt[key], now: now) {
-                    if recoveryEnabled {
-                        events.append(.recovered(provider: provider, window: window))
+                if notified {
+                    guard let alertedReset else {
+                        state.criticalResetAt[key] = window.resetsAt
+                        continue
                     }
-                    state.criticalNotified.remove(key)
-                    state.criticalResetAt.removeValue(forKey: key)
+                    // Without a reset time the reading may be the `claude
+                    // /usage` scrape echoing a cached level, so only a stated
+                    // reset re-alerts.
+                    guard window.resetsAt != nil, isLaterEpoch(window, than: alertedReset, now: now) else { continue }
                 }
+                state.criticalNotified.insert(key)
+                state.criticalResetAt[key] = window.resetsAt
+                events.append(.critical(provider: provider, window: window))
+            } else if notified {
+                // With no reset time on record there is no epoch to wait out,
+                // and waiting would leave the window disarmed until relaunch.
+                if let alertedReset, !isLaterEpoch(window, than: alertedReset, now: now) { continue }
+                if recoveryEnabled {
+                    events.append(.recovered(provider: provider, window: window))
+                }
+                state.criticalNotified.remove(key)
+                state.criticalResetAt.removeValue(forKey: key)
             }
         }
         return events
@@ -75,15 +89,25 @@ enum QuotaNotificationPolicy {
         "\(provider.rawValue):\(windowID)"
     }
 
-    private static func hasRecoveredAfterReset(previousReset: Date?, now: Date) -> Bool {
-        guard let previousReset else { return false }
-        return previousReset <= now
+    /// Whether `window` reads a later epoch than the one ending at
+    /// `alertedReset`. A reading that states its reset is later when that
+    /// reset falls beyond `alertedReset` by more than drift: a reset spent
+    /// mid-epoch (a Claude limit reset, a Codex reset credit) starts a full
+    /// cycle from when it is spent, while drift within `sameEpochTolerance`
+    /// (Codex's shifted by minutes in 17fb060) stays one epoch even after
+    /// `alertedReset` has passed. A reading without one is later only once
+    /// `alertedReset` has passed: Claude drops `resets_at` mid-epoch and
+    /// later brings the same one back.
+    private static func isLaterEpoch(_ window: QuotaWindow, than alertedReset: Date, now: Date) -> Bool {
+        guard let reset = window.resetsAt else { return alertedReset <= now }
+        return reset.timeIntervalSince(alertedReset) > QuotaWindow.sameEpochTolerance
     }
 }
 
 /// Posts a system notification when a provider's quota drops to/below the user's
-/// critical threshold. Dedups per window so each depletion notifies once and
-/// re-arms only after the window climbs back above the threshold (e.g. a reset).
+/// critical threshold. Dedups per window and reset epoch: each depletion
+/// notifies once, and a window re-arms once a later epoch has begun (its reset
+/// passed, or a limit reset spent early moved it).
 @MainActor
 final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationManager()
