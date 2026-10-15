@@ -51,22 +51,39 @@ struct ClaudeService: Sendable {
     }
 
     private func fetchQuota(previous: QuotaSnapshot?) async -> QuotaSnapshot {
+        // A 429 binds every path below, the scrape included: it asks the same
+        // endpoint with the same token. Nothing is sent until the wait is over.
+        if let until = await ClaudeUsageGate.shared.blockedUntil() {
+            return Self.rateLimitedQuota(until: until)
+        }
         // 1. OAuth (preferred): file token first, then Keychain.
         let token = await ClaudeCredentials.load()
         if let token {
             do {
-                return try await ClaudeOAuthFetcher.fetch(token: token)
+                // Joins a quota read another refresh already has in flight.
+                return try await ClaudeUsageGate.shared.readQuota {
+                    try await ClaudeOAuthFetcher.fetch(token: token)
+                }
             } catch {
                 // Token rejected (vs. a network blip)? Drop the cache so the next
                 // refresh re-reads a freshly rotated token instead of the stale one.
                 if (error as? URLError)?.code == .userAuthenticationRequired {
                     await ClaudeCredentials.invalidate()
                 }
+                // This very read was the 429: a scrape now would only repeat it.
+                if let until = await ClaudeUsageGate.shared.blockedUntil() {
+                    return Self.rateLimitedQuota(until: until)
+                }
                 let now = Date()
                 if Self.oauthFallback(after: error, previous: previous, at: now) == .keepLastLive {
                     return Self.lastLiveQuota(failedAt: now)
                 }
             }
+        }
+        // The credential read above can wait on the Keychain long enough for
+        // another refresh to be told 429.
+        if let until = await ClaudeUsageGate.shared.blockedUntil() {
+            return Self.rateLimitedQuota(until: until)
         }
         // 2. CLI scrape fallback. The panel names no plan, so the badge keeps
         //    what the credential said — a rejected token still knew its plan.
@@ -102,12 +119,22 @@ struct ClaudeService: Sendable {
     /// `preservingLiveQuota` swaps the previous live snapshot back in, so this
     /// note is only rendered when nothing was there to keep.
     static func lastLiveQuota(failedAt: Date) -> QuotaSnapshot {
+        .unavailable(
+            .claude,
+            note: "Live quota fetch failed at \(clockString(failedAt)) — showing the last live reading"
+        )
+    }
+
+    /// The `.unavailable` snapshot for a cycle that sent no request because
+    /// the endpoint is rate-limiting; kept the same way as `lastLiveQuota`.
+    static func rateLimitedQuota(until: Date) -> QuotaSnapshot {
+        .unavailable(.claude, note: "Claude is rate-limiting quota reads — retrying after \(clockString(until))")
+    }
+
+    private static func clockString(_ date: Date) -> String {
         let clock = DateFormatter()
         clock.locale = Locale(identifier: "en_US_POSIX")
         clock.dateFormat = "HH:mm"
-        return .unavailable(
-            .claude,
-            note: "Live quota fetch failed at \(clock.string(from: failedAt)) — showing the last live reading"
-        )
+        return clock.string(from: date)
     }
 }

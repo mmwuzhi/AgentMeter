@@ -8,6 +8,9 @@ enum ClaudeOAuthFetcher {
     static let userAgent = "claude-code/2.1.0"
 
     static func fetch(token: ClaudeCredentials.Token) async throws -> QuotaSnapshot {
+        // Checked here, at the send, because the caller's own check may predate
+        // a wait on the Keychain during which another refresh was told 429.
+        if let until = await ClaudeUsageGate.shared.blockedUntil() { throw ClaudeUsageGate.Blocked(until: until) }
         var req = URLRequest(url: usageURL)
         req.timeoutInterval = 15
         req.setValue("Bearer \(token.accessToken)", forHTTPHeaderField: "Authorization")
@@ -15,8 +18,10 @@ enum ClaudeOAuthFetcher {
         req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
 
+        let sentAt = Date()
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        await ClaudeUsageGate.shared.record(http, sentAt: sentAt)
         if let errorCode = responseError(forStatusCode: http.statusCode) {
             throw URLError(errorCode)
         }

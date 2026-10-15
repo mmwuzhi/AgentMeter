@@ -57,12 +57,15 @@ enum ClaudeResetGrantFetcher {
         "tenure", "other_experiment", "unavailable", "unknown",
     ]
 
-    enum FetchError: Error { case badStatus(Int), badResponse }
+    enum FetchError: Error { case badStatus(Int), badResponse, blocked }
 
     /// A 401 deliberately does not invalidate `ClaudeCredentials`: the quota
     /// read owns that, and two paths dropping the cache would mean two Keychain
     /// reads.
     static func fetch(token: ClaudeCredentials.Token) async throws -> ClaudeResetState {
+        // The send is what the rate-limit wait forbids, so it is checked here
+        // and not only by the caller.
+        if await ClaudeUsageGate.shared.blockedUntil() != nil { throw FetchError.blocked }
         var req = URLRequest(url: url)
         // Shorter than the quota read's 15 s: this runs after it, inside the
         // same refresh, so its wait holds back every provider's landing.
@@ -72,8 +75,10 @@ enum ClaudeResetGrantFetcher {
         req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
 
+        let sentAt = Date()
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw FetchError.badResponse }
+        await ClaudeUsageGate.shared.record(http, sentAt: sentAt)
         guard http.statusCode == 200 else { throw FetchError.badStatus(http.statusCode) }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               !obj.isEmpty else { throw FetchError.badResponse }

@@ -372,8 +372,14 @@ final class RefreshCoordinator {
     ) async -> (ProviderState, ClaudeResetState?, Bool) {
         let state = await fetchClaude(plan: plan, previous: previous)
         guard Self.shouldReadClaudeResets(plan: plan, quotaSource: state.quota.source),
-              let token = await ClaudeCredentials.cachedToken() else { return (state, nil, false) }
-        return (state, try? await ClaudeResetGrantFetcher.fetch(token: token), true)
+              let token = await ClaudeCredentials.cachedToken(),
+              await ClaudeUsageGate.shared.blockedUntil() == nil else { return (state, nil, false) }
+        // Joins a read another refresh has in flight, or reuses one that
+        // succeeded within the last minute, rather than sending a second.
+        let resets = await ClaudeUsageGate.shared.readResets {
+            try? await ClaudeResetGrantFetcher.fetch(token: token)
+        }
+        return (state, resets, true)
     }
 
     /// Only after an OAuth quota read that succeeded this cycle: never on a
@@ -537,14 +543,24 @@ struct ProviderRefreshPlan: Sendable {
         providerStatusMinimumRefreshInterval: TimeInterval
     ) -> ProviderRefreshPlan {
         if forceAll {
+            var quota = Set(Provider.allCases)
+            // "Refresh now" is not held back for Codex or Copilot, but a Claude
+            // reading younger than the forced-refresh spacing is not read
+            // again: a double click, or a click queued behind a running refresh
+            // that then replays at once, sent two reads close together
+            // before a rate-limit response.
+            if let fetchedAt = lastLiveQuotaFetch[.claude],
+               now.timeIntervalSince(fetchedAt) < minimumForcedQuotaSpacing {
+                quota.remove(.claude)
+            }
             return ProviderRefreshPlan(
-                refreshQuota: Set(Provider.allCases),
+                refreshQuota: quota,
                 refreshUsage: [.codex, .claude],
                 refreshActiveAgents: true,
                 refreshResetCredits: true,
-                refreshClaudeResets: lastClaudeResetsRefresh.map {
+                refreshClaudeResets: quota.contains(.claude) && (lastClaudeResetsRefresh.map {
                     now.timeIntervalSince($0) >= minimumForcedClaudeResetsSpacing
-                } ?? true,
+                } ?? true),
                 refreshProviderStatus: true
             )
         }

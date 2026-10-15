@@ -56,6 +56,24 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   when that fails, prints the `cachedUsageUtilization` it keeps in
   `~/.claude.json` — a scrape under a 429 is never fresher than the live
   reading it would replace, and it costs a full Claude Code session start.
+- `/api/oauth/usage` answers 429 to a burst of requests and can then
+  refuse further requests for several minutes. Every
+  request to the endpoint therefore goes through `ClaudeUsageGate`: a 429
+  (quota or reset read) blocks all of them — the quota read, the reset read
+  and the `claude /usage` scrape, from any trigger, "Refresh now" included —
+  until `Retry-After` (honoured in full, rounded up to 15 s; a value over 24 h
+  or an unreadable one counts as missing) or, without it, 60 s doubling to
+  5 min. A 200 lifts the wait only if its request was sent after the latest
+  429 was learned of, since answers arrive in completion order; several 429s
+  from requests sent before the wait began count as one. The fetchers and the
+  scrape check the gate again right before sending, because the credential
+  read can wait on the Keychain while another refresh is told 429. While
+  blocked a cycle sends nothing and returns the "rate-limiting"
+  `.unavailable` note, so the last live reading stays and the stale banner
+  takes over as for any failed cycle. The wait lives in memory only: a
+  relaunch sends one request and learns it again. Response headers are not in
+  the unified log, so whether the server sends `Retry-After` is unconfirmed;
+  both cases are handled.
 - `/api/oauth/usage` carries no plan field. `ClaudeOAuthFetcher.planType`
   precedence is explicit response key >
   `ClaudeCredentials.Token.subscriptionType` (Claude Code's
@@ -149,8 +167,12 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   `ClaudeCredentials.cachedToken()` (never a Keychain read of its own), every
   20 minutes on its own clock; a cycle that sent no reset request does not
   advance that clock. "Refresh now" reads it too, but not within 60 s of the
-  last read: each read is a second `/api/oauth/usage` request, and overlapping refreshes can hit a rate limit. It times out at 8 s because it holds back the whole
-  refresh's landing. It sends `claude-cli/<version> (external,
+  last read, and refreshes that overlap share it (`ClaudeUsageGate.readResets`:
+  a caller joins a read in flight, or takes the state of one that succeeded in
+  the last 60 s, so a refresh whose plan cannot see an unlanded read still
+  does not send a second): each read is a second `/api/oauth/usage`
+  request, and repeated requests can hit a rate limit. It
+  times out at 8 s because it holds back the whole refresh's landing. It sends `claude-cli/<version> (external,
   cli)` because the block can answer `ineligible_reason: cli_version`; a 401
   there never invalidates the credential cache — the quota read owns that.
   `ClaudeResetState.ineligibleReason` is stored for diagnosis only. Spending a
@@ -203,7 +225,26 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   `ProviderRefreshPlan.minimumForcedQuotaSpacing` (20 s); usage and
   active-agent work still run, timer ticks and `forceAll` are unaffected, and
   a provider whose fetch is failing is never held back. Seven
-  `/api/oauth/usage` requests in 50 s produced a 429 streak.
+  `/api/oauth/usage` requests in 50 s produced a 429 streak. "Refresh now"
+  (`forceAll`) applies the same spacing to Claude alone: a click queued behind
+  a running refresh replays when it lands and can otherwise repeat the quota read.
+- A refresh stalled past 30 s lets a second one start beside it, and the
+  stalled one still sends its requests. After every launch the first Claude
+  usage scan reads the full history and could stall the launch refresh, which is how two
+  refreshes reached the reset read 7 ms apart (inferred from the log timing,
+  not measured). Anything that must not be sent twice therefore needs a
+  guard at the request, not only in `ProviderRefreshPlan`, which only sees
+  what earlier refreshes have landed. `ClaudeUsageGate` does this for the
+  Claude quota read (joined while in flight; refreshes stacked behind a
+  Keychain prompt would otherwise all send when it is answered) and the reset
+  read. A read in flight longer than its request timeout plus margin (20 s
+  quota, 10 s reset) is not joined, so a hung one cannot capture every later
+  refresh. Other requests of a stalled-and-escaped pair (status pages, Codex)
+  are still sent twice.
+- While Claude is rate-limiting, cycles the gate skips still count as failed
+  quota cycles, so the stale banner shows from the second one. An isolated 429
+  therefore shows it after one tick, where a plain retry used to clear it; the
+  server's block lasts about five minutes either way.
 
 ## Pricing and quota trends
 

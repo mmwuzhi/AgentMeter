@@ -274,6 +274,7 @@ final class RefreshCoordinatorMergeTests: XCTestCase {
     private func claudeResetsPlan(
         forceAll: Bool = false,
         lastQuotaRefresh: [Provider: Date],
+        lastLiveQuotaFetch: [Provider: Date] = [:],
         lastClaudeResetsRefresh: Date?,
         now: Date
     ) -> ProviderRefreshPlan {
@@ -286,6 +287,7 @@ final class RefreshCoordinatorMergeTests: XCTestCase {
             visibleSlots: [],
             foregroundKinds: [:],
             lastQuotaRefresh: lastQuotaRefresh,
+            lastLiveQuotaFetch: lastLiveQuotaFetch,
             lastUsageRefresh: [.codex: now, .claude: now],
             lastActiveAgentsRefresh: now,
             activeAgentsVisible: false,
@@ -341,6 +343,35 @@ final class RefreshCoordinatorMergeTests: XCTestCase {
         XCTAssertFalse(plan(last: now.addingTimeInterval(-2)).refreshClaudeResets)
         XCTAssertFalse(plan(last: now.addingTimeInterval(-59)).refreshClaudeResets)
         XCTAssertTrue(plan(last: now.addingTimeInterval(-60)).refreshClaudeResets)
+    }
+
+    /// "Refresh now" replayed at once behind a refresh that
+    /// had just read Claude, and the second read was one of the five requests
+    /// in 2.3 s that ended in a 429.
+    func testRefreshNowDoesNotReReadAClaudeReadingFromSecondsAgo() {
+        let now = Date(timeIntervalSince1970: 100_000)
+        let allRecent: [Provider: Date] = [.codex: now, .claude: now, .copilot: now]
+        let spacing = ProviderRefreshPlan.minimumForcedQuotaSpacing
+
+        func plan(claudeReadAgo age: TimeInterval?) -> ProviderRefreshPlan {
+            claudeResetsPlan(
+                forceAll: true,
+                lastQuotaRefresh: allRecent,
+                lastLiveQuotaFetch: age.map { [.claude: now.addingTimeInterval(-$0), .codex: now.addingTimeInterval(-$0)] } ?? [:],
+                lastClaudeResetsRefresh: nil,
+                now: now)
+        }
+
+        let replay = plan(claudeReadAgo: 1.8)
+        XCTAssertEqual(replay.refreshQuota, [.codex, .copilot],
+                       "Claude is not re-read; Refresh now still reaches the others, even a Codex read 1.8 s old")
+        XCTAssertFalse(replay.refreshClaudeResets, "the reset read only ever follows a quota read")
+        XCTAssertEqual(replay.refreshUsage, [.codex, .claude], "local usage scans still run")
+        XCTAssertTrue(replay.refreshActiveAgents)
+
+        XCTAssertTrue(plan(claudeReadAgo: spacing).refreshQuota.contains(.claude), "timely again on the boundary")
+        XCTAssertTrue(plan(claudeReadAgo: nil).refreshQuota.contains(.claude), "a failing or never-read Claude is not held back")
+        XCTAssertTrue(plan(claudeReadAgo: nil).refreshClaudeResets)
     }
 
     func testClaudeResetsAreReadOnlyBehindASuccessfulOAuthQuotaRead() {
