@@ -26,6 +26,7 @@ final class RefreshCoordinator {
     private var lastUsageRefresh: [Provider: Date] = [:]
     private var lastActiveAgentsRefresh: Date?
     private var lastResetCreditsRefresh: Date?
+    private var lastClaudeResetsRefresh: Date?
     private var lastProviderStatusRefresh: Date?
     private var activeAgentsVisibleCount = 0
     private var pendingRefreshRequest = ProviderRefreshRequest()
@@ -126,14 +127,15 @@ final class RefreshCoordinator {
         let previousCopilotQuota = viewModel.copilot.quota
         Task {
             async let codexState = fetchCodex(plan: plan, previous: previousCodex)
-            async let claudeState = fetchClaude(plan: plan, previous: previousClaude)
+            async let claudeState = fetchClaudeWithResets(plan: plan, previous: previousClaude)
             async let copilotState = fetchCopilot(plan: plan, previous: previousCopilot)
             async let activeAgents = fetchActiveAgents(plan: plan, previous: previousActiveAgents)
             async let realResetCredits = fetchCodexResetCredits(plan: plan)
             async let statusResult = fetchProviderStatus(plan: plan)
-            let (c, cl, cp, agents, resetCredits, status) = await (
+            let (c, claudeResult, cp, agents, resetCredits, status) = await (
                 codexState, claudeState, copilotState, activeAgents, realResetCredits, statusResult
             )
+            let (cl, claudeResets, claudeResetsAttempted) = claudeResult
             // The 30 s escape above can start a second refresh beside a stalled
             // one. Only the latest-started refresh may land: a superseded one that
             // finishes later would replay older windows as a rise (the trend
@@ -167,6 +169,11 @@ final class RefreshCoordinator {
                 }
             }
             viewModel.codex = nextCodex
+            // nil means not read this cycle or the read failed: keep the last
+            // answer. An empty state is a real answer and clears the line.
+            if let claudeResets {
+                viewModel.claudeResetState = claudeResets
+            }
             viewModel.claude = plan.refreshQuota.contains(.claude)
                 ? cl.preservingLiveQuota(from: previousClaudeQuota, at: now)
                 : cl
@@ -183,7 +190,7 @@ final class RefreshCoordinator {
                 viewModel.claudeKeychainPrimerNeeded = false
                 UserDefaults.standard.set(true, forKey: "claudeOAuthSucceededOnce")
             }
-            markRefresh(plan: plan, at: startedAt)
+            markRefresh(plan: plan, claudeResetsAttempted: claudeResetsAttempted, at: startedAt)
             let quotaStates = [
                 plan.refreshQuota.contains(.codex) ? viewModel.codex : nil,
                 plan.refreshQuota.contains(.claude) ? viewModel.claude : nil,
@@ -208,6 +215,7 @@ final class RefreshCoordinator {
                 copilot: viewModel.copilot,
                 quotaObservations: viewModel.quotaObservations,
                 codexResetCreditState: viewModel.codexResetCreditState,
+                claudeResetState: viewModel.claudeResetState,
                 lifetimeSpend: viewModel.lifetimeSpend
             )
             NotificationManager.shared.evaluate(provider: .codex, windows: viewModel.codex.quota.windows)
@@ -265,6 +273,7 @@ final class RefreshCoordinator {
             backgroundMinimumActiveAgentsRefreshInterval: backgroundMinimumActiveAgentsRefreshInterval,
             lastResetCreditsRefresh: lastResetCreditsRefresh,
             resetCreditsMinimumRefreshInterval: resetCreditsMinimumRefreshInterval,
+            lastClaudeResetsRefresh: lastClaudeResetsRefresh,
             lastProviderStatusRefresh: lastProviderStatusRefresh,
             providerStatusMinimumRefreshInterval: providerStatusMinimumRefreshInterval
         )
@@ -307,11 +316,15 @@ final class RefreshCoordinator {
             }
         }
         lastActiveAgentsRefresh = date
-        // Deliberately not seeded: leaving it nil makes the very first refresh (right
-        // after launch) treat reset credits as due, same as a never-yet-fetched provider.
+        // Deliberately not seeded: leaving them nil makes the very first refresh (right
+        // after launch) treat Codex reset credits and Claude reset grants as due, same
+        // as a never-yet-fetched provider.
     }
 
-    private func markRefresh(plan: ProviderRefreshPlan, at date: Date) {
+    /// `claudeResetsAttempted` rather than the plan decides the Claude reset
+    /// clock: a cycle whose quota read failed sent no reset request, and should
+    /// not hold the next attempt back 20 minutes.
+    private func markRefresh(plan: ProviderRefreshPlan, claudeResetsAttempted: Bool, at date: Date) {
         for provider in plan.refreshQuota {
             lastQuotaRefresh[provider] = date
         }
@@ -323,6 +336,9 @@ final class RefreshCoordinator {
         }
         if plan.refreshResetCredits {
             lastResetCreditsRefresh = date
+        }
+        if claudeResetsAttempted {
+            lastClaudeResetsRefresh = date
         }
         if plan.refreshProviderStatus {
             lastProviderStatusRefresh = date
@@ -345,6 +361,30 @@ final class RefreshCoordinator {
             refreshUsage: plan.refreshUsage.contains(.claude),
             previous: previous
         )
+    }
+
+    /// Claude quota, then its limit-reset grants, with the token the quota read
+    /// left in the cache: no Keychain read of its own. The flag says whether a
+    /// reset request went out at all.
+    private func fetchClaudeWithResets(
+        plan: ProviderRefreshPlan,
+        previous: ProviderState
+    ) async -> (ProviderState, ClaudeResetState?, Bool) {
+        let state = await fetchClaude(plan: plan, previous: previous)
+        guard Self.shouldReadClaudeResets(plan: plan, quotaSource: state.quota.source),
+              let token = await ClaudeCredentials.cachedToken() else { return (state, nil, false) }
+        return (state, try? await ClaudeResetGrantFetcher.fetch(token: token), true)
+    }
+
+    /// Only after an OAuth quota read that succeeded this cycle: never on a
+    /// token that just failed, and never right behind a 429 (`.unavailable`)
+    /// or a CLI fallback, where a second `/api/oauth/usage` call would only
+    /// deepen the rate limit.
+    nonisolated static func shouldReadClaudeResets(
+        plan: ProviderRefreshPlan,
+        quotaSource: QuotaSnapshot.SourceKind
+    ) -> Bool {
+        plan.refreshClaudeResets && plan.refreshQuota.contains(.claude) && quotaSource == .oauth
     }
 
     private func fetchCopilot(plan: ProviderRefreshPlan, previous: ProviderState) async -> ProviderState {
@@ -459,11 +499,20 @@ struct ProviderRefreshPlan: Sendable {
     let refreshUsage: Set<Provider>
     let refreshActiveAgents: Bool
     let refreshResetCredits: Bool
+    /// Claude limit-reset grants, on the same 20-minute cadence as Codex's
+    /// reset credits and only when Claude quota is read this cycle.
+    let refreshClaudeResets: Bool
     let refreshProviderStatus: Bool
 
     /// Forced quota reads skip recent successful fetches. Other refresh work
     /// still runs, and manual refresh applies the interval only to Claude.
     static let minimumForcedQuotaSpacing: TimeInterval = 20
+
+    /// "Refresh now" still reads Claude's reset grants, but not twice within
+    /// this long: each read is a second `/api/oauth/usage` request behind the
+    /// quota one, and overlapping refreshes can trigger HTTP 429. Grants change
+    /// on a scale of days, so a refresh that skips them loses nothing.
+    static let minimumForcedClaudeResetsSpacing: TimeInterval = 60
 
     static func make(
         forceAll: Bool,
@@ -483,6 +532,7 @@ struct ProviderRefreshPlan: Sendable {
         backgroundMinimumActiveAgentsRefreshInterval: TimeInterval,
         lastResetCreditsRefresh: Date?,
         resetCreditsMinimumRefreshInterval: TimeInterval,
+        lastClaudeResetsRefresh: Date? = nil,
         lastProviderStatusRefresh: Date?,
         providerStatusMinimumRefreshInterval: TimeInterval
     ) -> ProviderRefreshPlan {
@@ -492,6 +542,9 @@ struct ProviderRefreshPlan: Sendable {
                 refreshUsage: [.codex, .claude],
                 refreshActiveAgents: true,
                 refreshResetCredits: true,
+                refreshClaudeResets: lastClaudeResetsRefresh.map {
+                    now.timeIntervalSince($0) >= minimumForcedClaudeResetsSpacing
+                } ?? true,
                 refreshProviderStatus: true
             )
         }
@@ -549,6 +602,9 @@ struct ProviderRefreshPlan: Sendable {
         let resetCredits = quota.contains(.codex) && (
             lastResetCreditsRefresh.map { now.timeIntervalSince($0) >= resetCreditsMinimumRefreshInterval } ?? true
         )
+        let claudeResets = quota.contains(.claude) && (
+            lastClaudeResetsRefresh.map { now.timeIntervalSince($0) >= resetCreditsMinimumRefreshInterval } ?? true
+        )
         // Only worth asking when some quota refresh is due this cycle anyway — same
         // "don't fetch for a panel that isn't refreshing" rule as reset credits.
         let providerStatus = !quota.isEmpty && (
@@ -559,6 +615,7 @@ struct ProviderRefreshPlan: Sendable {
             refreshUsage: usage,
             refreshActiveAgents: activeAgents,
             refreshResetCredits: resetCredits,
+            refreshClaudeResets: claudeResets,
             refreshProviderStatus: providerStatus
         )
     }

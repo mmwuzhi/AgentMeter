@@ -50,7 +50,7 @@ struct MenuView: View {
                     priceTable: model.priceTable,
                     activeAgents: model.activeAgents.filter { $0.provider == p },
                     tint: PopoverOrder.tint(p),
-                    codexResetCredits: p == .codex ? model.codexResetCreditState.credits : [],
+                    resetCredits: resetCreditItems(for: p),
                     providerStatus: model.providerStatus[p],
                     isQuotaStale: model.staleQuotaProviders.contains(p),
                     showsKeychainPrimer: p == .claude && model.claudeKeychainPrimerNeeded,
@@ -61,6 +61,14 @@ struct MenuView: View {
             }
         }
         .padding(12)
+    }
+
+    private func resetCreditItems(for provider: Provider) -> [ResetCreditItem] {
+        switch provider {
+        case .codex: ResetCreditItem.items(codex: model.codexResetCreditState.credits)
+        case .claude: ResetCreditItem.items(claude: model.claudeResetState)
+        case .copilot: []
+        }
     }
 
     /// Sizes to content, but never past the hosting screen: long session lists
@@ -539,9 +547,9 @@ struct ProviderSection: View {
     let priceTable: PriceTable
     let activeAgents: [ActiveAgent]
     var tint: Color
-    /// Codex-only real (or locally inferred, when the live fetch is unavailable)
-    /// reset-credit expiry dates; empty for other providers.
-    var codexResetCredits: [CodexResetCreditExpiry] = []
+    /// Codex reset credits (real, or locally inferred when the live fetch is
+    /// unavailable) or Claude limit-reset grants; empty for Copilot.
+    var resetCredits: [ResetCreditItem] = []
     /// This provider's public status-page reading, when the last poll succeeded.
     var providerStatus: ProviderStatusResult? = nil
     /// True when the shown quota was kept from an older fetch because the last
@@ -694,20 +702,21 @@ struct ProviderSection: View {
         return "$" + (formatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value))
     }
 
-    /// One line per available reset credit, e.g. "4 resets available" followed by
-    /// "in 5d 10h · in 11d 9h · in 20d 9h · in 25d 5h" — mirrors the individual
-    /// countdowns ChatGPT's own usage panel shows, instead of only the nearest one.
+    /// "4 resets available" followed by one countdown per credit or grant, e.g.
+    /// "5d 10h · 11d 9h · 20d 9h · 25d 5h" — mirrors the individual countdowns
+    /// ChatGPT's own usage panel shows, instead of only the nearest one.
     @ViewBuilder
     private var resetCreditsSection: some View {
-        let credits = codexResetCredits.sorted { $0.expiresAt < $1.expiresAt }
-        if !credits.isEmpty {
+        if let headline = ResetCreditItem.headline(resetCredits) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(credits.count == 1 ? "1 reset available" : "\(credits.count) resets available")
+                Text(headline)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text(credits.map { QuotaRow.relative($0.expiresAt, prefixed: false) }.joined(separator: " · "))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                if let countdowns = ResetCreditItem.countdowns(resetCredits, labeled: state.provider == .claude) {
+                    Text(countdowns)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
     }
@@ -734,5 +743,70 @@ struct ProviderSection: View {
             return state.quota.note ?? "Live quota unavailable"
         }
         return "\(state.provider.displayName): \(description)"
+    }
+}
+
+/// One row's worth of reset credits for `ProviderSection`: a Codex credit, or a
+/// Claude grant that may hold several resets under one deadline.
+struct ResetCreditItem: Equatable {
+    var expiresAt: Date?
+    var count: Int
+    /// The windows a reset refills, when the provider says (Claude only).
+    var refills: String?
+
+    static func items(codex credits: [CodexResetCreditExpiry]) -> [ResetCreditItem] {
+        credits.sorted { $0.expiresAt < $1.expiresAt }
+            .map { ResetCreditItem(expiresAt: $0.expiresAt, count: 1, refills: nil) }
+    }
+
+    /// Grants past their deadline drop out here as well as at parse time, since
+    /// the state can sit unrefreshed for 20 minutes or across a relaunch.
+    static func items(claude state: ClaudeResetState, at now: Date = Date()) -> [ResetCreditItem] {
+        guard state.eligible == true else { return [] }
+        return state.grants
+            .filter { grant in grant.resetsLeft > 0 && grant.endsAt.map { $0 > now } ?? true }
+            .sorted { ($0.endsAt ?? .distantFuture) < ($1.endsAt ?? .distantFuture) }
+            .map { ResetCreditItem(expiresAt: $0.endsAt, count: $0.resetsLeft,
+                                   refills: ClaudeResetGrantFetcher.refillLabel(for: $0.clears)) }
+    }
+
+    /// "2 resets available", plus " · refills Weekly" when every item refills
+    /// the same windows. Nil when there is nothing to show.
+    static func headline(_ items: [ResetCreditItem]) -> String? {
+        let total = items.reduce(0) { $0 + $1.count }
+        guard total > 0 else { return nil }
+        let count = total == 1 ? "1 reset available" : "\(total) resets available"
+        guard let refills = sharedRefills(items) else { return count }
+        return "\(count) · refills \(refills)"
+    }
+
+    /// One entry per item, "6d 23h", "6d 23h ×2", or "Weekly 6d 23h" when
+    /// items refill different windows; nil when no item has anything to say.
+    /// With `labeled`, the deadline reads as a deadline: "Expires in 6d 23h ·
+    /// 9d 2h" when the items share their refills, "Weekly expires in 6d 23h ·
+    /// 5-hour expires in 9d 2h" when they do not.
+    static func countdowns(_ items: [ResetCreditItem], labeled: Bool = false) -> String? {
+        let shared = sharedRefills(items)
+        let entries = items.compactMap { item -> String? in
+            var parts: [String] = []
+            if shared == nil, let refills = item.refills { parts.append(refills) }
+            if let expiresAt = item.expiresAt {
+                let remaining = QuotaRow.relative(expiresAt, prefixed: false)
+                if labeled && shared == nil { parts.append("expires in") }
+                parts.append(remaining)
+            }
+            guard !parts.isEmpty else { return nil }
+            if item.count > 1 { parts.append("×\(item.count)") }
+            return parts.joined(separator: " ")
+        }
+        guard !entries.isEmpty else { return nil }
+        let line = entries.joined(separator: " · ")
+        return labeled && shared != nil ? "Expires in " + line : line
+    }
+
+    private static func sharedRefills(_ items: [ResetCreditItem]) -> String? {
+        guard let first = items.first?.refills,
+              items.allSatisfy({ $0.refills == first }) else { return nil }
+        return first
     }
 }

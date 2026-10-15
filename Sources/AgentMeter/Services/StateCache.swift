@@ -11,6 +11,7 @@ enum StateCache {
         var copilot: ProviderState
         var quotaObservations: [QuotaObservation]
         var codexResetCreditState: CodexResetCreditState
+        var claudeResetState: ClaudeResetState
         var lifetimeSpend: [LifetimeDayRecord]
 
         init(
@@ -19,6 +20,7 @@ enum StateCache {
             copilot: ProviderState,
             quotaObservations: [QuotaObservation] = [],
             codexResetCreditState: CodexResetCreditState = CodexResetCreditState(),
+            claudeResetState: ClaudeResetState = ClaudeResetState(),
             lifetimeSpend: [LifetimeDayRecord] = []
         ) {
             self.codex = codex
@@ -26,6 +28,7 @@ enum StateCache {
             self.copilot = copilot
             self.quotaObservations = quotaObservations
             self.codexResetCreditState = codexResetCreditState
+            self.claudeResetState = claudeResetState
             self.lifetimeSpend = lifetimeSpend
         }
 
@@ -44,6 +47,10 @@ enum StateCache {
                 CodexResetCreditState.self,
                 forKey: .codexResetCreditState
             ) ?? CodexResetCreditState()
+            claudeResetState = try c.decodeIfPresent(
+                ClaudeResetState.self,
+                forKey: .claudeResetState
+            ) ?? ClaudeResetState()
             lifetimeSpend = try c.decodeIfPresent([LifetimeDayRecord].self, forKey: .lifetimeSpend) ?? []
         }
     }
@@ -65,6 +72,7 @@ enum StateCache {
         copilot: ProviderState,
         quotaObservations: [QuotaObservation] = [],
         codexResetCreditState: CodexResetCreditState = CodexResetCreditState(),
+        claudeResetState: ClaudeResetState = ClaudeResetState(),
         lifetimeSpend: [LifetimeDayRecord] = []
     ) {
         let snap = Snapshot(
@@ -73,6 +81,7 @@ enum StateCache {
             copilot: copilot,
             quotaObservations: quotaObservations,
             codexResetCreditState: codexResetCreditState,
+            claudeResetState: claudeResetState,
             lifetimeSpend: lifetimeSpend
         )
         guard let data = try? JSONEncoder().encode(snap) else { return }

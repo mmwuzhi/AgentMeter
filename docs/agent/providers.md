@@ -132,6 +132,31 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   `seven_day_<model>` using `scope.model.display_name`.
 - Parse named keys first and skip duplicate `limits` ids. This keeps named keys
   authoritative and trend window ids stable. Ignore unknown kinds.
+- Limit resets (program `cedar_ember`, launched with Opus 5.5) come from
+  `ClaudeResetGrantFetcher`: `GET /api/oauth/usage?cedar_ember=1&skip_spend=1`,
+  the variant Claude Code itself sends for reset status, read separately from
+  the quota call because what `skip_spend` drops is unverified. The schema is
+  Claude Code 2.1.292's (`eligible`, `ineligible_reason`, `grants[]` with `id`
+  `^[a-z0-9_-]{1,40}$`, integer `resets_left`, ISO `ends_at`, `clears`
+  filtered to its known limit keys); follow it rather than guessing. The count
+  is the sum of `resets_left`, paused grants included, as Claude Code sums it,
+  over grants still before `ends_at` and capped at 20 grants. A null or missing
+  block is a real "no resets"; a malformed block — including a `grants` that is
+  neither an array nor null, which Claude Code would read as none — keeps the
+  previous state and dumps only the block to
+  `~/Library/Application Support/AgentMeter/debug-claude-reset-grants.json`.
+- The reset read runs only after that cycle's OAuth quota read succeeded, with
+  `ClaudeCredentials.cachedToken()` (never a Keychain read of its own), every
+  20 minutes on its own clock; a cycle that sent no reset request does not
+  advance that clock. "Refresh now" reads it too, but not within 60 s of the
+  last read: each read is a second `/api/oauth/usage` request, and overlapping refreshes can hit a rate limit. It times out at 8 s because it holds back the whole
+  refresh's landing. It sends `claude-cli/<version> (external,
+  cli)` because the block can answer `ineligible_reason: cli_version`; a 401
+  there never invalidates the credential cache — the quota read owns that.
+  `ClaudeResetState.ineligibleReason` is stored for diagnosis only. Spending a
+  reset (`POST /api/organizations/{org}/reset_rate_limits`) is deliberately
+  not implemented: it is a write on an undocumented endpoint that Claude Code
+  itself keeps behind a feature flag.
 
 ## Copilot
 

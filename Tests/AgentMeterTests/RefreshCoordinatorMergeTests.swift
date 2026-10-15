@@ -270,4 +270,89 @@ final class RefreshCoordinatorMergeTests: XCTestCase {
         XCTAssertEqual(RefreshCoordinator.nextQuotaFailureStreak(
             previous: 1, rawSource: .unavailable, shownSource: .unavailable), 0)
     }
+
+    private func claudeResetsPlan(
+        forceAll: Bool = false,
+        lastQuotaRefresh: [Provider: Date],
+        lastClaudeResetsRefresh: Date?,
+        now: Date
+    ) -> ProviderRefreshPlan {
+        ProviderRefreshPlan.make(
+            forceAll: forceAll,
+            forceVisibleQuota: false,
+            forcedUsageProviders: [],
+            forceActiveAgents: false,
+            now: now,
+            visibleSlots: [],
+            foregroundKinds: [:],
+            lastQuotaRefresh: lastQuotaRefresh,
+            lastUsageRefresh: [.codex: now, .claude: now],
+            lastActiveAgentsRefresh: now,
+            activeAgentsVisible: false,
+            refreshInterval: 60,
+            backgroundMinimumRefreshInterval: 15 * 60,
+            backgroundMinimumActiveAgentsRefreshInterval: 5 * 60,
+            lastResetCreditsRefresh: now,
+            resetCreditsMinimumRefreshInterval: 20 * 60,
+            lastClaudeResetsRefresh: lastClaudeResetsRefresh,
+            lastProviderStatusRefresh: now,
+            providerStatusMinimumRefreshInterval: 30 * 60
+        )
+    }
+
+    func testClaudeResetsFollowClaudeQuotaOnTheirOwnTwentyMinuteCadence() {
+        let now = Date(timeIntervalSince1970: 100_000)
+        let quotaDue: [Provider: Date] = [.codex: now, .claude: now.addingTimeInterval(-16 * 60), .copilot: now]
+
+        let firstEver = claudeResetsPlan(lastQuotaRefresh: quotaDue, lastClaudeResetsRefresh: nil, now: now)
+        XCTAssertTrue(firstEver.refreshQuota.contains(.claude))
+        XCTAssertTrue(firstEver.refreshClaudeResets)
+
+        let recent = claudeResetsPlan(
+            lastQuotaRefresh: quotaDue, lastClaudeResetsRefresh: now.addingTimeInterval(-19 * 60), now: now)
+        XCTAssertTrue(recent.refreshQuota.contains(.claude))
+        XCTAssertFalse(recent.refreshClaudeResets)
+
+        let due = claudeResetsPlan(
+            lastQuotaRefresh: quotaDue, lastClaudeResetsRefresh: now.addingTimeInterval(-20 * 60), now: now)
+        XCTAssertTrue(due.refreshClaudeResets)
+        XCTAssertFalse(due.refreshResetCredits, "Codex reset credits keep their own clock")
+    }
+
+    func testClaudeResetsWaitWhileClaudeQuotaIsNotRead() {
+        let now = Date(timeIntervalSince1970: 100_000)
+        let allRecent: [Provider: Date] = [.codex: now, .claude: now, .copilot: now]
+
+        let plan = claudeResetsPlan(lastQuotaRefresh: allRecent, lastClaudeResetsRefresh: nil, now: now)
+
+        XCTAssertFalse(plan.refreshQuota.contains(.claude))
+        XCTAssertFalse(plan.refreshClaudeResets)
+    }
+
+    func testRefreshNowReadsClaudeResetsButNotTwiceWithinAMinute() {
+        let now = Date(timeIntervalSince1970: 100_000)
+        let allRecent: [Provider: Date] = [.codex: now, .claude: now, .copilot: now]
+
+        func plan(last: Date?) -> ProviderRefreshPlan {
+            claudeResetsPlan(forceAll: true, lastQuotaRefresh: allRecent, lastClaudeResetsRefresh: last, now: now)
+        }
+
+        XCTAssertTrue(plan(last: nil).refreshClaudeResets)
+        XCTAssertFalse(plan(last: now.addingTimeInterval(-2)).refreshClaudeResets)
+        XCTAssertFalse(plan(last: now.addingTimeInterval(-59)).refreshClaudeResets)
+        XCTAssertTrue(plan(last: now.addingTimeInterval(-60)).refreshClaudeResets)
+    }
+
+    func testClaudeResetsAreReadOnlyBehindASuccessfulOAuthQuotaRead() {
+        let now = Date(timeIntervalSince1970: 100_000)
+        let quotaDue: [Provider: Date] = [.codex: now, .claude: now.addingTimeInterval(-16 * 60), .copilot: now]
+        let due = claudeResetsPlan(lastQuotaRefresh: quotaDue, lastClaudeResetsRefresh: nil, now: now)
+        let notDue = claudeResetsPlan(lastQuotaRefresh: quotaDue, lastClaudeResetsRefresh: now, now: now)
+
+        XCTAssertTrue(RefreshCoordinator.shouldReadClaudeResets(plan: due, quotaSource: .oauth))
+        XCTAssertFalse(RefreshCoordinator.shouldReadClaudeResets(plan: due, quotaSource: .unavailable),
+                       "a 429 kept the last live reading: no second call behind it")
+        XCTAssertFalse(RefreshCoordinator.shouldReadClaudeResets(plan: due, quotaSource: .cli))
+        XCTAssertFalse(RefreshCoordinator.shouldReadClaudeResets(plan: notDue, quotaSource: .oauth))
+    }
 }

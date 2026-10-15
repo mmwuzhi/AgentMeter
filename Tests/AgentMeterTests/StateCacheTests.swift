@@ -76,4 +76,37 @@ final class StateCacheTests: XCTestCase {
 
         XCTAssertEqual(decoded.codexResetCreditState, state)
     }
+
+    func testSnapshotWithoutClaudeResetStateDecodesToNoResets() throws {
+        let data = try JSONEncoder().encode(StateCache.Snapshot(
+            codex: ProviderState(provider: .codex, quota: .unavailable(.codex, note: "old"), usage: .empty(.codex)),
+            claude: ProviderState(provider: .claude, quota: .unavailable(.claude, note: "old"), usage: .empty(.claude)),
+            copilot: ProviderState(provider: .copilot, quota: .unavailable(.copilot, note: "old"), usage: .empty(.copilot))
+        ))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "claudeResetState")
+        let oldData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(StateCache.Snapshot.self, from: oldData)
+
+        XCTAssertEqual(decoded.claudeResetState, ClaudeResetState())
+    }
+
+    func testSnapshotPreservesClaudeResetState() throws {
+        let state = ClaudeResetState(eligible: true, ineligibleReason: nil, grants: [
+            ClaudeResetGrant(id: "launch", resetsLeft: 1,
+                             endsAt: Date(timeIntervalSince1970: 1_792_600_000), clears: ["seven_day"]),
+            ClaudeResetGrant(id: "open", resetsLeft: 2, endsAt: nil, clears: []),
+        ])
+        let snapshot = StateCache.Snapshot(
+            codex: ProviderState(provider: .codex, quota: .unavailable(.codex, note: "old"), usage: .empty(.codex)),
+            claude: ProviderState(provider: .claude, quota: .unavailable(.claude, note: "old"), usage: .empty(.claude)),
+            copilot: ProviderState(provider: .copilot, quota: .unavailable(.copilot, note: "old"), usage: .empty(.copilot)),
+            claudeResetState: state
+        )
+
+        let decoded = try JSONDecoder().decode(StateCache.Snapshot.self, from: JSONEncoder().encode(snapshot))
+
+        XCTAssertEqual(decoded.claudeResetState, state)
+    }
 }

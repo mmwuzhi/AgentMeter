@@ -16,6 +16,7 @@ final class AppViewModel {
     var lastRefresh: Date?
     var quotaObservations: [QuotaObservation] = []
     var codexResetCreditState = CodexResetCreditState()
+    var claudeResetState = ClaudeResetState()
     var activeAgents: [ActiveAgent] = []
     var lifetimeSpend: [LifetimeDayRecord] = []
     /// The price table every dollar figure on screen is computed with, so the
@@ -62,6 +63,7 @@ final class AppViewModel {
             }
             quotaObservations = snap.quotaObservations
             codexResetCreditState = snap.codexResetCreditState
+            claudeResetState = snap.claudeResetState
             lifetimeSpend = storedLifetimeSpend.isEmpty ? snap.lifetimeSpend : storedLifetimeSpend
             if lifetimeSpend.isEmpty {
                 lifetimeSpend = LifetimeSpendTracker.bootstrapFromLegacyReports(

@@ -55,6 +55,11 @@ enum ClaudeCredentials {
         }
 
         func clear() { token = nil }
+
+        func peek() -> Token? {
+            guard let token, !token.isExpired else { return nil }
+            return token
+        }
     }
     private static let cache = Cache()
 
@@ -64,6 +69,12 @@ enum ClaudeCredentials {
         using loader: @escaping @Sendable () -> Token? = { loadUncached() }
     ) async -> Token? {
         await cache.load(using: loader)
+    }
+
+    /// The cached token if it is still valid, never reading disk or the
+    /// Keychain: for secondary reads that must not cost a prompt of their own.
+    static func cachedToken() async -> Token? {
+        await cache.peek()
     }
 
     /// Drops the cached token so the next `load()` re-reads from disk/Keychain.
