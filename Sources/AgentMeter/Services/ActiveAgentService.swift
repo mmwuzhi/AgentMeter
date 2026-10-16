@@ -8,16 +8,63 @@ enum ActiveAgentService {
     static func fetch() async -> [ActiveAgent] {
         await Task.detached {
             let payloads = AgentStatusStore.readAll()
-            let agents = parsePSOutput(runPS().output, observedAt: Date(), payloads: payloads)
-            return presentable(await enrichSessionUsage(agents), payloads: payloads)
+            let registry = ClaudeSessionRegistry.readAll()
+            let agents = parsePSOutput(runPS().output, observedAt: Date(), payloads: payloads, registry: registry)
+            return presentable(await enrichSessionUsage(agents), payloads: payloads, registry: registry)
         }.value
+    }
+
+    /// The popover's local status tick: the registry and the hook files
+    /// re-read and re-attached to the rows the last full refresh built,
+    /// without `ps`, `lsof`, a quota request or a transcript scan. A row whose
+    /// process has exited is dropped; session, usage and observed time stay
+    /// as that refresh found them, so ages do not move until it runs again.
+    static func refreshStatuses(_ agents: [ActiveAgent]) async -> [ActiveAgent] {
+        await Task.detached {
+            refreshStatuses(
+                agents,
+                payloads: AgentStatusStore.readAll(),
+                registry: ClaudeSessionRegistry.readAll(),
+                isAlive: isProcessAlive
+            )
+        }.value
+    }
+
+    static func refreshStatuses(
+        _ agents: [ActiveAgent],
+        payloads: [AgentStatusPayload],
+        registry: [Int: ClaudeSessionRegistryEntry],
+        isAlive: (Int) -> Bool
+    ) -> [ActiveAgent] {
+        let live = agents.filter { isAlive($0.pid) }.map { agent -> ActiveAgent in
+            var agent = agent
+            agent.status = nil
+            agent.statusUpdatedAt = nil
+            agent.statusSource = nil
+            agent.waitingReason = nil
+            agent.pendingBackgroundTasks = nil
+            agent.pendingSubagents = nil
+            return agent
+        }
+        return presentable(live, payloads: payloads, registry: registry)
+    }
+
+    /// `kill(pid, 0)` delivers nothing and only asks whether the process
+    /// exists; a process AgentMeter may not signal still exists.
+    static func isProcessAlive(_ pid: Int) -> Bool {
+        guard pid > 0, let value = pid_t(exactly: pid) else { return false }
+        return kill(value, 0) == 0 || errno == EPERM
     }
 
     /// The rows the popover gets: hook state attached, then every process that
     /// has neither a hook state nor an attributed transcript dropped — it is
     /// only a PID; see `ActiveAgent.isBlank`.
-    static func presentable(_ agents: [ActiveAgent], payloads: [AgentStatusPayload]) -> [ActiveAgent] {
-        attachStatus(agents, payloads: payloads).filter { !$0.isBlank }
+    static func presentable(
+        _ agents: [ActiveAgent],
+        payloads: [AgentStatusPayload],
+        registry: [Int: ClaudeSessionRegistryEntry] = [:]
+    ) -> [ActiveAgent] {
+        attachStatus(agents, payloads: payloads, registry: registry).filter { !$0.isBlank }
     }
 
     /// Newest hook payload per running agent PID. A payload is attributed to
@@ -51,7 +98,8 @@ enum ActiveAgentService {
 
     /// `payloads` is required (no default) so every caller visibly shares one
     /// store snapshot with `parsePSOutput` — status and session identity must
-    /// never be attributed from two different reads.
+    /// never be attributed from two different reads. `registry` is Claude
+    /// Code's own session registry, read in the same tick.
     ///
     /// A payload attaches by process ancestry only. The helper always records
     /// the chain up from its parent, so a live process's own payloads always
@@ -59,9 +107,17 @@ enum ActiveAgentService {
     /// what it matched was exactly what the PID guard had refused — a
     /// predecessor's payload after a crash or a `--resume`, which painted a
     /// fresh process green, yellow or red until its first hook event.
+    ///
+    /// A registry entry attaches by PID, guarded the same way against PID
+    /// reuse (`ClaudeSessionRegistry.entry`), and only to a process that has
+    /// already shown itself to be a session: one with a transcript of its own
+    /// or a hook payload. The registry lists every Claude process, the
+    /// short-lived helpers Claude Code spawns beside a session included, and
+    /// a state alone would turn each of those into a row (`isBlank`).
     static func attachStatus(
         _ agents: [ActiveAgent],
-        payloads: [AgentStatusPayload]
+        payloads: [AgentStatusPayload],
+        registry: [Int: ClaudeSessionRegistryEntry] = [:]
     ) -> [ActiveAgent] {
         let claudePIDs = Set(agents.lazy.filter { $0.provider == .claude }.map(\.pid))
         let byPID = latestPayloadsByPID(payloads, agentPIDs: claudePIDs)
@@ -69,22 +125,77 @@ enum ActiveAgentService {
         return agents.map { agent in
             guard agent.provider == .claude else { return agent }
             let startedAt = agent.observedAt.addingTimeInterval(-agent.elapsedSeconds)
-            guard let payload = hookPayload(for: agent.pid, startedAt: startedAt, payloadsByPID: byPID) else {
+            let payload = hookPayload(for: agent.pid, startedAt: startedAt, payloadsByPID: byPID)
+            let entry = agent.session != nil || payload != nil
+                ? ClaudeSessionRegistry.entry(
+                    for: agent.pid, processStartedAt: startedAt, observedAt: agent.observedAt, in: registry)
+                : nil
+            guard let resolved = resolveStatus(payload: payload, registry: entry, now: agent.observedAt) else {
                 return agent
             }
             var agent = agent
-            agent.status = payload.state
-            agent.statusUpdatedAt = payload.updatedAt
-            agent.pendingBackgroundTasks = payload.pendingBackgroundTasks
-            agent.pendingSubagents = payload.pendingSubagents
+            agent.status = resolved.state
+            agent.statusUpdatedAt = resolved.updatedAt
+            agent.statusSource = resolved.source
+            agent.waitingReason = resolved.waitingReason
+            agent.pendingBackgroundTasks = payload?.pendingBackgroundTasks
+            agent.pendingSubagents = payload?.pendingSubagents
             return agent
         }
+    }
+
+    struct ResolvedStatus: Equatable, Sendable {
+        var state: AgentStatusState
+        var updatedAt: Date?
+        var source: ActiveAgentStatusSource
+        var waitingReason: ActiveAgentWaitingReason?
+    }
+
+    /// A `StopFailure` hook runs just before Claude Code writes `idle` for
+    /// the same turn end (13 ms apart on 2026-10-16), the payload's time is
+    /// whole seconds and the registry's milliseconds: an error written up to
+    /// this long before the registry's own change still describes the state
+    /// the registry is in.
+    static let errorRegistryTolerance: TimeInterval = 10
+
+    /// The row state from the two sources. The registry decides whenever it
+    /// has a known state: it is Claude Code's own view, it moves on an
+    /// interrupt and on an answered prompt, and a subagent's tool calls
+    /// cannot touch it. Whichever of the two was written later does not
+    /// matter — the registry describes the process now, the payload the last
+    /// event — with one exception: a hook `error` stands beside a registry
+    /// `idle` it was written for (within `errorRegistryTolerance` of it, or
+    /// after it), because `StopFailure` is the only source that knows the
+    /// turn failed. A later turn (`busy`, `waiting`, or an `idle` written
+    /// well after the error) retires it. With no usable registry entry the
+    /// payload is the state, as before the registry was read.
+    static func resolveStatus(
+        payload: AgentStatusPayload?,
+        registry entry: ClaudeSessionRegistryEntry?,
+        now: Date
+    ) -> ResolvedStatus? {
+        if let entry, let state = entry.agentState {
+            if let payload, payload.state == .error, state == .idle,
+               payload.updatedAt >= (entry.statusUpdatedAt ?? .distantPast)
+                   .addingTimeInterval(-errorRegistryTolerance) {
+                return ResolvedStatus(state: .error, updatedAt: payload.updatedAt, source: .hook, waitingReason: nil)
+            }
+            return ResolvedStatus(
+                state: state,
+                updatedAt: entry.statusUpdatedAt ?? now,
+                source: .registry,
+                waitingReason: state == .waiting ? ActiveAgentWaitingReason(registryValue: entry.waitingFor) : nil
+            )
+        }
+        guard let payload else { return nil }
+        return ResolvedStatus(state: payload.state, updatedAt: payload.updatedAt, source: .hook, waitingReason: nil)
     }
 
     static func parsePSOutput(
         _ output: String,
         observedAt: Date,
-        payloads: [AgentStatusPayload]
+        payloads: [AgentStatusPayload],
+        registry: [Int: ClaudeSessionRegistryEntry] = [:]
     ) -> [ActiveAgent] {
         let rows = processRows(from: output)
         let executableByPID = executablePathMap(for: rows)
@@ -103,6 +214,12 @@ enum ActiveAgentService {
             return row.pid
         })
         let payloadsByPID = latestPayloadsByPID(payloads, agentPIDs: claudePIDs)
+        let claudeStarts = Dictionary(
+            rows.lazy.filter { claudePIDs.contains($0.pid) }
+                .map { ($0.pid, observedAt.addingTimeInterval(-$0.elapsedSeconds)) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let registryPins = registrySessionPins(registry, processes: claudeStarts, observedAt: observedAt)
         return parseProcessRows(
             rows,
             observedAt: observedAt,
@@ -110,6 +227,7 @@ enum ActiveAgentService {
             cwdLookup: { cwdByPID[$0] },
             resolveSession: sessionResolver(
                 payloadsByPID: payloadsByPID,
+                registryPins: registryPins,
                 identified: { identifiedClaudeSession(sessionID: $0, cwd: $1, observedAt: $2) },
                 heuristic: { query, cwd in
                     currentSession(
@@ -138,32 +256,77 @@ enum ActiveAgentService {
         let isSoleAgentForCWD: Bool
     }
 
-    /// The one session-resolution strategy: a hook-reported session ID pins a
-    /// Claude PID to its exact transcript and beats the newest-file heuristic
-    /// (it stays usable when several agents share a working directory); the
-    /// heuristic itself runs only for a directory's single agent or an
-    /// identified Codex rollout. Tests inject this same shape with fake leaf
-    /// lookups, so the precedence they exercise is the production one.
+    /// A transcript pin from the registry: the session id Claude Code itself
+    /// records for a PID. Tried before the hook's pin, which names the same
+    /// session but only once a hook event has fired, and is gone after a
+    /// `/clear` until the next one; it is also what attributes transcripts
+    /// with the hooks switched off.
+    struct RegistrySessionPin: Equatable, Sendable {
+        let sessionID: String
+        let cwd: String?
+    }
+
+    /// One pin per live Claude PID whose entry passes the PID-lifetime guard
+    /// and names a session no other live Claude process names. Two processes
+    /// cannot both be one session, but a helper process spawned with a
+    /// session's environment can register under its id, and a pin would list
+    /// that session twice with its spend counted twice; so neither gets one,
+    /// and both fall back to the hook's pin.
+    static func registrySessionPins(
+        _ registry: [Int: ClaudeSessionRegistryEntry],
+        processes: [Int: Date],
+        observedAt: Date
+    ) -> [Int: RegistrySessionPin] {
+        var pins: [Int: RegistrySessionPin] = [:]
+        var holders: [String: Int] = [:]
+        for (pid, startedAt) in processes {
+            guard let entry = ClaudeSessionRegistry.entry(
+                      for: pid, processStartedAt: startedAt, observedAt: observedAt, in: registry),
+                  let sessionID = entry.sessionID,
+                  isSafeSessionFilename(sessionID) else { continue }
+            pins[pid] = RegistrySessionPin(sessionID: sessionID, cwd: entry.cwd)
+            holders[sessionID, default: 0] += 1
+        }
+        return pins.filter { holders[$0.value.sessionID] == 1 }
+    }
+
+    /// The one session-resolution strategy: a pinned session ID — the
+    /// registry's, else the hook's — ties a Claude PID to its exact transcript
+    /// and beats the newest-file heuristic (it stays usable when several
+    /// agents share a working directory); the heuristic itself runs only for
+    /// a directory's single agent or an identified Codex rollout. Tests inject
+    /// this same shape with fake leaf lookups, so the precedence they exercise
+    /// is the production one.
     static func sessionResolver(
         payloadsByPID: [Int: AgentStatusPayload],
+        registryPins: [Int: RegistrySessionPin] = [:],
         identified: @escaping (String, String, Date) -> ActiveAgentSession?,
         heuristic: @escaping (SessionQuery, String) -> ActiveAgentSession?
     ) -> (SessionQuery) -> ActiveAgentSession? {
         { query in
-            if query.provider == .claude,
-               let payload = hookPayload(for: query.pid, startedAt: query.startedAt, payloadsByPID: payloadsByPID) {
+            if query.provider == .claude {
+                var pins: [(sessionID: String, cwd: String?)] = []
+                if let pin = registryPins[query.pid] {
+                    pins.append((pin.sessionID, pin.cwd))
+                }
+                if let payload = hookPayload(for: query.pid, startedAt: query.startedAt, payloadsByPID: payloadsByPID) {
+                    pins.append((payload.sessionID, payload.cwd))
+                }
                 // Claude Code names a transcript directory after the directory
-                // the session was launched from, while the hook reports the
-                // session's *current* cwd. An `/add-dir` or a cd makes those
-                // differ, and then the hook cwd alone derives a project key no
-                // directory has — so try the process cwd as well before giving
-                // up on the pinned transcript. Order matters: the same session
-                // id can exist under two project keys, and the process cwd is
-                // the weaker signal of the two.
+                // the session was launched from, while the registry and the
+                // hook report the session's *current* cwd. An `/add-dir` or a
+                // cd makes those differ, and then the reported cwd alone
+                // derives a project key no directory has — so try the process
+                // cwd as well before giving up on a pinned transcript. Order
+                // matters: the same session id can exist under two project
+                // keys, and the process cwd is the weaker signal of the two.
                 var tried: Set<String> = []
-                for cwd in [payload.cwd, query.cwd].compactMap({ $0 }) where tried.insert(cwd).inserted {
-                    if let session = identified(payload.sessionID, cwd, query.observedAt) {
-                        return session
+                for pin in pins {
+                    for cwd in [pin.cwd, query.cwd].compactMap({ $0 })
+                    where tried.insert(pin.sessionID + "\u{0}" + cwd).inserted {
+                        if let session = identified(pin.sessionID, cwd, query.observedAt) {
+                            return session
+                        }
                     }
                 }
                 // Pinned but not on disk under either key — not written yet,
@@ -172,7 +335,7 @@ enum ActiveAgentService {
                 // row stays state-only until a later tick finds the real one.
                 // A payload written without a session id carries the cwd in
                 // its place (manual helper use); that pins nothing.
-                if isSafeSessionFilename(payload.sessionID) { return nil }
+                if pins.contains(where: { isSafeSessionFilename($0.sessionID) }) { return nil }
             }
             guard let cwd = query.cwd,
                   query.codexRolloutIdentifier != nil || query.isSoleAgentForCWD else { return nil }

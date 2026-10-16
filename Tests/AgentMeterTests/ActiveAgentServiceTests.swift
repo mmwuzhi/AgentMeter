@@ -419,8 +419,10 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(agent(.working, pending: 2, subagents: 1).activityText, "working · 2 background tasks")
         XCTAssertEqual(agent(.working, pending: 0, subagents: 0).activityText, "working now")
         XCTAssertEqual(agent(.working).activityText, "working now", "PreToolUse carries no count")
-        XCTAssertEqual(agent(.idle, pending: 1, subagents: 1).activityText, "idle",
-                       "only a working row explains itself with the count")
+        // The registry reads a turn that ended with subagents in flight as
+        // idle; the count from the `Stop` then takes the age's place.
+        XCTAssertEqual(agent(.idle, pending: 1, subagents: 1).activityText, "idle · 1 subagent")
+        XCTAssertEqual(agent(.idle, pending: 0, subagents: 0).activityText, "idle")
         XCTAssertEqual(agent(.waiting, pending: 1, subagents: 1).activityText, "waiting for input")
     }
 

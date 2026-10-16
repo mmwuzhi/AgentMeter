@@ -447,7 +447,7 @@ private struct ActiveAgentRow: View {
 enum ActiveAgentTooltip {
     static func text(for agent: ActiveAgent) -> String {
         let action = switch agent.displayStatus {
-        case .waiting: "Waiting for your input, click to jump to this session"
+        case .waiting: "\(agent.waitingReason?.tooltipLead ?? (agent.statusSource == .registry ? "Waiting" : "Waiting for your input")), click to jump to this session"
         case .error: "This session needs attention, click to jump to it"
         case .working: "Active, click to jump to this session"
         case .idle where agent.hasStaleError: "Last turn failed, click to jump to this session"
@@ -455,6 +455,11 @@ enum ActiveAgentTooltip {
         case nil: "Open, click to jump to this session"
         }
         var lines = [action]
+        // The gray row's "idle · 2 subagents" is the count the last `Stop`
+        // reported; the tooltip says what the count is a count of.
+        if agent.displayStatus == .idle, let pending = agent.backgroundTaskText {
+            lines.append("The last turn ended with \(pending) still in flight")
+        }
         var identity = ["PID #\(agent.pid)"]
         if let session = agent.session {
             // The row truncates a long title in the middle; the tooltip is

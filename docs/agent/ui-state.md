@@ -396,6 +396,55 @@ usage presentation, cached state, or Claude live-session integration.
   becomes `-` (`ActiveAgentService.claudeProjectKey`), so
   `.claude/worktrees/sample_12345` is `--claude-worktrees-sample-12345`. Mapping
   only `/` and ` ` left every worktree session without a transcript.
+- A row's state comes first from Claude Code's own session registry,
+  `~/.claude/sessions/<pid>.json` (`ClaudeSessionRegistry`), and from the
+  hook payload only where the registry has nothing usable. Claude Code writes
+  the registry's `status` from its own turn state, so it moves where no hook
+  fires: `Stop` does not run on a user interrupt, nothing runs when a
+  permission prompt is answered, and a background subagent's tool calls
+  rewrite the hook file under the parent's session id. `busy` is working,
+  `waiting` waiting, `idle` and `shell` (the user's own `!` command) idle; a
+  status AgentMeter does not know counts as no entry. Only `<pid>.json` files
+  are read, never the `.key` files beside them, and every field but `pid` is
+  optional: the layout is internal to Claude Code (`claude agents --json`
+  documents the same names), a half-written file is retried once and then
+  skipped for the tick, and a corrupt file drops itself, not the listing.
+- The registry entry attaches by PID with a PID-reuse guard
+  (`ClaudeSessionRegistry.entry`: its `startedAt` may not predate the process
+  by more than `startedAtTolerance`), and only to a process that already has a
+  transcript or a hook payload. Claude Code registers the short-lived helper
+  processes it spawns beside a session too, and a registry state alone would
+  make each of them a row; `isBlank` keeps them out as before.
+- Merge rule (`ActiveAgentService.resolveStatus`): the registry decides
+  whichever source was written later, with one exception — a hook `error`
+  stands beside a registry `idle` written for the same turn end (`StopFailure`
+  runs 13 ms before Claude Code writes idle, `errorRegistryTolerance` covers
+  that and the payload's whole-second time) or after it, since the hook is the
+  only source that knows the turn failed; a later `busy`, `waiting` or a much
+  later `idle` retires it. `ActiveAgent.statusSource` says which source won.
+- `background_tasks` no longer decides the state when the registry is read: a
+  turn that ended with subagents in flight is idle to Claude Code and reads
+  "idle · 2 subagents" here, the count from the last `Stop`
+  (`ActiveAgent.backgroundTaskText`), with the tooltip saying what it counts.
+  It is that moment's count, not a reading of what runs now — transcript
+  mtimes do not say either way, so nothing infers from them. Without a
+  registry entry the helper's `working · N` reading stands as before.
+- `waitingFor` reaches the row only through `ActiveAgentWaitingReason`:
+  `permission prompt` (and the sandbox/worker requests) read "waiting for
+  permission", `input needed` "waiting for your input", `dialog open`
+  "waiting · dialog open"; anything else is dropped and a registry row says
+  plain "waiting" (a hook-only row keeps "waiting for input"). Never render the registry's string itself.
+- The registry's `sessionId` pins the transcript before the hook's does
+  (`ActiveAgentService.registrySessionPins`): same id, but present from the
+  session's start and after a `/clear`, and present with the hooks off. A pin
+  needs the PID guard and a session id no other live Claude process names —
+  a helper registered under a session's id would otherwise list it twice.
+- While a popover is open, `RefreshCoordinator` re-reads the registry and the
+  hook files every 2 s and re-attaches them to the rows the last full refresh
+  built (`ActiveAgentService.refreshStatuses`): no `ps`, `lsof`, quota
+  request or transcript scan, and a row whose process has exited is dropped.
+  A tick whose rows a full refresh replaced meanwhile is discarded. The full
+  refresh keeps its own cadence; the tick only moves the dots between them.
 - `ps` and `lsof` output is decoded lossily: one process anywhere with a
   non-UTF-8 argument made the listing undecodable and emptied the session
   list, parse cache included, for as long as it lived. `lsof` exits 1 when a

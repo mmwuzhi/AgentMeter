@@ -31,6 +31,16 @@ final class RefreshCoordinator {
     private var activeAgentsVisibleCount = 0
     private var pendingRefreshRequest = ProviderRefreshRequest()
     private var quotaFailureStreaks: [Provider: Int] = [:]
+    /// While a popover is open, Claude Code's session registry and the hook
+    /// files are re-read on this cadence and re-attached to the rows the last
+    /// full refresh built (`ActiveAgentService.refreshStatuses`): a dozen
+    /// small files, no `ps`, `lsof`, quota request or transcript scan. The
+    /// registry moves the moment a prompt is answered or a turn is
+    /// interrupted; the timer-driven refresh would show that up to a minute
+    /// later, and only together with everything else it fetches.
+    private let localStatusRefreshInterval: TimeInterval = 2
+    private var localStatusTimer: Timer?
+    private var localStatusRefreshInFlight = false
 
     init(viewModel: AppViewModel) {
         self.viewModel = viewModel
@@ -82,6 +92,7 @@ final class RefreshCoordinator {
     func stop() {
         timer?.invalidate()
         timer = nil
+        stopLocalStatusTimer()
         if let defaultsObserver {
             NotificationCenter.default.removeObserver(defaultsObserver)
             self.defaultsObserver = nil
@@ -248,6 +259,45 @@ final class RefreshCoordinator {
             activeAgentsVisibleCount += 1
         } else {
             activeAgentsVisibleCount = max(0, activeAgentsVisibleCount - 1)
+        }
+        if activeAgentsVisibleCount > 0 {
+            startLocalStatusTimer()
+        } else {
+            stopLocalStatusTimer()
+        }
+    }
+
+    private func startLocalStatusTimer() {
+        guard localStatusTimer == nil else { return }
+        let timer = Timer(timeInterval: localStatusRefreshInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshActiveAgentStatusesLocally() }
+        }
+        // Common modes, so the tick keeps coming while the popover tracks
+        // the mouse.
+        RunLoop.main.add(timer, forMode: .common)
+        localStatusTimer = timer
+    }
+
+    private func stopLocalStatusTimer() {
+        localStatusTimer?.invalidate()
+        localStatusTimer = nil
+    }
+
+    private func refreshActiveAgentStatusesLocally() {
+        guard activeAgentsVisibleCount > 0, !localStatusRefreshInFlight else { return }
+        let snapshot = viewModel.activeAgents
+        guard !snapshot.isEmpty else { return }
+        localStatusRefreshInFlight = true
+        Task {
+            let updated = await ActiveAgentService.refreshStatuses(snapshot)
+            localStatusRefreshInFlight = false
+            // A full refresh that landed meanwhile built newer rows, and these
+            // were derived from the old ones: drop them, the next tick starts
+            // from the new list.
+            guard activeAgentsVisibleCount > 0, viewModel.activeAgents == snapshot, updated != snapshot else { return }
+            viewModel.activeAgents = updated
+            viewModel.pruneSessionDisclosure(
+                keeping: ActiveAgentGrouping.disclosureKeys(for: ActiveAgentGrouping.group(updated)))
         }
     }
 

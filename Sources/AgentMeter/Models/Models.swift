@@ -712,6 +712,58 @@ struct ActiveSubagent: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
+/// Why a `waiting` session waits, from the registry's `waitingFor`. Only the
+/// wordings Claude Code is known to write map to a case; anything else is
+/// dropped and a registry-sourced row says plain "waiting", so the registry's text
+/// never reaches the screen as is.
+enum ActiveAgentWaitingReason: String, Codable, Sendable, Equatable {
+    /// A tool needs approval: `permission prompt`, plus the sandbox network
+    /// and worker requests, which are approvals as well.
+    case permission
+    /// Claude asked a question (`AskUserQuestion`) or an MCP server opened an
+    /// elicitation form: `input needed`.
+    case input
+    /// A dialog that is not about the work is open: `dialog open`.
+    case dialog
+
+    init?(registryValue: String?) {
+        switch registryValue?.lowercased() {
+        case "permission prompt", "sandbox request", "worker request": self = .permission
+        case "input needed": self = .input
+        case "dialog open": self = .dialog
+        default: return nil
+        }
+    }
+
+    /// Row subtitle.
+    var activityText: String {
+        switch self {
+        case .permission: return "waiting for permission"
+        case .input: return "waiting for your input"
+        case .dialog: return "waiting · dialog open"
+        }
+    }
+
+    /// First words of the tooltip.
+    var tooltipLead: String {
+        switch self {
+        case .permission: return "Waiting for permission"
+        case .input: return "Waiting for your input"
+        case .dialog: return "A dialog is open"
+        }
+    }
+}
+
+/// Where a row's `status` came from.
+enum ActiveAgentStatusSource: String, Codable, Sendable, Equatable {
+    /// Claude Code's own session registry (`ClaudeSessionRegistry`).
+    case registry
+    /// The hook payload, because the registry had nothing usable for the
+    /// process, or because the payload is a `StopFailure` the registry's
+    /// idle does not contradict.
+    case hook
+}
+
 /// One locally running interactive agent process.
 struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     /// A transcript touched this recently is "working" for rows that have no
@@ -745,8 +797,14 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     /// `Stop` carries them, so a `working` written by `PreToolUse` has nil.
     var pendingBackgroundTasks: Int? = nil
     var pendingSubagents: Int? = nil
-    /// When the hook wrote `status` (`AgentStatusPayload.updatedAt`).
+    /// When `status` was recorded: the registry's `statusUpdatedAt`, or the
+    /// hook payload's `updatedAt`.
     var statusUpdatedAt: Date? = nil
+    /// Where `status` came from. Nil with `status`.
+    var statusSource: ActiveAgentStatusSource? = nil
+    /// What a `waiting` session waits for, when the registry said and the
+    /// wording was one AgentMeter knows.
+    var waitingReason: ActiveAgentWaitingReason? = nil
 
     var id: String { "\(provider.rawValue):\(pid)" }
 
@@ -788,11 +846,19 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     var activityText: String {
         switch status {
         case .working: return workingText
-        case .waiting: return "waiting for input"
+        case .waiting:
+            // The registry said waiting without a known reason: do not guess
+            // that the user has to act.
+            return waitingReason?.activityText ?? (statusSource == .registry ? "waiting" : "waiting for input")
         case .error:
             guard hasStaleError, let statusUpdatedAt else { return "needs attention" }
             return "last turn failed · \(relativeAge(since: statusUpdatedAt))"
         case .idle:
+            // The turn ended with work still in flight (the last `Stop`'s
+            // count, kept beside the registry's idle): that goes in the age's
+            // place, which would otherwise read as the session having been
+            // quiet all that time.
+            if let pending = backgroundTaskText { return "idle · \(pending)" }
             guard let lastUpdatedAt = session?.lastUpdatedAt else { return "idle" }
             return "idle · \(relativeAge(since: lastUpdatedAt))"
         case nil:
@@ -854,14 +920,24 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     /// green. Plain "subagent(s)" when that is all of them; otherwise the
     /// broader "background task(s)", since a shell job or MCP task is in there.
     private var workingText: String {
-        guard let pending = pendingBackgroundTasks, pending > 0 else { return "working now" }
+        guard let pending = backgroundTaskText else { return "working now" }
+        return "working · \(pending)"
+    }
+
+    /// "2 subagents" / "1 background task": what the last `Stop` reported
+    /// still in flight when the turn ended. Plain "subagent(s)" when that is
+    /// all of them; otherwise the broader "background task(s)", since a shell
+    /// job or MCP task is in there. Nil when nothing was. It is a count from
+    /// that moment, not a reading of what runs now: the next `Stop` replaces it.
+    var backgroundTaskText: String? {
+        guard let pending = pendingBackgroundTasks, pending > 0 else { return nil }
         let noun: String
         if pendingSubagents == pending {
             noun = pending == 1 ? "subagent" : "subagents"
         } else {
             noun = pending == 1 ? "background task" : "background tasks"
         }
-        return "working · \(pending) \(noun)"
+        return "\(pending) \(noun)"
     }
 
     private var hasRecentSessionActivity: Bool {
