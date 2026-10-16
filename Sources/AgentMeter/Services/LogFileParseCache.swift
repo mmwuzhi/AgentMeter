@@ -49,9 +49,23 @@ actor LogFileParseCache<Value: Sendable> {
         /// Byte offset (a line boundary) up to which `value` accounts for the file.
         /// Lets a grown file resume parsing from here instead of from the top.
         let parsedBytes: Int64
+        /// The scan that stored it (`beginScan`); 0 for callers that do not
+        /// order their scans.
+        let scan: UInt64
     }
 
     private var entries: [String: Entry] = [:]
+    private var scans: UInt64 = 0
+
+    /// A ticket for one scan, handed to `store`: a scan that started later
+    /// fingerprinted every file later, so what it stores is at least as new,
+    /// and an earlier scan that finishes after it must not put its older view
+    /// back. Scans that overlap are real — a refresh stalled past 30 s lets
+    /// another start beside it.
+    func beginScan() -> UInt64 {
+        scans += 1
+        return scans
+    }
 
     func value(for fingerprint: LogFileFingerprint) -> Value? {
         guard let entry = entries[fingerprint.path],
@@ -67,14 +81,26 @@ actor LogFileParseCache<Value: Sendable> {
     /// append-only grew case.
     func incrementalBase(for fingerprint: LogFileFingerprint) -> (value: Value, parsedBytes: Int64)? {
         guard let entry = entries[fingerprint.path],
-              entry.fingerprint.hasSameStableIdentity(as: fingerprint),
-              entry.parsedBytes <= fingerprint.size,
-              fingerprint.modifiedAt >= entry.fingerprint.modifiedAt else { return nil }
+              Self.canResume(from: entry.fingerprint, parsedBytes: entry.parsedBytes, to: fingerprint) else {
+            return nil
+        }
         return (entry.value, entry.parsedBytes)
     }
 
-    func store(_ value: Value, for fingerprint: LogFileFingerprint, parsedBytes: Int64) {
-        entries[fingerprint.path] = Entry(fingerprint: fingerprint, value: value, parsedBytes: parsedBytes)
+    /// Whether a read of the file `previous` described, which stopped at the
+    /// line boundary `parsedBytes`, can go on from there on the file `current`
+    /// describes: the same filesystem object, not dated earlier, and longer
+    /// than what was parsed. The same length under a newer modification date
+    /// is a rewrite, not an append, and reads from the top.
+    static func canResume(from previous: LogFileFingerprint, parsedBytes: Int64, to current: LogFileFingerprint) -> Bool {
+        previous.hasSameStableIdentity(as: current)
+            && parsedBytes < current.size
+            && current.modifiedAt >= previous.modifiedAt
+    }
+
+    func store(_ value: Value, for fingerprint: LogFileFingerprint, parsedBytes: Int64, scan: UInt64 = 0) {
+        if let existing = entries[fingerprint.path], existing.scan > scan { return }
+        entries[fingerprint.path] = Entry(fingerprint: fingerprint, value: value, parsedBytes: parsedBytes, scan: scan)
     }
 
     /// Non-incremental callers store the whole file; the fingerprint's size is the

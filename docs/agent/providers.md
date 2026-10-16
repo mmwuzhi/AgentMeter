@@ -131,6 +131,46 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   nothing here reads it back. A complete scan once re-priced every stored
   dollar figure under the table the process held, and that is how the
   all-time total moved by $1,400 with no usage behind it.
+- `ClaudeJSONLScanner` reads through `ClaudeUsageCache`: the in-memory
+  `LogFileParseCache` every scan consults first and, for the app
+  (`ClaudeUsageCache.shared`), a `ClaudeUsageCacheStore` under
+  `~/Library/Application Support/AgentMeter/claude-usage-cache/` — one entry
+  file per log file, named by a digest of the log's resolved path, holding
+  the log's fingerprint, the parsed byte boundary and a `ClaudeFileUsage`:
+  per record a 128-bit `DedupKey` (SHA-256 of `message.id|requestId`,
+  truncated; never Swift's seeded `hashValue`), day, model and counts, plus
+  the unkeyed sums. No conversation text. Without it the first scan of a
+  launch and the 6-hourly complete scan re-parsed every file; with
+  it they stat every file and read only what changed.
+- An entry is used only while the log's fingerprint (size, mtime, inode)
+  matches it exactly, or as the head of a resume when the same inode grew
+  past the boundary under a date no older — and the 4 KiB before the
+  boundary still digest to what was stored (`boundaryDigest`), so a file
+  rewritten in place to something longer reads from the top. The same size
+  under a newer mtime is a rewrite, not an append
+  (`LogFileParseCache.canResume`). Truncation, replacement (new inode), a
+  version or calendar-tag mismatch (days are cut at local midnight, so the
+  time zone is part of validity), a failed SHA-256 trailer or a torn file all
+  discard the entry and parse the log again: the cache is never the only
+  source of a figure. An in-place rewrite that keeps size, mtime and inode
+  (`rsync --inplace` with preserved times) is the one change it cannot see.
+- Entries are written whole (temp file + `rename`, no fsync — a crash
+  mid-write fails the checksum and re-parses), only after a parse that
+  committed new newline-terminated bytes; a trailing partial line is shown but
+  never stored. Only a complete scan may prune the store, to the files it
+  listed (an empty list prunes nothing), because a windowed scan lists only
+  recent files and the next complete scan needs the rest; the memory cache is
+  still pruned to the scan's files every time, so the old corpus lives on disk
+  between complete scans, not in memory. Each scan takes a ticket from
+  `LogFileParseCache.beginScan`, and neither cache lets a scan that started
+  earlier overwrite what a later-started one stored (refreshes stalled past
+  30 s do overlap). Bump `ClaudeUsageCacheStore.formatVersion` whenever the
+  layout or what `consume` records changes. `ClaudeUsageCacheGoldenTests`
+  parses one fixture with and without the store and requires identical
+  reports across append, truncation, replacement, same-size edit, deletion,
+  corruption, version change, torn write and concurrent scans;
+  `usageReport(files:)` defaults to `ClaudeUsageCache.memoryOnly`, so tests
+  never touch the real store.
 - Scanners must not touch log lines through `String`. `JSONLLineReader` hands
   each record over as a `LogLine` of raw bytes: `String(data:encoding:)`
   validated every byte and `String.contains` resolved to
