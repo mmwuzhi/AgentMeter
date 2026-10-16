@@ -64,7 +64,7 @@ final class MenuBarLayoutTests: XCTestCase {
 
     func testProviderSlotDefaultOffersProviderUsageFieldsDisabled() {
         UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.claude")
-        let model = AppViewModel()
+        let model = AppViewModel(snapshot: nil, storedLifetimeSpend: [])
         model.claude = claudeState()
 
         let items = MenuBarLayout.merged(model, for: .claude).map(\.item)
@@ -79,7 +79,7 @@ final class MenuBarLayoutTests: XCTestCase {
 
     func testProviderSlotDefaultShowsMostNeededQuotaOnly() {
         UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.claude")
-        let model = AppViewModel()
+        let model = AppViewModel(snapshot: nil, storedLifetimeSpend: [])
         model.claude = claudeState()
 
         let segments = MenuBarLayout.activeSegments(model, slot: .claude)
@@ -90,7 +90,7 @@ final class MenuBarLayoutTests: XCTestCase {
 
     func testProviderSlotCaptionsAreNotProviderPrefixedWhenManuallyEnabled() {
         UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.claude")
-        let model = AppViewModel()
+        let model = AppViewModel(snapshot: nil, storedLifetimeSpend: [])
         model.claude = claudeState()
         MenuBarLayout.save([
             MenuBarItem(key: "q:claude:five_hour", enabled: true),
@@ -111,7 +111,7 @@ final class MenuBarLayoutTests: XCTestCase {
         // the alert level stay on the remainder either way.
         UserDefaults.standard.removeObject(forKey: "menuBarItemsConfig.claude")
         UserDefaults.standard.set(true, forKey: QuotaDisplay.defaultsKey)
-        let model = AppViewModel()
+        let model = AppViewModel(snapshot: nil, storedLifetimeSpend: [])
         model.claude = claudeState()
         MenuBarLayout.save([
             MenuBarItem(key: "q:claude:weekly", enabled: true),
@@ -281,7 +281,7 @@ final class MenuBarLayoutTests: XCTestCase {
     }
 
     private func configuredModel() -> AppViewModel {
-        let model = AppViewModel()
+        let model = AppViewModel(snapshot: nil, storedLifetimeSpend: [])
         model.codex = providerState(.codex)
         model.claude = claudeState()
         model.copilot = providerState(.copilot)

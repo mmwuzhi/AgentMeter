@@ -48,10 +48,16 @@ final class AppViewModel {
     /// so "choose Always Allow" guidance no longer lives only in the README.
     var claudeKeychainPrimerNeeded = !UserDefaults.standard.bool(forKey: "claudeOAuthSucceededOnce")
 
-    init() {
-        let storedLifetimeSpend = LifetimeSpendStore.load() ?? []
+    /// The app restores the last cached state and the spend ledger; a test
+    /// passes what it wants restored (nil and `[]` for a model with nothing
+    /// behind it) so nothing on disk leaks into it.
+    init(
+        snapshot: StateCache.Snapshot? = StateCache.load(),
+        storedLifetimeSpend: [LifetimeDayRecord]? = LifetimeSpendStore.load()
+    ) {
+        let storedLifetimeSpend = storedLifetimeSpend ?? []
         // Show the last values we saw immediately; the first refresh replaces them.
-        if let snap = StateCache.load() {
+        if let snap = snapshot {
             codex = snap.codex
             claude = snap.claude
             copilot = snap.copilot

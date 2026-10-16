@@ -5,9 +5,7 @@ import Foundation
 @MainActor
 final class RefreshCoordinator {
     private let viewModel: AppViewModel
-    private let codex = CodexService()
-    private let claude = ClaudeService()
-    private let copilot = CopilotService()
+    private let environment: RefreshEnvironment
     private let backgroundMinimumRefreshInterval: TimeInterval = 15 * 60
     private let backgroundMinimumActiveAgentsRefreshInterval: TimeInterval = 5 * 60
     /// Reset credits are granted/expire on the order of days, not minutes — throttled
@@ -41,9 +39,22 @@ final class RefreshCoordinator {
     private let localStatusRefreshInterval: TimeInterval = 2
     private var localStatusTimer: Timer?
     private var localStatusRefreshInFlight = false
+    /// Claude's usage scan runs apart from the refresh that asked for it: the
+    /// first one after launch reads every log file and used to hold quota,
+    /// reset grants and other providers’ results until the scan finished. One scan at a time: a refresh that wants usage while one is in
+    /// flight takes that scan's result instead of reading the same files
+    /// beside it, and the result lands through `applyClaudeUsage` whenever
+    /// it is ready, whether or not the refresh that started it was superseded.
+    private var claudeUsageScan: Task<Void, Never>?
+    private var claudeUsageScanGeneration = 0
+    /// When a complete-history report last landed this process. Nil until one
+    /// has, so the first scan after launch reads everything, and a complete
+    /// scan whose result never applied does not push the next one out.
+    private var lastClaudeCompleteScanLanded: Date?
 
-    init(viewModel: AppViewModel) {
+    init(viewModel: AppViewModel, environment: RefreshEnvironment = .live()) {
         self.viewModel = viewModel
+        self.environment = environment
     }
 
     /// Refresh cadence in seconds, from Settings (clamped to 15…3600). Default 60.
@@ -62,7 +73,7 @@ final class RefreshCoordinator {
         }
         // Notification permission is requested lazily by NotificationManager
         // the first time an alert actually needs to fire, not at launch.
-        seedBackgroundRefreshDates(at: Date())
+        seedBackgroundRefreshDates(at: environment.now())
         refresh(forceVisibleQuota: true)
         installWakeObservers()
         scheduleTimer()
@@ -84,15 +95,16 @@ final class RefreshCoordinator {
         if let timer, abs(timer.timeInterval - refreshInterval) > 0.5 { scheduleTimer() }
         // Re-check alerts against current data so lowering the threshold (or toggling
         // alerts on) notifies right away instead of waiting for the next fetch.
-        NotificationManager.shared.evaluate(provider: .codex, windows: viewModel.codex.quota.windows)
-        NotificationManager.shared.evaluate(provider: .claude, windows: viewModel.claude.quota.windows)
-        NotificationManager.shared.evaluate(provider: .copilot, windows: viewModel.copilot.quota.windows)
+        evaluateNotifications()
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
         stopLocalStatusTimer()
+        // The process is ending: a scan still running lands nothing.
+        claudeUsageScanGeneration += 1
+        claudeUsageScan = nil
         if let defaultsObserver {
             NotificationCenter.default.removeObserver(defaultsObserver)
             self.defaultsObserver = nil
@@ -117,18 +129,23 @@ final class RefreshCoordinator {
         // Coalesce concurrent refreshes, but never let a wedged fetch (e.g. a hung
         // network call) suppress refreshes forever — opening the popover must win.
         if viewModel.isRefreshing {
-            guard let started = refreshStartedAt, Date().timeIntervalSince(started) > 30 else {
+            guard let started = refreshStartedAt, environment.now().timeIntervalSince(started) > 30 else {
                 pendingRefreshRequest.merge(request)
                 return
             }
         }
         viewModel.isRefreshing = true
-        let startedAt = Date()
+        let startedAt = environment.now()
         refreshStartedAt = startedAt
         let plan = refreshPlan(
             request: request,
             now: startedAt
         )
+        // Not awaited below: the scan lands on its own, and this refresh is
+        // over when the live reads are.
+        if plan.refreshUsage.contains(.claude) {
+            startClaudeUsageScan(at: startedAt)
+        }
         let previousCodex = viewModel.codex
         let previousClaude = viewModel.claude
         let previousCopilot = viewModel.copilot
@@ -153,7 +170,7 @@ final class RefreshCoordinator {
             // tracker stamps samples at landing time), move the refresh markers
             // backwards and overwrite the cache with the older snapshots.
             guard refreshStartedAt == startedAt else { return }
-            let now = Date()
+            let now = environment.now()
             if let status {
                 viewModel.providerStatus = Self.mergeProviderStatus(viewModel.providerStatus, with: status)
             }
@@ -185,9 +202,14 @@ final class RefreshCoordinator {
             if let claudeResets {
                 viewModel.claudeResetState = claudeResets
             }
-            viewModel.claude = plan.refreshQuota.contains(.claude)
+            var nextClaude = plan.refreshQuota.contains(.claude)
                 ? cl.preservingLiveQuota(from: previousClaudeQuota, at: now)
                 : cl
+            // The usage scan lands on its own, possibly while this refresh
+            // was waiting on the network: keep what is on screen now, not the
+            // usage this refresh captured when it started.
+            nextClaude.usage = viewModel.claude.usage
+            viewModel.claude = nextClaude
             viewModel.copilot = plan.refreshQuota.contains(.copilot)
                 ? cp.preservingLiveQuota(from: previousCopilotQuota, at: now)
                 : cp
@@ -212,28 +234,93 @@ final class RefreshCoordinator {
                 states: quotaStates,
                 at: now
             )
-            viewModel.lifetimeSpend = LifetimeSpendTracker.merge(
-                existing: viewModel.lifetimeSpend,
-                reports: [viewModel.codex.usage, viewModel.claude.usage],
-                table: viewModel.priceTable
-            )
-            LifetimeSpendStore.save(viewModel.lifetimeSpend)
-            viewModel.lastRefresh = Date()
+            mergeSpendLedger()
+            viewModel.lastRefresh = environment.now()
             // Cache for the next launch so the menu bar shows last values instantly.
-            StateCache.save(
-                codex: viewModel.codex,
-                claude: viewModel.claude,
-                copilot: viewModel.copilot,
-                quotaObservations: viewModel.quotaObservations,
-                codexResetCreditState: viewModel.codexResetCreditState,
-                claudeResetState: viewModel.claudeResetState,
-                lifetimeSpend: viewModel.lifetimeSpend
-            )
-            NotificationManager.shared.evaluate(provider: .codex, windows: viewModel.codex.quota.windows)
-            NotificationManager.shared.evaluate(provider: .claude, windows: viewModel.claude.quota.windows)
-            NotificationManager.shared.evaluate(provider: .copilot, windows: viewModel.copilot.quota.windows)
+            persistState()
+            evaluateNotifications()
             finishRefresh(startedAt: startedAt)
         }
+    }
+
+    /// Starts Claude's usage scan unless one is already running, in which
+    /// case the refresh that asked takes that scan's result: the files would
+    /// be the same, and two scans beside each other parsed every uncached
+    /// file twice. Whether this one reads every file is decided here, not in
+    /// the scanner, so the clock only moves once such a report has landed.
+    private func startClaudeUsageScan(at now: Date) {
+        guard claudeUsageScan == nil else { return }
+        let completeHistory = Self.claudeCompleteHistoryDue(
+            lastLanded: lastClaudeCompleteScanLanded,
+            now: now,
+            interval: ClaudeJSONLScanner.fullHistoryInterval
+        )
+        claudeUsageScanGeneration += 1
+        let generation = claudeUsageScanGeneration
+        let fetch = environment.fetchClaudeUsage
+        claudeUsageScan = Task {
+            let report = await fetch(completeHistory)
+            // `stop()` retired this scan.
+            guard generation == claudeUsageScanGeneration else { return }
+            claudeUsageScan = nil
+            applyClaudeUsage(report)
+        }
+    }
+
+    /// The first scan after launch reads every file: a fresh process has no
+    /// ledger-correcting read behind it. After that, one every
+    /// `ClaudeJSONLScanner.fullHistoryInterval`, counted from the last one
+    /// that landed.
+    nonisolated static func claudeCompleteHistoryDue(
+        lastLanded: Date?,
+        now: Date,
+        interval: TimeInterval
+    ) -> Bool {
+        guard let lastLanded else { return true }
+        return now.timeIntervalSince(lastLanded) >= interval
+    }
+
+    /// Lands a usage report on whatever Claude quota is on screen now — a
+    /// refresh that finished while the scan ran is not undone — and carries it
+    /// into the spend ledger and the cache, as the refresh used to. Quota
+    /// observations, staleness and notifications are the live reads' business
+    /// and are not touched: nothing here changes a window.
+    private func applyClaudeUsage(_ report: UsageReport) {
+        var state = viewModel.claude
+        state.usage = report
+        viewModel.claude = state
+        if report.isCompleteHistory {
+            lastClaudeCompleteScanLanded = environment.now()
+        }
+        mergeSpendLedger()
+        persistState()
+    }
+
+    private func mergeSpendLedger() {
+        viewModel.lifetimeSpend = LifetimeSpendTracker.merge(
+            existing: viewModel.lifetimeSpend,
+            reports: [viewModel.codex.usage, viewModel.claude.usage],
+            table: viewModel.priceTable
+        )
+        environment.saveLedger(viewModel.lifetimeSpend)
+    }
+
+    private func persistState() {
+        environment.saveState(StateCache.Snapshot(
+            codex: viewModel.codex,
+            claude: viewModel.claude,
+            copilot: viewModel.copilot,
+            quotaObservations: viewModel.quotaObservations,
+            codexResetCreditState: viewModel.codexResetCreditState,
+            claudeResetState: viewModel.claudeResetState,
+            lifetimeSpend: viewModel.lifetimeSpend
+        ))
+    }
+
+    private func evaluateNotifications() {
+        environment.evaluateNotifications(.codex, viewModel.codex.quota.windows)
+        environment.evaluateNotifications(.claude, viewModel.claude.quota.windows)
+        environment.evaluateNotifications(.copilot, viewModel.copilot.quota.windows)
     }
 
     private func installWakeObservers() {
@@ -311,8 +398,8 @@ final class RefreshCoordinator {
             forcedUsageProviders: request.forcedUsageProviders,
             forceActiveAgents: request.forceActiveAgents,
             now: now,
-            visibleSlots: MenuBarLayout.visibleSlots(viewModel),
-            foregroundKinds: MenuBarLayout.activeRefreshKinds(viewModel),
+            visibleSlots: environment.visibleSlots(viewModel),
+            foregroundKinds: environment.foregroundRefreshKinds(viewModel),
             lastQuotaRefresh: lastQuotaRefresh,
             lastLiveQuotaFetch: lastLiveQuotaFetch,
             lastUsageRefresh: lastUsageRefresh,
@@ -397,39 +484,33 @@ final class RefreshCoordinator {
 
     private func fetchCodex(plan: ProviderRefreshPlan, previous: ProviderState) async -> ProviderState {
         guard plan.refreshQuota.contains(.codex) || plan.refreshUsage.contains(.codex) else { return previous }
-        return await codex.fetch(
-            refreshQuota: plan.refreshQuota.contains(.codex),
-            refreshUsage: plan.refreshUsage.contains(.codex),
-            previous: previous
+        return await environment.fetchCodex(
+            plan.refreshQuota.contains(.codex),
+            plan.refreshUsage.contains(.codex),
+            previous
         )
     }
 
+    /// The live quota only. Usage is `startClaudeUsageScan`'s, whatever the
+    /// plan says about it, so the state that comes back carries the usage it
+    /// was handed.
     private func fetchClaude(plan: ProviderRefreshPlan, previous: ProviderState) async -> ProviderState {
-        guard plan.refreshQuota.contains(.claude) || plan.refreshUsage.contains(.claude) else { return previous }
-        return await claude.fetch(
-            refreshQuota: plan.refreshQuota.contains(.claude),
-            refreshUsage: plan.refreshUsage.contains(.claude),
-            previous: previous
-        )
+        guard plan.refreshQuota.contains(.claude) else { return previous }
+        return await environment.fetchClaudeQuota(previous)
     }
 
-    /// Claude quota, then its limit-reset grants, with the token the quota read
-    /// left in the cache: no Keychain read of its own. The flag says whether a
-    /// reset request went out at all.
+    /// Claude quota, then its limit-reset grants right behind it — not behind
+    /// the usage scan. The flag says whether a reset request went out at all.
     private func fetchClaudeWithResets(
         plan: ProviderRefreshPlan,
         previous: ProviderState
     ) async -> (ProviderState, ClaudeResetState?, Bool) {
         let state = await fetchClaude(plan: plan, previous: previous)
-        guard Self.shouldReadClaudeResets(plan: plan, quotaSource: state.quota.source),
-              let token = await ClaudeCredentials.cachedToken(),
-              await ClaudeUsageGate.shared.blockedUntil() == nil else { return (state, nil, false) }
-        // Joins a read another refresh has in flight, or reuses one that
-        // succeeded within the last minute, rather than sending a second.
-        let resets = await ClaudeUsageGate.shared.readResets {
-            try? await ClaudeResetGrantFetcher.fetch(token: token)
+        guard Self.shouldReadClaudeResets(plan: plan, quotaSource: state.quota.source) else {
+            return (state, nil, false)
         }
-        return (state, resets, true)
+        let resets = await environment.fetchClaudeResets()
+        return (state, resets.state, resets.attempted)
     }
 
     /// Only after an OAuth quota read that succeeded this cycle: never on a
@@ -445,26 +526,26 @@ final class RefreshCoordinator {
 
     private func fetchCopilot(plan: ProviderRefreshPlan, previous: ProviderState) async -> ProviderState {
         guard plan.refreshQuota.contains(.copilot) else { return previous }
-        return await copilot.fetch(refreshQuota: true, previous: previous)
+        return await environment.fetchCopilot(previous)
     }
 
     private func fetchActiveAgents(plan: ProviderRefreshPlan, previous: [ActiveAgent]) async -> [ActiveAgent] {
         guard plan.refreshActiveAgents else { return previous }
-        return await ActiveAgentService.fetch()
+        return await environment.fetchActiveAgents()
     }
 
     /// Best-effort: nil on any failure (no login, 401, unparsable body, offline) so
     /// the caller falls back to `CodexResetCreditTracker`'s local-inference reconcile.
     private func fetchCodexResetCredits(plan: ProviderRefreshPlan) async -> [CodexResetCreditExpiry]? {
         guard plan.refreshResetCredits else { return nil }
-        return try? await CodexResetCreditFetcher.fetch()
+        return await environment.fetchCodexResetCredits()
     }
 
     /// Best-effort: nil when this cycle isn't due, in which case the caller leaves
     /// `viewModel.providerStatus` untouched rather than clearing it.
     private func fetchProviderStatus(plan: ProviderRefreshPlan) async -> [Provider: ProviderStatusResult]? {
         guard plan.refreshProviderStatus else { return nil }
-        return await ProviderStatusService.fetchAll()
+        return await environment.fetchProviderStatus()
     }
 
     /// Marks providers whose fetch failed this cycle while the UI kept showing

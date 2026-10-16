@@ -14,7 +14,9 @@ enum ClaudeJSONLScanner {
     /// ever had activity. So periodically read everything instead. At a few
     /// seconds for a multi-GB corpus that is affordable a handful of times a
     /// day — it was not when this scanner went through `String` per line.
-    private static let fullHistoryInterval: TimeInterval = 6 * 3600
+    /// `RefreshCoordinator` keeps the clock for the app (see
+    /// `usageReport(completeHistory:)`); `usageReport()` keeps its own.
+    static let fullHistoryInterval: TimeInterval = 6 * 3600
 
     private struct FileUsageSummary: Sendable {
         /// One entry per deduplicated record, keyed by `message.id|requestId`.
@@ -83,10 +85,22 @@ enum ClaudeJSONLScanner {
         return files
     }
 
+    /// Decides on its own clock whether this read is the periodic complete
+    /// one. The app does not come through here: `RefreshCoordinator` decides
+    /// per scan with `usageReport(completeHistory:)`, so a complete report
+    /// that never lands is not counted as done.
     static func usageReport() async -> UsageReport {
         let now = Date()
+        let completeHistory = await fullScanClock.claimFullScan(now: now, interval: fullHistoryInterval)
+        return await usageReport(completeHistory: completeHistory, now: now)
+    }
+
+    /// Every log file when `completeHistory`, marking the report so the spend
+    /// ledger may lower a day from it; otherwise only files touched in the last
+    /// `usageHistoryDays`.
+    static func usageReport(completeHistory: Bool, now: Date = Date()) async -> UsageReport {
         let all = jsonlFiles()
-        if await fullScanClock.claimFullScan(now: now, interval: fullHistoryInterval) {
+        if completeHistory {
             return await usageReport(files: all, completeHistory: true)
         }
         let cutoff = Calendar.current.date(

@@ -75,7 +75,7 @@ enum StateCache {
         claudeResetState: ClaudeResetState = ClaudeResetState(),
         lifetimeSpend: [LifetimeDayRecord] = []
     ) {
-        let snap = Snapshot(
+        save(Snapshot(
             codex: codex,
             claude: claude,
             copilot: copilot,
@@ -83,7 +83,10 @@ enum StateCache {
             codexResetCreditState: codexResetCreditState,
             claudeResetState: claudeResetState,
             lifetimeSpend: lifetimeSpend
-        )
+        ))
+    }
+
+    static func save(_ snap: Snapshot) {
         guard let data = try? JSONEncoder().encode(snap) else { return }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? data.write(to: fileURL, options: .atomic)

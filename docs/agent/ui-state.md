@@ -8,7 +8,10 @@ usage presentation, cached state, or Claude live-session integration.
 - `AppViewModel` is the `@MainActor @Observable` source of UI truth.
   `RefreshCoordinator` fetches providers in parallel, updates the model, records
   quota observations, persists state through `StateCache`, and evaluates
-  notifications.
+  notifications. Claude's usage scan lands separately from the refresh that
+  started it (see [providers.md](providers.md), "Refresh coordination"): the
+  Activity, token and spend figures can lag the quota by the length of the
+  scan, and `isRefreshing` covers the live reads only.
 - `NotificationManager` asks for permission the first time an alert would
   fire and parks that evaluation behind the prompt. The parked pass
   evaluates the windows the provider handed over most recently, never the

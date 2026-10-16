@@ -11,7 +11,7 @@ final class MenuViewTests: XCTestCase {
 
     @MainActor
     func testPruneSessionDisclosureDropsVanishedGroups() {
-        let model = AppViewModel()
+        let model = AppViewModel(snapshot: nil, storedLifetimeSpend: [])
         model.sessionDisclosure = [
             "claude:/Users/me/alpha": true,
             "claude:/Users/me/gone": false,

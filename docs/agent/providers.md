@@ -121,7 +121,9 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   `last-state.json`. Nothing in this build reads those dollars back.
 - Most refreshes read only files touched in the last `usageHistoryDays` (31).
   Every `fullHistoryInterval` (6 h), and once per launch, the scan reads every
-  file instead and marks the report `isCompleteHistory`. Only such a report may
+  file instead and marks the report `isCompleteHistory`; which scans do so is
+  `RefreshCoordinator`'s decision (`usageReport(completeHistory:)`), counted
+  from the last complete report that landed. Only such a report may
   lower a stored `LifetimeSpendTracker` day; a windowed one can only grow days,
   since a day shrinking there just means its files left the window. Either
   way the ledger takes the day's counts (tokens decide whether a windowed day
@@ -229,18 +231,38 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   (`forceAll`) applies the same spacing to Claude alone: a click queued behind
   a running refresh replays when it lands and can otherwise repeat the quota read.
 - A refresh stalled past 30 s lets a second one start beside it, and the
-  stalled one still sends its requests. After every launch the first Claude
-  usage scan reads the full history and could stall the launch refresh, which is how two
-  refreshes reached the reset read 7 ms apart (inferred from the log timing,
-  not measured). Anything that must not be sent twice therefore needs a
-  guard at the request, not only in `ProviderRefreshPlan`, which only sees
-  what earlier refreshes have landed. `ClaudeUsageGate` does this for the
-  Claude quota read (joined while in flight; refreshes stacked behind a
-  Keychain prompt would otherwise all send when it is answered) and the reset
-  read. A read in flight longer than its request timeout plus margin (20 s
-  quota, 10 s reset) is not joined, so a hung one cannot capture every later
-  refresh. Other requests of a stalled-and-escaped pair (status pages, Codex)
-  are still sent twice.
+  stalled one still sends its requests. Anything that must not be sent twice
+  therefore needs a guard at the request, not only in `ProviderRefreshPlan`,
+  which only sees what earlier refreshes have landed. `ClaudeUsageGate` does
+  this for the Claude quota read (joined while in flight; refreshes stacked
+  behind a Keychain prompt would otherwise all send when it is answered) and
+  the reset read. A read in flight longer than its request timeout plus margin
+  (20 s quota, 10 s reset) is not joined, so a hung one cannot capture every
+  later refresh. Other requests of a stalled-and-escaped pair (status pages,
+  Codex) are still sent twice.
+- Claude's usage scan is not part of the refresh that asks for it. The first
+  scan after launch reads every log file and used to hold that refresh whole: the
+  quota read it was started beside, the reset read sequenced behind it, every
+  other provider's result, and `isRefreshing`, which is how the 30 s escape
+  started a second refresh that parsed the same files beside it and left the
+  first — complete-history report included — to be discarded. Now
+  `RefreshCoordinator.startClaudeUsageScan` runs the scan in its own task;
+  the refresh reads Claude's quota alone (`ClaudeService.fetch(refreshUsage:
+  false)`), reads the reset grants right behind it, lands with the other
+  providers, and keeps whatever usage is on screen rather than the usage it
+  captured at its start. The scan lands through `applyClaudeUsage` whenever it
+  is ready, onto whatever quota is on screen then, and carries its report into
+  the spend ledger and `last-state.json` as the refresh used to. Quota
+  observations, staleness and notifications belong to the live reads only.
+  One scan at a time: a refresh that wants usage while one runs takes that
+  scan's result instead of starting another. Whether a scan reads every file
+  is decided in the coordinator (`claudeCompleteHistoryDue`): the first scan
+  of the process, then one every `ClaudeJSONLScanner.fullHistoryInterval`
+  counted from the last complete report that landed, so a complete scan whose
+  result never applied (the process stopped) is not counted as done.
+  `RefreshEnvironment` is the seam the coordinator reaches providers and
+  persistence through; `RefreshCoordinatorDecouplingTests` drive these
+  orderings with latches, not clocks.
 - While Claude is rate-limiting, cycles the gate skips still count as failed
   quota cycles, so the stale banner shows from the second one. An isolated 429
   therefore shows it after one tick, where a plain retry used to clear it; the
