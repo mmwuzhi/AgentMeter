@@ -52,28 +52,29 @@ enum ActiveAgentService {
     /// `payloads` is required (no default) so every caller visibly shares one
     /// store snapshot with `parsePSOutput` — status and session identity must
     /// never be attributed from two different reads.
+    ///
+    /// A payload attaches by process ancestry only. The helper always records
+    /// the chain up from its parent, so a live process's own payloads always
+    /// match by PID; a session-id match used to stand in when that failed, and
+    /// what it matched was exactly what the PID guard had refused — a
+    /// predecessor's payload after a crash or a `--resume`, which painted a
+    /// fresh process green, yellow or red until its first hook event.
     static func attachStatus(
         _ agents: [ActiveAgent],
         payloads: [AgentStatusPayload]
     ) -> [ActiveAgent] {
         let claudePIDs = Set(agents.lazy.filter { $0.provider == .claude }.map(\.pid))
         let byPID = latestPayloadsByPID(payloads, agentPIDs: claudePIDs)
-        var bySession: [String: AgentStatusPayload] = [:]
-
-        for payload in payloads {
-            if payload.updatedAt > (bySession[payload.sessionID]?.updatedAt ?? .distantPast) {
-                bySession[payload.sessionID] = payload
-            }
-        }
 
         return agents.map { agent in
             guard agent.provider == .claude else { return agent }
             let startedAt = agent.observedAt.addingTimeInterval(-agent.elapsedSeconds)
-            let processPayload = hookPayload(for: agent.pid, startedAt: startedAt, payloadsByPID: byPID)
-            let payload = processPayload ?? agent.session.flatMap { bySession[$0.id] }
-            guard let payload else { return agent }
+            guard let payload = hookPayload(for: agent.pid, startedAt: startedAt, payloadsByPID: byPID) else {
+                return agent
+            }
             var agent = agent
             agent.status = payload.state
+            agent.statusUpdatedAt = payload.updatedAt
             agent.pendingBackgroundTasks = payload.pendingBackgroundTasks
             agent.pendingSubagents = payload.pendingSubagents
             return agent
@@ -165,6 +166,13 @@ enum ActiveAgentService {
                         return session
                     }
                 }
+                // Pinned but not on disk under either key — not written yet,
+                // or filed elsewhere. The heuristic lists the same directory
+                // and can only return some other session's transcript, so the
+                // row stays state-only until a later tick finds the real one.
+                // A payload written without a session id carries the cwd in
+                // its place (manual helper use); that pins nothing.
+                if isSafeSessionFilename(payload.sessionID) { return nil }
             }
             guard let cwd = query.cwd,
                   query.codexRolloutIdentifier != nil || query.isSoleAgentForCWD else { return nil }
@@ -189,12 +197,13 @@ enum ActiveAgentService {
         _ output: String,
         observedAt: Date,
         cwdLookup: (Int) -> String?,
-        resolveSession: (SessionQuery) -> ActiveAgentSession?
+        resolveSession: (SessionQuery) -> ActiveAgentSession?,
+        executableLookup: (Int) -> String? = { _ in nil }
     ) -> [ActiveAgent] {
         parseProcessRows(
             processRows(from: output),
             observedAt: observedAt,
-            executableLookup: { _ in nil },
+            executableLookup: executableLookup,
             cwdLookup: cwdLookup,
             resolveSession: resolveSession
         )
@@ -362,7 +371,14 @@ enum ActiveAgentService {
         if arguments.contains("--help") || arguments.contains("--version") { return true }
         switch process.provider {
         case .claude:
-            return arguments.contains("/usage")
+            if arguments.contains("/usage") { return true }
+            // Claude Desktop's own main process is a `Claude` executable too
+            // (/Applications/Claude.app/Contents/MacOS/Claude), with cwd `/`.
+            // Its bundled Claude Code sits under Application Support/Claude/
+            // claude-code/<version>/<hash>/claude.app/Contents/MacOS/claude
+            // and stays an agent, like the Codex rule below.
+            let path = process.executablePath.lowercased()
+            return path.hasSuffix(".app/contents/macos/claude") && !path.contains("/claude-code/")
         case .codex:
             if arguments.contains("app-server") { return true }
             return process.executablePath.lowercased().contains(".app/contents/macos/codex")
@@ -468,13 +484,22 @@ enum ActiveAgentService {
         return String(decoding: bytes, as: UTF8.self)
     }
 
-    private static func cwdMap(for pids: [Int]) -> [Int: String] {
+    static func cwdMap(for pids: [Int]) -> [Int: String] {
         let uniquePIDs = Array(Set(pids)).sorted()
         guard !uniquePIDs.isEmpty else { return [:] }
+        // lsof exits 1 when any requested PID is gone — a `claude -p` that
+        // ended between the ps snapshot and this call — and still prints the
+        // cwd of every live one. Refusing that status dropped every cwd of
+        // the tick, and with them every unpinned session. The locale is
+        // stated because a login-item launch has none, and without one lsof
+        // prints a non-ASCII path as `\xe6\x97\xa5…`, which matches no
+        // project key and no transcript cwd.
         let output = runProcess(
             executable: URL(fileURLWithPath: "/usr/sbin/lsof"),
             arguments: ["-a", "-p", uniquePIDs.map(String.init).joined(separator: ","), "-d", "cwd", "-Fpn"],
-            timeout: 1
+            timeout: 1,
+            environment: ["LC_ALL": "C.UTF-8"],
+            acceptingExitStatuses: [0, 1]
         )
         guard !output.isEmpty else { return [:] }
         return cwdMap(fromLsofOutput: output)
@@ -493,14 +518,34 @@ enum ActiveAgentService {
         return cwdByPID
     }
 
-    static func runProcess(executable: URL, arguments: [String], timeout: TimeInterval) -> String {
-        runProcessResult(executable: executable, arguments: arguments, timeout: timeout).output
+    /// `environment` replaces the inherited one when given; nil inherits.
+    static func runProcess(
+        executable: URL,
+        arguments: [String],
+        timeout: TimeInterval,
+        environment: [String: String]? = nil,
+        acceptingExitStatuses: Set<Int32> = [0]
+    ) -> String {
+        runProcessResult(
+            executable: executable,
+            arguments: arguments,
+            timeout: timeout,
+            environment: environment,
+            acceptingExitStatuses: acceptingExitStatuses
+        ).output
     }
 
-    private static func runProcessResult(executable: URL, arguments: [String], timeout: TimeInterval) -> ProcessResult {
+    private static func runProcessResult(
+        executable: URL,
+        arguments: [String],
+        timeout: TimeInterval,
+        environment: [String: String]? = nil,
+        acceptingExitStatuses: Set<Int32> = [0]
+    ) -> ProcessResult {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
+        if let environment { process.environment = environment }
         process.currentDirectoryURL = SubprocessWorkingDirectory.url
         let pipe = Pipe()
         let stderrPipe = Pipe()
@@ -539,9 +584,13 @@ enum ActiveAgentService {
         stderrBuffer.append(stderrPipe.fileHandleForReading.readDataToEndOfFile())
         let finalOutputData = outputBuffer.snapshot()
         let finalStderrData = stderrBuffer.snapshot()
-        let output = String(data: finalOutputData, encoding: .utf8) ?? ""
-        let stderr = String(data: finalStderrData, encoding: .utf8) ?? ""
-        guard process.terminationStatus == 0 else {
+        // Lossy on purpose: ps prints argv bytes raw, and one process anywhere
+        // with a non-UTF-8 argument made the whole listing undecodable, which
+        // emptied the session list (and its parse cache) for as long as that
+        // process lived. The bad bytes become U+FFFD; every other row parses.
+        let output = String(decoding: finalOutputData, as: UTF8.self)
+        let stderr = String(decoding: finalStderrData, as: UTF8.self)
+        guard acceptingExitStatuses.contains(process.terminationStatus) else {
             return ProcessResult(
                 output: "",
                 stderr: stderr,
@@ -612,9 +661,10 @@ enum ActiveAgentService {
             .appendingPathComponent(".claude/projects", isDirectory: true))
             .resolvingSymlinksInPath()
         // Traversal is ruled out on the *constructed* path, not the resolved
-        // one. `claudeProjectKey` strips every separator, so the key is always
-        // a single component and cannot walk out of `base`; assert that here so
-        // a later change to the mangling cannot quietly reintroduce a traversal.
+        // one. `claudeProjectKey` maps every character outside `[A-Za-z0-9]`
+        // to `-`, so the key is always a single component and cannot walk out
+        // of `base`; assert that here so a later change to the mangling cannot
+        // quietly reintroduce a traversal.
         //
         // Deliberately no containment check on the resolved path: Claude Code's
         // SessionStart hook symlinks `projects/<key>` into a shared store, so
@@ -650,9 +700,20 @@ enum ActiveAgentService {
         }
     }
 
-    private static func latestClaudeSession(cwd: String, startedAt: Date, observedAt: Date) -> ActiveAgentSession? {
-        let root = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects", isDirectory: true)
+    /// The newest recent transcript under this cwd's key that was launched
+    /// from this cwd. The launch check matters because two keys can be one
+    /// directory: Claude Code's SessionStart hook symlinks every checkout of a
+    /// repo into one shared store, and the newest file there was another
+    /// checkout's live session — listed twice, its spend counted twice in the
+    /// group. A transcript naming no cwd is accepted as before.
+    static func latestClaudeSession(
+        cwd: String,
+        startedAt: Date,
+        observedAt: Date,
+        projectsRoot: URL? = nil
+    ) -> ActiveAgentSession? {
+        let root = (projectsRoot ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects", isDirectory: true))
             .appendingPathComponent(claudeProjectKey(for: cwd), isDirectory: true)
             .resolvingSymlinksInPath()
         let candidates = sessionFiles(
@@ -661,18 +722,23 @@ enum ActiveAgentService {
             startedAt: startedAt,
             observedAt: observedAt
         )
-        guard let candidate = candidates.first else { return nil }
-        let metadata = claudeMetadata(from: candidate.url)
-        let id = metadata.sessionID ?? candidate.url.deletingPathExtension().lastPathComponent
-        return ActiveAgentSession(
-            id: id,
-            projectPath: metadata.cwd ?? cwd,
-            projectName: projectName(for: metadata.cwd ?? cwd),
-            branch: metadata.branch,
-            lastUpdatedAt: candidate.modifiedAt,
-            source: "claude jsonl",
-            logPath: candidate.url.path
-        )
+        // Each check reads a transcript head (256 KB), so a store full of the
+        // other checkout's recent sessions is not read in full every tick.
+        for candidate in candidates.prefix(32) {
+            let metadata = claudeMetadata(from: candidate.url)
+            if let launchCWD = metadata.cwd, launchCWD != cwd { continue }
+            let id = metadata.sessionID ?? candidate.url.deletingPathExtension().lastPathComponent
+            return ActiveAgentSession(
+                id: id,
+                projectPath: metadata.cwd ?? cwd,
+                projectName: projectName(for: metadata.cwd ?? cwd),
+                branch: metadata.branch,
+                lastUpdatedAt: candidate.modifiedAt,
+                source: "claude jsonl",
+                logPath: candidate.url.path
+            )
+        }
+        return nil
     }
 
     private static func latestCodexSession(
@@ -1165,10 +1231,20 @@ enum ActiveAgentService {
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
     }
 
-    private static func claudeProjectKey(for cwd: String) -> String {
-        cwd
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: " ", with: "-")
+    /// The directory Claude Code files a cwd's transcripts under: every UTF-16
+    /// code unit outside `[A-Za-z0-9]` becomes `-` (its regex runs without the
+    /// `u` flag, so an astral character becomes two). Mapping only `/` and ` `
+    /// missed every worktree — `.claude/worktrees/sample_12345` is filed as
+    /// `--claude-worktrees-sample-12345` — so those sessions had no transcript,
+    /// no model, no spend. A key longer than 200 characters gets a hash suffix
+    /// in Claude Code that is not reproduced here; none on this machine is.
+    static func claudeProjectKey(for cwd: String) -> String {
+        String(decoding: cwd.utf16.map { unit -> UInt16 in
+            switch unit {
+            case 0x30...0x39, 0x41...0x5A, 0x61...0x7A: return unit
+            default: return 0x2D
+            }
+        }, as: UTF16.self)
     }
 
     private static func projectName(for path: String?) -> String? {
@@ -1221,7 +1297,12 @@ enum ActiveAgentService {
             try? handle.close()
             return []
         }
-        guard let content = String(data: data, encoding: .utf8) else { return [] }
+        // Lossy: the slice ends wherever 256 KB lands, and a cut inside a
+        // multi-byte character made the strict decode nil — the whole head,
+        // session id and launch cwd included, was lost for 1 transcript in 40
+        // past that size (CJK prompts). Only the cut-off last line carries a
+        // U+FFFD, and that line is not valid JSON anyway.
+        let content = String(decoding: data, as: UTF8.self)
         return content.split(separator: "\n", maxSplits: maxLines, omittingEmptySubsequences: true)
             .prefix(maxLines)
             .map(String.init)

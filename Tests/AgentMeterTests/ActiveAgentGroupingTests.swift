@@ -125,6 +125,16 @@ final class ActiveAgentGroupingTests: XCTestCase {
         XCTAssertTrue(group(.error).needsAttention)
     }
 
+    func testStaleErrorNeitherRedsNorExpandsTheGroup() {
+        var failed = agent(pid: 1, cwd: "/Users/me/alpha", status: .error)
+        failed.statusUpdatedAt = failed.observedAt.addingTimeInterval(-ActiveAgent.errorAttentionWindow - 1)
+        let group = ActiveAgentGrouping.group([failed, agent(pid: 2, cwd: "/Users/me/alpha", status: .idle)])[0]
+
+        XCTAssertEqual(group.topStatus, .idle)
+        XCTAssertFalse(group.needsAttention)
+        XCTAssertEqual(group.collapsedSummary, "2")
+    }
+
     func testChildrenNeedAttentionFlagsWaitingSubagent() {
         let calm = ActiveAgentGrouping.group([
             agent(pid: 100, cwd: "/Users/me/alpha", status: .working),

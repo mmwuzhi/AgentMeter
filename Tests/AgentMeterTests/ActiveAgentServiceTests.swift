@@ -139,15 +139,63 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(attached?.activityText, "working · 2 background tasks")
     }
 
+    func testAttachStatusCarriesWhenTheHookWroteTheState() {
+        // The Chronicle case: the main turn hit a 429 four days ago and nobody
+        // went back to the tab, which stayed open the whole time.
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let agent = ActiveAgent(provider: .claude, pid: 100, parentPID: 1, command: "claude",
+                                elapsedSeconds: 5 * 86_400, observedAt: now, cwd: "/tmp/project")
+        let failed = AgentStatusPayload(state: .error, sessionID: "a", message: "429 rate_limit_error",
+                                        processAncestry: [501, 100, 1],
+                                        updatedAt: now.addingTimeInterval(-4 * 86_400))
+
+        let attached = ActiveAgentService.attachStatus([agent], payloads: [failed]).first
+
+        XCTAssertEqual(attached?.status, .error)
+        XCTAssertEqual(attached?.statusUpdatedAt, failed.updatedAt)
+        XCTAssertEqual(attached?.displayStatus, .idle)
+        XCTAssertEqual(attached?.activityText, "last turn failed · 4d ago")
+    }
+
+    func testAFailedTurnNeedsAttentionForTwelveHoursThenGoesGray() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        func agent(failedAgo age: TimeInterval?) -> ActiveAgent {
+            ActiveAgent(provider: .claude, pid: 100, parentPID: 1, command: "claude",
+                        elapsedSeconds: 10, observedAt: now, status: .error,
+                        statusUpdatedAt: age.map { now.addingTimeInterval(-$0) })
+        }
+
+        let fresh = agent(failedAgo: 3_600)
+        XCTAssertEqual(fresh.displayStatus, .error)
+        XCTAssertEqual(fresh.activityText, "needs attention")
+        XCTAssertEqual(agent(failedAgo: ActiveAgent.errorAttentionWindow).displayStatus, .error)
+
+        let stale = agent(failedAgo: ActiveAgent.errorAttentionWindow + 1)
+        XCTAssertEqual(stale.displayStatus, .idle)
+        XCTAssertEqual(stale.activityText, "last turn failed · 12h ago")
+        XCTAssertEqual(ActiveAgentTooltip.text(for: stale).split(separator: "\n").first,
+                       "Last turn failed, click to jump to this session")
+
+        // A state built without a write time keeps its color.
+        XCTAssertEqual(agent(failedAgo: nil).displayStatus, .error)
+        XCTAssertEqual(agent(failedAgo: nil).activityText, "needs attention")
+    }
+
     func testStatusPayloadFromOlderPIDLifetimeIsIgnored() {
         let now = Date(timeIntervalSince1970: 10_000)
+        // The process resolved to the very session the stale payload names (a
+        // `--resume` of it): the id match must not bring back what the PID
+        // guard refused.
         let agent = ActiveAgent(
             provider: .claude,
             pid: 100,
             parentPID: 1,
             command: "claude",
             elapsedSeconds: 10,
-            observedAt: now
+            observedAt: now,
+            cwd: "/tmp/p",
+            session: ActiveAgentSession(
+                id: "old", projectPath: "/tmp/p", projectName: "p", branch: nil, lastUpdatedAt: now, source: "test")
         )
         let stale = AgentStatusPayload(
             state: .error,
@@ -1513,5 +1561,271 @@ final class ActiveAgentServiceTests: XCTestCase {
         let file = dir.appendingPathComponent(filename)
         try contents.data(using: .utf8)?.write(to: file)
         return file
+    }
+
+    // MARK: - Review fixes: attribution guards, transcript lookup, process listing
+
+    func testAPayloadFromBeforeTheProcessStartedDoesNotAttachThroughItsSession() {
+        // A crash or a window reload leaves the predecessor's payload behind,
+        // and the next `claude` in that directory resolves to the same
+        // transcript (`--resume`, or the heuristic picking the newest file). A
+        // session-id match used to hand it that payload, so a fresh process
+        // read "waiting for input" until its first hook event.
+        let now = Date(timeIntervalSince1970: 10_000)
+        var agent = ActiveAgent(provider: .claude, pid: 200, parentPID: 1, command: "claude --resume",
+                                elapsedSeconds: 10, observedAt: now, cwd: "/tmp/p")
+        agent.session = ActiveAgentSession(id: "s", projectPath: "/tmp/p", projectName: "p", branch: nil,
+                                           lastUpdatedAt: now.addingTimeInterval(-300), source: "test")
+        let dead = AgentStatusPayload(state: .waiting, sessionID: "s", processAncestry: [100, 1],
+                                      updatedAt: now.addingTimeInterval(-300))
+
+        let row = ActiveAgentService.attachStatus([agent], payloads: [dead]).first
+
+        XCTAssertNil(row?.status)
+        XCTAssertNil(row?.statusUpdatedAt)
+        XCTAssertEqual(row?.activityText, "idle · 5m ago")
+    }
+
+    func testAnotherProcessesPayloadDoesNotAttachThroughASharedSessionID() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        func agent(pid: Int, elapsed: TimeInterval) -> ActiveAgent {
+            var agent = ActiveAgent(provider: .claude, pid: pid, parentPID: 1, command: "claude",
+                                    elapsedSeconds: elapsed, observedAt: now, cwd: "/tmp/p")
+            agent.session = ActiveAgentSession(id: "s", projectPath: "/tmp/p", projectName: "p", branch: nil,
+                                               lastUpdatedAt: now, source: "test")
+            return agent
+        }
+        let owner = AgentStatusPayload(state: .working, sessionID: "s", processAncestry: [300], updatedAt: now)
+
+        let rows = ActiveAgentService.attachStatus(
+            [agent(pid: 300, elapsed: 20), agent(pid: 200, elapsed: 10)], payloads: [owner])
+
+        XCTAssertEqual(rows.first { $0.pid == 300 }?.status, .working)
+        XCTAssertNil(rows.first { $0.pid == 200 }?.status)
+    }
+
+    func testAPinnedSessionMissingOnDiskNeverFallsToTheHeuristic() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let payload = AgentStatusPayload(state: .working, sessionID: "hooked", processAncestry: [7], updatedAt: now)
+        var identifiedWith: [String] = []
+        let resolve = ActiveAgentService.sessionResolver(
+            payloadsByPID: [7: payload],
+            identified: { sessionID, cwd, _ in
+                XCTAssertEqual(sessionID, "hooked")
+                identifiedWith.append(cwd)
+                return nil
+            },
+            heuristic: { _, _ in
+                XCTFail("a hook-pinned PID must not reach the heuristic: it lists the same directory and can only return another session")
+                return nil
+            }
+        )
+
+        let session = resolve(.init(provider: .claude, pid: 7, cwd: "/p", startedAt: now.addingTimeInterval(-60),
+                                    observedAt: now, codexRolloutIdentifier: nil, isSoleAgentForCWD: true))
+
+        XCTAssertNil(session)
+        XCTAssertEqual(identifiedWith, ["/p"])
+    }
+
+    func testLatestClaudeSessionSkipsAnotherCheckoutsTranscriptInASharedStore() throws {
+        // Claude Code's SessionStart hook symlinks every checkout of a repo
+        // into one store. The newest file there was the other checkout's live
+        // session, so a fresh process in this one showed that session's title
+        // and spend — twice in the group — until its first hook event.
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentmeter-base-\(UUID().uuidString)", isDirectory: true)
+        tempDirs.append(base)
+        let root = base.appendingPathComponent("projects", isDirectory: true)
+        let store = base.appendingPathComponent("store", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        for key in ["-x-a", "-x-b"] {
+            try FileManager.default.createSymbolicLink(
+                at: root.appendingPathComponent(key, isDirectory: true), withDestinationURL: store)
+        }
+        let now = Date()
+        func write(_ id: String, cwd: String, modifiedAt: Date) throws {
+            let url = store.appendingPathComponent("\(id).jsonl")
+            try #"{"sessionId":"\#(id)","cwd":"\#(cwd)"}"#.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: url.path)
+        }
+        try write("A", cwd: "/x/b", modifiedAt: now)
+        try write("B", cwd: "/x/a", modifiedAt: now.addingTimeInterval(-60))
+
+        let session = ActiveAgentService.latestClaudeSession(
+            cwd: "/x/a", startedAt: now.addingTimeInterval(-600), observedAt: now, projectsRoot: root)
+
+        XCTAssertEqual(session?.id, "B")
+        XCTAssertEqual(session?.projectPath, "/x/a")
+
+        // Only the other checkout's file left: no guess, the row stays unattributed.
+        try FileManager.default.removeItem(at: store.appendingPathComponent("B.jsonl"))
+        XCTAssertNil(ActiveAgentService.latestClaudeSession(
+            cwd: "/x/a", startedAt: now.addingTimeInterval(-600), observedAt: now, projectsRoot: root))
+    }
+
+    func testClaudeProjectKeyMatchesClaudeCodesMangling() {
+        // Claude Code: `cwd.replace(/[^a-zA-Z0-9]/g, "-")`, per UTF-16 unit.
+        XCTAssertEqual(ActiveAgentService.claudeProjectKey(for: "/Users/me/repo/.claude/worktrees/sample_12345"),
+                       "-Users-me-repo--claude-worktrees-sample-12345")
+        XCTAssertEqual(ActiveAgentService.claudeProjectKey(for: "/Users/me/my project"), "-Users-me-my-project")
+        XCTAssertEqual(ActiveAgentService.claudeProjectKey(for: "/Users/me/日本/x"), "-Users-me----x")
+        XCTAssertEqual(ActiveAgentService.claudeProjectKey(for: "/Users/me/😀"), "-Users-me---",
+                       "an astral character is two UTF-16 units, so two dashes")
+    }
+
+    func testIdentifiedClaudeSessionFindsAWorktreeTranscriptUnderClaudeCodesKey() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentmeter-projects-\(UUID().uuidString)", isDirectory: true)
+        tempDirs.append(root)
+        let cwd = "/Users/me/repo/.claude/worktrees/sample_12345"
+        let dir = root.appendingPathComponent("-Users-me-repo--claude-worktrees-sample-12345", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let id = "11111111-2222-3333-4444-555555555555"
+        try #"{"sessionId":"\#(id)","cwd":"\#(cwd)","gitBranch":"plan"}"#.write(
+            to: dir.appendingPathComponent("\(id).jsonl"), atomically: true, encoding: .utf8)
+
+        let session = ActiveAgentService.identifiedClaudeSession(
+            sessionID: id, cwd: cwd, observedAt: Date(), projectsRoot: root)
+
+        XCTAssertEqual(session?.id, id)
+        XCTAssertEqual(session?.branch, "plan")
+    }
+
+    func testTranscriptHeadCutInsideAMultiByteCharacterStillYieldsMetadata() throws {
+        // firstLines reads a fixed 256 KB; a cut inside a CJK character made
+        // the strict decode nil and lost the branch and launch cwd every tick.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentmeter-projects-\(UUID().uuidString)", isDirectory: true)
+        tempDirs.append(root)
+        let dir = root.appendingPathComponent("-Users-me-project-sub", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let id = "11111111-2222-3333-4444-555555555555"
+        var prefix = #"{"sessionId":"\#(id)","cwd":"/Users/me/project","gitBranch":"feature-x"}"# + "\n" + #"{"t":""#
+        // Make the 262,144th byte fall inside a 3-byte character.
+        if (262_144 - prefix.utf8.count) % 3 == 0 { prefix += "x" }
+        let contents = prefix + String(repeating: "这", count: 100_000) + "\"}\n"
+        let head = Data(contents.utf8.prefix(262_144))
+        XCTAssertNil(String(data: head, encoding: .utf8), "the fixture must reproduce the cut")
+        try contents.write(to: dir.appendingPathComponent("\(id).jsonl"), atomically: true, encoding: .utf8)
+
+        let session = ActiveAgentService.identifiedClaudeSession(
+            sessionID: id, cwd: "/Users/me/project/sub", observedAt: Date(), projectsRoot: root)
+
+        XCTAssertEqual(session?.branch, "feature-x")
+        XCTAssertEqual(session?.projectPath, "/Users/me/project")
+    }
+
+    func testCWDMapKeepsLivePIDsWhenAnotherRequestedPIDIsGone() throws {
+        // lsof exits 1 for the missing PID but prints the rest; the tick used
+        // to throw the whole listing away on that status.
+        let gone = Process()
+        gone.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try gone.run()
+        gone.waitUntilExit()
+        let me = Int(ProcessInfo.processInfo.processIdentifier)
+
+        let map = ActiveAgentService.cwdMap(for: [me, Int(gone.processIdentifier)])
+
+        XCTAssertNotNil(map[me])
+        XCTAssertNil(map[Int(gone.processIdentifier)])
+    }
+
+    func testProcessListingWithANonUTF8ArgumentStillParses() {
+        // ps prints argv bytes raw; one such process used to make the whole
+        // listing undecodable and empty the session list.
+        let output = ActiveAgentService.runProcess(
+            executable: URL(fileURLWithPath: "/bin/bash"),
+            arguments: ["-c", "printf '10000 1 ?? 01:00 claude --flag \\xff\\n'"],
+            timeout: 2
+        )
+
+        let agents = ActiveAgentService.parsePSOutput(
+            output,
+            observedAt: Date(timeIntervalSince1970: 0),
+            cwdLookup: { _ in nil },
+            resolveSession: resolver { _, _, _, _ in nil }
+        )
+
+        XCTAssertEqual(agents.map(\.pid), [10000])
+    }
+
+    func testClaudeDesktopAppMainProcessIsNotAnAgent() {
+        let output = """
+          PID  PPID TT       ELAPSED COMMAND
+          700     1 ??          01:00 /Applications/Claude.app/Contents/MacOS/Claude
+        """
+
+        let agents = ActiveAgentService.parsePSOutput(
+            output,
+            observedAt: Date(timeIntervalSince1970: 100),
+            cwdLookup: { _ in "/" },
+            resolveSession: resolver { _, _, _, _ in nil },
+            executableLookup: { _ in "/Applications/Claude.app/Contents/MacOS/Claude" }
+        )
+
+        XCTAssertTrue(agents.isEmpty)
+    }
+
+    func testClaudeDesktopsBundledClaudeCodeStillCountsAsAnAgent() {
+        let path = "/Users/me/Library/Application Support/Claude/claude-code/2.1.295/9d6405864fdc/claude.app/Contents/MacOS/claude"
+        let output = """
+          PID  PPID TT       ELAPSED COMMAND
+          701   700 ??          00:30 \(path) --resume
+        """
+
+        let agents = ActiveAgentService.parsePSOutput(
+            output,
+            observedAt: Date(timeIntervalSince1970: 100),
+            cwdLookup: { _ in "/Users/me/project" },
+            resolveSession: resolver { _, _, _, _ in nil },
+            executableLookup: { _ in path }
+        )
+
+        XCTAssertEqual(agents.map(\.pid), [701])
+        XCTAssertEqual(agents.first?.provider, .claude)
+    }
+
+    func testAPinnedIDThatIsNotASessionIDStillAllowsTheHeuristic() {
+        // A payload written without a session id carries the cwd in its
+        // place (manual helper use); that pins nothing, so a sole agent keeps
+        // its newest-file lookup.
+        let now = Date(timeIntervalSince1970: 10_000)
+        let payload = AgentStatusPayload(state: .working, sessionID: "/Users/me/p", processAncestry: [7], updatedAt: now)
+        let guessed = ActiveAgentSession(id: "guessed", projectPath: "/p", projectName: "p", branch: nil,
+                                         lastUpdatedAt: now, source: "test")
+        let resolve = ActiveAgentService.sessionResolver(
+            payloadsByPID: [7: payload],
+            identified: { _, _, _ in nil },
+            heuristic: { _, _ in guessed }
+        )
+
+        let session = resolve(.init(provider: .claude, pid: 7, cwd: "/p", startedAt: now.addingTimeInterval(-60),
+                                    observedAt: now, codexRolloutIdentifier: nil, isSoleAgentForCWD: true))
+
+        XCTAssertEqual(session?.id, "guessed")
+    }
+
+    func testCWDMapReturnsANonASCIIDirectoryVerbatim() throws {
+        // Without a locale lsof prints `\xe6\x97\xa5…` for this directory; the
+        // app is launched by launchd with none, so the helper states its own.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agentmeter-日本 \(UUID().uuidString)", isDirectory: true)
+        tempDirs.append(dir)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let sleeper = Process()
+        sleeper.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        sleeper.arguments = ["5"]
+        sleeper.currentDirectoryURL = dir
+        try sleeper.run()
+        defer { sleeper.terminate() }
+
+        let map = ActiveAgentService.cwdMap(for: [Int(sleeper.processIdentifier)])
+
+        // lsof reports the real path (`/private/var/…` for a temp dir); the
+        // name is what must come back unescaped.
+        XCTAssertEqual(map[Int(sleeper.processIdentifier)].map { URL(fileURLWithPath: $0).lastPathComponent },
+                       dir.lastPathComponent)
     }
 }

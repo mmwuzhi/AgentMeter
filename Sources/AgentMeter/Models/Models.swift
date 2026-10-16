@@ -718,6 +718,13 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     /// hook state to say otherwise (Codex, and every subagent).
     static let recentActivityWindow: TimeInterval = 120
     static let futureActivityTolerance: TimeInterval = 60
+    /// How long a hook-reported `error` keeps the row red. Nothing but the
+    /// session's next hook event overwrites the state, so a failed turn in a
+    /// tab nobody returns to would otherwise stay "needs attention" — and turn
+    /// its whole group red — for as long as the tab is open. The same 12 hours
+    /// after which the launch sweep (`AgentStatusStore.sweepStale`) drops a
+    /// payload outright.
+    static let errorAttentionWindow: TimeInterval = 12 * 3_600
 
     let provider: Provider
     let pid: Int
@@ -738,6 +745,8 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     /// `Stop` carries them, so a `working` written by `PreToolUse` has nil.
     var pendingBackgroundTasks: Int? = nil
     var pendingSubagents: Int? = nil
+    /// When the hook wrote `status` (`AgentStatusPayload.updatedAt`).
+    var statusUpdatedAt: Date? = nil
 
     var id: String { "\(provider.rawValue):\(pid)" }
 
@@ -762,7 +771,15 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
         }
     }
 
+    /// The hook last recorded a failed turn, longer ago than
+    /// `errorAttentionWindow`: the row goes gray and says when it failed.
+    var hasStaleError: Bool {
+        guard status == .error, let statusUpdatedAt else { return false }
+        return observedAt.timeIntervalSince(statusUpdatedAt) > Self.errorAttentionWindow
+    }
+
     var displayStatus: AgentStatusState? {
+        if hasStaleError { return .idle }
         if let status { return status }
         guard session?.lastUpdatedAt != nil else { return nil }
         return hasRecentSessionActivity ? .working : .idle
@@ -772,7 +789,9 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
         switch status {
         case .working: return workingText
         case .waiting: return "waiting for input"
-        case .error: return "needs attention"
+        case .error:
+            guard hasStaleError, let statusUpdatedAt else { return "needs attention" }
+            return "last turn failed · \(relativeAge(since: statusUpdatedAt))"
         case .idle:
             guard let lastUpdatedAt = session?.lastUpdatedAt else { return "idle" }
             return "idle · \(relativeAge(since: lastUpdatedAt))"

@@ -9,6 +9,8 @@ private struct HookInput: Decodable {
     let title: String?
     let error: String?
     let errorDetails: String?
+    /// Set only when the event fired inside a subagent.
+    let agentID: String?
     /// `Stop` input only. Decoded leniently by `HookBackgroundTasks`, so a
     /// malformed array cannot fail the whole input and drop the write.
     let backgroundTasks: HookBackgroundTasks?
@@ -20,6 +22,7 @@ private struct HookInput: Decodable {
         case title
         case error
         case errorDetails = "error_details"
+        case agentID = "agent_id"
         case backgroundTasks = "background_tasks"
     }
 }
@@ -42,6 +45,7 @@ private func usage() -> String {
     Explicit options are available for diagnostics and override stdin fields.
     `idle` records `working` instead while the Stop input lists background_tasks
     still in flight (subagents, shell jobs); the next Stop with none returns idle.
+    `error` writes nothing when the input carries agent_id (a subagent's failure).
     """
 }
 
@@ -68,9 +72,13 @@ private func parseOptions(_ arguments: [String]) -> [String: String] {
 }
 
 private func hookInput() -> HookInput? {
-    guard isatty(STDIN_FILENO) == 0,
-          let data = try? FileHandle.standardInput.read(upToCount: 128 * 1024),
-          !data.isEmpty else { return nil }
+    guard isatty(STDIN_FILENO) == 0 else { return nil }
+    // Whole, not the first 128 KB: a PostToolUse input carries the tool's
+    // response, and a large Read cut off there failed to decode on every
+    // such call (`HookStandardInput`). Past its cap nothing correct can be
+    // written — the session id is inside the document that was refused.
+    guard let data = HookStandardInput.readAll(from: FileHandle.standardInput) else { exit(0) }
+    guard !data.isEmpty else { return nil }
     guard let input = try? JSONDecoder().decode(HookInput.self, from: data) else {
         fail("invalid Claude hook JSON on stdin")
     }
@@ -146,10 +154,13 @@ do {
         guard let requested = AgentStatusState(rawValue: command) else { fail("unknown command: \(command)") }
         // `Stop` fires while background subagents may still be running; the
         // input's `background_tasks` says whether this turn end is a pause.
+        // A subagent's own `StopFailure` writes nothing.
         let backgroundTasks = input?.backgroundTasks
-        let state = requested == .idle
-            ? AgentStatusState.resolvedStopState(backgroundTasks: backgroundTasks)
-            : requested
+        guard let state = AgentStatusState.recordedState(
+            requested: requested,
+            backgroundTasks: backgroundTasks,
+            agentID: input?.agentID
+        ) else { exit(0) }
         try AgentStatusStore.write(
             AgentStatusPayload(
                 state: state,

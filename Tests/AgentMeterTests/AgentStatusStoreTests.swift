@@ -34,14 +34,19 @@ final class AgentStatusStoreTests: XCTestCase {
     }
 
     func testSweepStaleDropsOldRecord() throws {
+        // The store is the real one under Application Support, beside the live
+        // sessions' states. Sweeping relative to today deleted every one of them
+        // older than a minute on each `swift test`; a clock set to 1970 leaves
+        // nothing but this record old enough to go.
+        let ancient = Date(timeIntervalSince1970: 0)
         try AgentStatusStore.write(
             AgentStatusPayload(
                 state: .idle,
                 sessionID: sessionID,
-                updatedAt: Date(timeIntervalSinceNow: -3600)
+                updatedAt: ancient
             )
         )
-        AgentStatusStore.sweepStale(olderThan: 60)
+        AgentStatusStore.sweepStale(olderThan: 60, now: ancient.addingTimeInterval(3_600))
         XCTAssertNil(AgentStatusStore.read(sessionID: sessionID))
     }
 

@@ -351,15 +351,60 @@ usage presentation, cached state, or Claude live-session integration.
   notification wakes the main agent, carries an empty list and returns the row
   to idle. `SubagentStart` / `SubagentStop` stay unwired: the count already
   says what they would.
-- The bundled helper writes bounded per-session JSON through
-  `AgentStatusCore`. Process ancestry distinguishes sessions that share a
-  directory.
+- One `background_tasks` entry is not work: the live-updates subscription
+  Claude Code arms by itself after an Artifact publish (description
+  `live updates for artifact <url> (…)`, `HookBackgroundTasks.artifactSubscriptionPrefix`).
+  It watches for comments for as long as the tab is open, so no later `Stop`
+  sees it finish; counting it kept a session that ended its turn by
+  publishing a page "working · 1 background task" for days. Match it by
+  description — `type` is only a task-kind label, and a Monitor waiting on
+  real work has the same kind and must still count.
+- `StopFailure` records `error` only for the main turn's own failure
+  (`AgentStatusState.recordedState`): inside a subagent the input carries
+  `agent_id` beside the parent's `session_id`, and the main agent gets that
+  failure back as a tool result and carries on. Nothing but the session's
+  next hook event overwrites an `error`, so `ActiveAgent.displayStatus`
+  shows it red for `ActiveAgent.errorAttentionWindow` (12 h, the launch
+  sweep's age) after the write and gray after that, with the row reading
+  "last turn failed · 4d ago". Without the window a 429 in a tab nobody went
+  back to turned its group red for four days.
+- The bundled helper reads the whole hook input (`HookStandardInput`), never
+  a fixed prefix: a `PostToolUse` input carries the tool's response, and a
+  fixed-size read could truncate a large input. Only
+  a document past 16 MiB is refused, drained and answered with exit 0 and no
+  write (the session id is inside it); invalid JSON still exits 64 so a
+  schema change stays visible. It writes bounded per-session JSON through
+  `AgentStatusCore`.
+- A payload attaches to a process by its recorded ancestry only, which is
+  what distinguishes sessions that share a directory. There is no session-id
+  fallback: the only payloads it could match are the ones the PID-lifetime
+  guard refused — a dead predecessor's after a crash or a `--resume`, which
+  painted a fresh process yellow or green until its first hook event.
 - Hook-reported session IDs pin a PID to its exact transcript
   (`identifiedClaudeSession`), so per-session usage stays correct when several
-  agents share a working directory. Without a hook payload, the newest-file
-  heuristic applies only to a directory's single agent; ambiguous processes get
-  no session rather than a guessed one. Session IDs become filenames — keep the
-  charset guard.
+  agents share a working directory. A pinned ID whose transcript is under
+  neither the hook cwd's key nor the process cwd's key gets no session at all:
+  the heuristic lists the same directory and could only return another
+  session's file. Without a hook payload, the newest-file heuristic applies
+  only to a directory's single agent, and only to a transcript launched from
+  that cwd — Claude Code's SessionStart hook symlinks every checkout of a repo
+  into one store, and the newest file there was another checkout's live
+  session, listed twice with its spend counted twice. Ambiguous processes get
+  no session rather than a guessed one. Session IDs become filenames — keep
+  the charset guard.
+- The project key is Claude Code's own: every character outside `[A-Za-z0-9]`
+  becomes `-` (`ActiveAgentService.claudeProjectKey`), so
+  `.claude/worktrees/sample_12345` is `--claude-worktrees-sample-12345`. Mapping
+  only `/` and ` ` left every worktree session without a transcript.
+- `ps` and `lsof` output is decoded lossily: one process anywhere with a
+  non-UTF-8 argument made the listing undecodable and emptied the session
+  list, parse cache included, for as long as it lived. `lsof` exits 1 when a
+  requested PID ended since the `ps` snapshot and still prints the rest, so
+  that status is accepted, and it runs under `LC_ALL=C.UTF-8`: a login-item
+  launch has no locale, and without one lsof escapes a non-ASCII cwd
+  (`\xe6\x97\xa5…`), which matches no project key. Claude Desktop's own main process
+  (`Claude.app/Contents/MacOS/Claude`, cwd `/`) is not an agent; its bundled
+  Claude Code under `claude-code/` is.
 - Per-session token totals are cached as a partial parse
   (`SessionTokenTotals`: per-model counts, the Claude dedup set, Codex's last
   seen model, and the newest effort and titles), not as the finished summary. A live transcript grows between

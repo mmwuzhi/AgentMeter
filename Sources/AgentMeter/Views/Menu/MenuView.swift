@@ -450,6 +450,7 @@ enum ActiveAgentTooltip {
         case .waiting: "Waiting for your input, click to jump to this session"
         case .error: "This session needs attention, click to jump to it"
         case .working: "Active, click to jump to this session"
+        case .idle where agent.hasStaleError: "Last turn failed, click to jump to this session"
         case .idle: "Idle, click to jump to this session"
         case nil: "Open, click to jump to this session"
         }

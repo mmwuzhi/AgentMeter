@@ -27,6 +27,28 @@ public enum AgentStatusState: String, Codable, Sendable, CaseIterable {
     public static func resolvedStopState(backgroundTasks: HookBackgroundTasks?) -> AgentStatusState {
         (backgroundTasks?.total ?? 0) > 0 ? .working : .idle
     }
+
+    /// The state a hook event records, or nil when it should write nothing.
+    /// `requested` is the helper's command; `agentID` is the hook input's
+    /// `agent_id`, present only when the event fired inside a subagent (such
+    /// events carry the parent's `session_id`). A subagent's API failure
+    /// comes back to the main agent as a tool result and the main turn
+    /// carries on, so only a `StopFailure` without `agent_id` — the main
+    /// turn's own — marks the session.
+    public static func recordedState(
+        requested: AgentStatusState,
+        backgroundTasks: HookBackgroundTasks?,
+        agentID: String?
+    ) -> AgentStatusState? {
+        switch requested {
+        case .error:
+            return (agentID?.isEmpty ?? true) ? .error : nil
+        case .idle:
+            return resolvedStopState(backgroundTasks: backgroundTasks)
+        case .working, .waiting:
+            return requested
+        }
+    }
 }
 
 /// What a hook event says about the session's in-flight background work: the
@@ -34,8 +56,20 @@ public enum AgentStatusState: String, Codable, Sendable, CaseIterable {
 /// untrusted, so decoding never fails — a throw here would abort the whole
 /// stdin decode and lose the write. A value that is not an array counts as no
 /// tasks, and an entry that is not a JSON object is skipped. An entry's `type`
-/// is read only to tell subagents from other task kinds for the row's wording.
+/// is read only to tell subagents from other task kinds for the row's wording;
+/// its `description` only to drop the artifact subscription
+/// (`artifactSubscriptionPrefix`).
 public struct HookBackgroundTasks: Decodable, Sendable, Equatable {
+    /// Description prefix of the live-updates subscription Claude Code arms on
+    /// its own after an Artifact publish (`live updates for artifact <url> (…)`
+    /// as of 2.1.282). It waits for comments and republishes for as long as
+    /// the tab stays open, so no later `Stop` ever sees it finish, and
+    /// counting it kept a session that had published a page `working` for
+    /// days. Matched on the description: `type` is only a task-kind label
+    /// ('shell', 'subagent', 'monitor', 'workflow' in the Stop schema), and a
+    /// kind cannot tell this watcher from a Monitor waiting on real work.
+    public static let artifactSubscriptionPrefix = "live updates for artifact"
+
     /// Well-formed entries, whatever their kind.
     public var total: Int
     /// Entries whose `type` is `subagent`.
@@ -57,6 +91,8 @@ public struct HookBackgroundTasks: Decodable, Sendable, Equatable {
                 // is a belt for a container that did not step.
                 guard let element = try? array.superDecoder(), array.currentIndex > index else { break }
                 guard let entry = try? element.container(keyedBy: EntryKey.self) else { continue }
+                let description = try? entry.decodeIfPresent(String.self, forKey: .description)
+                if description?.hasPrefix(Self.artifactSubscriptionPrefix) == true { continue }
                 total += 1
                 if (try? entry.decodeIfPresent(String.self, forKey: .type)) == "subagent" {
                     subagents += 1
@@ -68,6 +104,7 @@ public struct HookBackgroundTasks: Decodable, Sendable, Equatable {
 
     private enum EntryKey: String, CodingKey {
         case type
+        case description
     }
 }
 
