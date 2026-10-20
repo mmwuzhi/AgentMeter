@@ -597,7 +597,7 @@ struct ProviderSection: View {
                     }
                 }
                 if isQuotaStale {
-                    Label("Data from \(QuotaRow.age(state.quota.fetchedAt)) — refresh failing",
+                    Label("Data from \(QuotaRow.age(state.quota.readingTime)) — refresh failing",
                           systemImage: "clock.arrow.circlepath")
                         .font(.caption2)
                         .foregroundStyle(.orange)

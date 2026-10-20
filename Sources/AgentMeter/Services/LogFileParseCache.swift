@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 struct LogFileFingerprint: Hashable, Sendable {
     let path: String
@@ -42,6 +43,9 @@ struct LogFileFingerprint: Hashable, Sendable {
     }
 }
 
+/// The process-wide scan ticket sequence behind `LogFileParseCache.beginScan`.
+private let logFileScanTickets = OSAllocatedUnfairLock(initialState: UInt64(0))
+
 actor LogFileParseCache<Value: Sendable> {
     private struct Entry: Sendable {
         let fingerprint: LogFileFingerprint
@@ -55,16 +59,22 @@ actor LogFileParseCache<Value: Sendable> {
     }
 
     private var entries: [String: Entry] = [:]
-    private var scans: UInt64 = 0
 
     /// A ticket for one scan, handed to `store`: a scan that started later
     /// fingerprinted every file later, so what it stores is at least as new,
     /// and an earlier scan that finishes after it must not put its older view
     /// back. Scans that overlap are real — a refresh stalled past 30 s lets
     /// another start beside it.
+    ///
+    /// Drawn from ONE process-wide sequence, not per cache: the history store
+    /// drops a file batch whose ticket is older than one it already applied
+    /// for the path, so tickets of two caches feeding it (a cache recreated
+    /// over the same directory) must never restart at 1 below it.
     func beginScan() -> UInt64 {
-        scans += 1
-        return scans
+        logFileScanTickets.withLock { ticket in
+            ticket += 1
+            return ticket
+        }
     }
 
     func value(for fingerprint: LogFileFingerprint) -> Value? {

@@ -29,6 +29,11 @@ For cross-cutting changes, read every applicable reference before editing.
 - `Sources/AgentMeter/Views` — menu bar, popover, and Settings UI
 - `Sources/AgentMeter/Services` — refresh orchestration, providers, state,
   notifications, pricing, quota trends, and active-agent integration
+- `Sources/AgentMeter/Services/History` — `HistoryStore`, the append-only
+  SQLite history (`history.sqlite`) of Claude requests, transcript events and
+  quota readings, fed by the usage scan and the refresh without ever being
+  awaited (quit alone waits, about 1.5 s at most, for it to close); read nothing
+  from it in the UI yet
 - `Sources/AgentStatusCore` / `Sources/AgentMeterHook` — Claude status helper
 - `Tests/AgentMeterTests` — XCTest suite
 - `Scripts` / `.github/workflows/release.yml` — bundle and release tooling
@@ -72,6 +77,10 @@ swift test    # run the XCTest suite
   defensively, sanitize displayed text, and do not invent undocumented fields.
 - Keep persisted settings and state backward compatible. Migration-only keys
   must not become new sources of truth.
+- Raw history rows are never estimates: `history.sqlite` stores what the
+  transcripts and quota responses said. Anything derived (attribution,
+  calibration, filled-in output) goes in derived tables keyed by
+  `(key, iteration_idx)`, never by rowids or other surrogate ids.
 - For visual changes, preserve native menu-bar rendering and declared status
   item bounds; secondary displays clip content outside that width.
 - GitHub releases are automated, but Sparkle appcast generation is manual

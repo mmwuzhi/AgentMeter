@@ -33,6 +33,23 @@ enum JSONLLineReader {
             } != nil
         }
 
+        /// `contains` over the first `limit` bytes only: for a key that,
+        /// when present, sits near the start of its record, so a miss costs
+        /// a few hundred bytes instead of the whole line.
+        func contains(_ marker: Marker, withinFirst limit: Int) -> Bool {
+            let span = min(bytes.count, limit)
+            guard !marker.bytes.isEmpty, let base = bytes.baseAddress, span >= marker.bytes.count else { return false }
+            return marker.bytes.withUnsafeBufferPointer { needle in
+                memmem(base, span, needle.baseAddress, needle.count)
+            } != nil
+        }
+
+        /// Whether the record starts with `marker`'s bytes: O(1) in the line.
+        func hasPrefix(_ marker: Marker) -> Bool {
+            guard !marker.bytes.isEmpty, let base = bytes.baseAddress, bytes.count >= marker.bytes.count else { return false }
+            return marker.bytes.withUnsafeBufferPointer { memcmp(base, $0.baseAddress!, $0.count) == 0 }
+        }
+
         /// Parses the record without building an intermediate `String`.
         func jsonObject() -> [String: Any]? {
             guard !bytes.isEmpty,
@@ -88,11 +105,15 @@ enum JSONLLineReader {
         let trailing: Data?
     }
 
-    /// Reads from `fromOffset` to EOF, delivering only newline-terminated lines to
-    /// `body`, and returns the resume offset plus any trailing partial line.
+    /// Reads from `fromOffset` to EOF — or to `limit` when given, so a reader
+    /// that fingerprinted the file first sees exactly the bytes it
+    /// fingerprinted even if the file grows meanwhile — delivering only
+    /// newline-terminated lines to `body`, and returns the resume offset plus
+    /// any trailing partial line.
     static func forEachCompleteLine(
         in url: URL,
         fromOffset: Int64,
+        upTo limit: Int64? = nil,
         _ body: (LogLine) throws -> Void
     ) throws -> IncrementalResult {
         let handle = try FileHandle(forReadingFrom: url)
@@ -102,12 +123,19 @@ enum JSONLLineReader {
         }
 
         var consumed = fromOffset
+        var position = fromOffset
         var splitter = LineSplitter()
         var atEOF = false
         while !atEOF {
             try autoreleasepool {
-                let chunk = try handle.read(upToCount: chunkSize) ?? Data()
+                var want = chunkSize
+                if let limit {
+                    guard position < limit else { atEOF = true; return }
+                    want = Int(min(Int64(chunkSize), limit - position))
+                }
+                let chunk = try handle.read(upToCount: want) ?? Data()
                 if chunk.isEmpty { atEOF = true; return }
+                position += Int64(chunk.count)
                 splitter.append(chunk)
                 consumed += Int64(try splitter.drain(body))
             }

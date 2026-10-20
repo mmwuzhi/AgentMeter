@@ -51,7 +51,12 @@ enum ClaudeCLIScraper {
         let text = stripANSI(raw)
         let windows = parse(text)
         guard !windows.isEmpty else { throw URLError(.cannotParseResponse) }
-        return snapshot(windows: windows, planType: planType, rateLimitTier: rateLimitTier)
+        // Read after the CLI has exited: a read of its own that succeeded
+        // has rewritten the cache by then, and matches it at about now. The
+        // output itself never says which it was — run on a pipe, the CLI
+        // prints in print mode, which annotates a cached reading not at all.
+        return snapshot(windows: windows, planType: planType, rateLimitTier: rateLimitTier,
+                        cachedAt: cachedReadingTime(matching: windows, config: loadClaudeConfig()))
     }
 
     /// The scraped panel names no plan, so the plan and tier are whatever the
@@ -61,11 +66,85 @@ enum ClaudeCLIScraper {
         windows: [QuotaWindow],
         planType: String?,
         rateLimitTier: String?,
-        fetchedAt: Date = Date()
+        fetchedAt: Date = Date(),
+        cachedAt: Date? = nil
     ) -> QuotaSnapshot {
         QuotaSnapshot(provider: .claude, windows: windows, source: .cli,
                       planType: planType, rateLimitTier: rateLimitTier,
-                      fetchedAt: fetchedAt, note: "Scraped from `claude /usage`")
+                      fetchedAt: fetchedAt, note: "Scraped from `claude /usage`",
+                      cachedAt: cachedAt)
+    }
+
+    /// Claude Code's global config, parsed; nil when missing or unreadable.
+    /// Only `cachedUsageUtilization` is looked at.
+    static func loadClaudeConfig() -> [String: Any]? {
+        guard let data = try? Data(contentsOf: claudeConfigURL(
+            environment: ProcessInfo.processInfo.environment,
+            home: FileManager.default.homeDirectoryForCurrentUser)) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    /// Where Claude Code keeps its global config, resolved the way it does
+    /// (2.1.301): a legacy `.config.json` in its config home
+    /// (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) wins when it is a non-empty
+    /// file, symlinks followed; otherwise `.claude.json` — `.claude-custom-oauth.json`
+    /// under `CLAUDE_CODE_CUSTOM_OAUTH_URL` — in `$CLAUDE_CONFIG_DIR`, else
+    /// in the home directory.
+    static func claudeConfigURL(environment: [String: String], home: URL) -> URL {
+        let configDir = environment["CLAUDE_CONFIG_DIR"]
+            .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
+        let legacy = (configDir ?? home.appendingPathComponent(".claude", isDirectory: true))
+            .appendingPathComponent(".config.json")
+        let values = try? legacy.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        if values?.isRegularFile == true, (values?.fileSize ?? 0) > 0 {
+            return legacy
+        }
+        let suffix = (environment["CLAUDE_CODE_CUSTOM_OAUTH_URL"] ?? "").isEmpty ? "" : "-custom-oauth"
+        return (configDir ?? home).appendingPathComponent(".claude\(suffix).json")
+    }
+
+    /// When the printed numbers are the ones in Claude Code's
+    /// `cachedUsageUtilization` — what `claude /usage` prints when its own
+    /// read fails — the time that cache was fetched. Every scraped window
+    /// the cache has a figure for must agree with it within a point (print
+    /// mode floors the percent); a window it has none for says nothing either
+    /// way, since one run prints from one source. Nil when nothing could be
+    /// compared or anything differs, i.e. the CLI read them live.
+    static func cachedReadingTime(matching windows: [QuotaWindow], config: [String: Any]?) -> Date? {
+        guard let cache = config?["cachedUsageUtilization"] as? [String: Any],
+              let fetchedAtMs = (cache["fetchedAtMs"] as? NSNumber)?.doubleValue,
+              fetchedAtMs.isFinite, fetchedAtMs > 0,
+              let utilization = cache["utilization"] as? [String: Any] else { return nil }
+        var compared = 0
+        for window in windows {
+            guard let cached = cachedPercent(for: window.id, in: utilization) else { continue }
+            guard abs(cached - window.usedPercent) < 1 else { return nil }
+            compared += 1
+        }
+        return compared > 0 ? Date(timeIntervalSince1970: fetchedAtMs / 1000) : nil
+    }
+
+    /// The cache's figure for a scraped window: the named key `parse` files
+    /// it under, else — for a model-scoped weekly, which the CLI prints from
+    /// `limits[]` as `Current week (<model>)` — the `weekly_scoped` limit of
+    /// that model.
+    private static func cachedPercent(for id: String, in utilization: [String: Any]) -> Double? {
+        if let named = ((utilization[id] as? [String: Any])?["utilization"] as? NSNumber)?.doubleValue {
+            return named
+        }
+        let model: String
+        switch id {
+        case "seven_day_opus": model = "opus"
+        case "seven_day_sonnet": model = "sonnet"
+        default: return nil
+        }
+        for limit in (utilization["limits"] as? [[String: Any]]) ?? [] where limit["kind"] as? String == "weekly_scoped" {
+            let scope = limit["scope"] as? [String: Any]
+            guard let name = (scope?["model"] as? [String: Any])?["display_name"] as? String,
+                  name.lowercased().contains(model) else { continue }
+            return (limit["percent"] as? NSNumber)?.doubleValue
+        }
+        return nil
     }
 
     private static func run(bin: URL, args: [String], timeout: TimeInterval) async throws -> String {

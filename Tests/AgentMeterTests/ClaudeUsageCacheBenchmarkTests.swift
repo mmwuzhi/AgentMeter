@@ -23,14 +23,56 @@ final class ClaudeUsageCacheBenchmarkTests: XCTestCase {
         }
     }
 
+    /// Counts what a scan hands the history and keeps nothing, so a
+    /// measurement includes building the batches but no store.
+    private final class CountingHistorySink: HistoryIngesting, @unchecked Sendable {
+        private let lock = NSLock()
+        private(set) var scans = 0
+        private(set) var files = 0
+        private(set) var deltas = 0
+        private(set) var deltaRequests = 0
+
+        func submit(scan: HistoryScanBatch) {
+            lock.lock()
+            defer { lock.unlock() }
+            scans += 1
+            files += scan.files.count
+            for file in scan.files {
+                if let delta = file.delta {
+                    deltas += 1
+                    deltaRequests += delta.requests.count
+                }
+            }
+        }
+
+        func submit(quota: [QuotaSampleRow]) {}
+        func submit(legacyQuota: [QuotaSampleRow]) {}
+        func submit(resetGrants: [ResetGrantObservation], recordedMs: Int64) {}
+
+        var summary: String {
+            lock.lock()
+            defer { lock.unlock() }
+            return "history: \(scans) scans, \(files) file batches, \(deltas) deltas (\(deltaRequests) requests)"
+        }
+    }
+
+    /// Heap bytes in use over every malloc zone: deterministic, unlike RSS.
+    private func heapInUse() -> Int64 {
+        var stats = malloc_statistics_t()
+        malloc_zone_statistics(nil, &stats)
+        return Int64(stats.size_in_use)
+    }
+
     private func measure(
-        _ label: String, cache: ClaudeUsageCache, files: [URL], completeHistory: Bool = true
+        _ label: String, cache: ClaudeUsageCache, files: [URL], completeHistory: Bool = true,
+        history: (any HistoryIngesting)? = nil
     ) async -> (UsageReport, Measurement) {
         await cache.stats.reset()
         let rssBefore = residentSize()
         let cpuBefore = Double(clock()) / Double(CLOCKS_PER_SEC)
         let wallBefore = Date()
-        let report = await ClaudeJSONLScanner.usageReport(files: files, completeHistory: completeHistory, cache: cache)
+        let report = await ClaudeJSONLScanner.usageReport(files: files, completeHistory: completeHistory, cache: cache,
+                                                          history: history)
         let wall = Date().timeIntervalSince(wallBefore)
         let cpu = Double(clock()) / Double(CLOCKS_PER_SEC) - cpuBefore
         let stats = await cache.stats.snapshot()
@@ -188,19 +230,49 @@ final class ClaudeUsageCacheBenchmarkTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let logBytes = stable.reduce(Int64(0)) { $0 + (before[$1.path]?.size ?? 0) }
 
-        let cold = ClaudeUsageCache(store: ClaudeUsageCacheStore(directory: cacheDir))
-        let (coldReport, coldRun) = await measure("cold (parse + persist)", cache: cold, files: stable)
+        let sink = CountingHistorySink()
+        func mb(_ bytes: Int64) -> String { String(format: "%+.2f MB", Double(bytes) / 1e6) }
+
+        // Heap retained by the cache after each kind of scan: measured with
+        // only that cache alive (the report and its counts are small).
+        let heapAtStart = heapInUse()
+        var cold: ClaudeUsageCache? = ClaudeUsageCache(store: ClaudeUsageCacheStore(directory: cacheDir))
+        let (coldReport, coldRun) = await measure("cold (parse + persist)", cache: cold!, files: stable, history: sink)
+        let coldHeap = heapInUse() - heapAtStart
+        cold = nil
+        let heapBeforeWarm = heapInUse()
         let warm = ClaudeUsageCache(store: ClaudeUsageCacheStore(directory: cacheDir))
-        let (warmReport, warmRun) = await measure("warm restart (store)", cache: warm, files: stable)
-        let (hotReport, hotRun) = await measure("warm same process (memory)", cache: warm, files: stable)
+        let (warmReport, warmRun) = await measure("warm restart (store)", cache: warm, files: stable, history: sink)
+        let warmHeap = heapInUse() - heapBeforeWarm
+        let (hotReport, hotRun) = await measure("warm same process (memory)", cache: warm, files: stable, history: sink)
         let recent = stable.filter { url in
             guard let fp = before[url.path] else { return false }
             return Date(timeIntervalSince1970: fp.modifiedAt) >= Date().addingTimeInterval(-31 * 86_400)
         }
+        let windowedCache = ClaudeUsageCache(store: ClaudeUsageCacheStore(directory: cacheDir))
         let (_, windowedRun) = await measure(
-            "windowed (31-day files) after restart",
-            cache: ClaudeUsageCache(store: ClaudeUsageCacheStore(directory: cacheDir)),
-            files: recent, completeHistory: false)
+            "windowed (31-day files) after restart", cache: windowedCache,
+            files: recent, completeHistory: false, history: sink)
+
+        // The per-minute scan while a transcript grows: the windowed set plus
+        // one synthetic active file of ~7k records (the largest real file's
+        // count), grown by 200 records, in the same process and after a restart.
+        let active = root.appendingPathComponent("active-7k.jsonl")
+        try writeActiveFile(records: 7_000, to: active)
+        let growing = recent + [active]
+        _ = await measure("windowed + active file (first parse)", cache: windowedCache, files: growing,
+                          completeHistory: false, history: sink)
+        let snapshotDir = root.appendingPathComponent("cache-snapshot", isDirectory: true)
+        try FileManager.default.copyItem(at: cacheDir, to: snapshotDir)
+        try appendActiveRecords(200, from: 7_000, to: active)
+        let (_, growHot) = await measure("windowed + 200 records on the 7k file, same process", cache: windowedCache,
+                                         files: growing, completeHistory: false, history: sink)
+        let (_, growRestart) = await measure(
+            "windowed + 200 records on the 7k file, after restart",
+            cache: ClaudeUsageCache(store: ClaudeUsageCacheStore(directory: snapshotDir)),
+            files: growing, completeHistory: false, history: sink)
+        XCTAssertEqual(growHot.stats.resumedParses, 1)
+        XCTAssertEqual(growRestart.stats.resumedParses, 1)
 
         let changed = stable.filter { LogFileFingerprint.current(for: $0) != before[$0.path] }
         XCTAssertTrue(changed.isEmpty, "quiet files changed during the benchmark: \(changed.map(\.lastPathComponent))")
@@ -217,8 +289,141 @@ final class ClaudeUsageCacheBenchmarkTests: XCTestCase {
         [bench] \(warmRun.line)
         [bench] \(hotRun.line)
         [bench] \(windowedRun.line) over \(recent.count) files
+        [bench] \(growHot.line)
+        [bench] \(growRestart.line)
+        [bench] heap retained (malloc bytes in use): cold \(mb(coldHeap)), warm restart \(mb(warmHeap))
+        [bench] \(sink.summary)
         [bench] cache: \(size.files) entries, \(String(format: "%.2f", Double(size.bytes) / 1e6)) MB \
         (\(String(format: "%.2f", Double(size.bytes) * 100 / Double(logBytes)))% of the logs)
         """)
+    }
+
+    // MARK: - A growing transcript
+
+    /// One usage record and two large non-usage records per request, like a
+    /// main transcript; keys `msg_active_<n>`.
+    private func activeLines(_ range: Range<Int>, filler fillerLength: Int) -> String {
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let start = Date().addingTimeInterval(-3_600)
+        let filler = String(repeating: "x", count: fillerLength)
+        var body = ""
+        for n in range {
+            let ts = iso.string(from: start.addingTimeInterval(Double(n) * 0.25))
+            body += #"{"parentUuid":"p\#(n)","isSidechain":false,"userType":"external","cwd":"/tmp/active","sessionId":"active","version":"2.1.301","gitBranch":"main","message":{"model":"claude-opus-5-5","id":"msg_active_\#(n)","type":"message","role":"assistant","content":[{"type":"text","text":"x"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":3,"cache_creation_input_tokens":40,"cache_read_input_tokens":90000,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":40},"output_tokens":\#(n % 900 + 1),"service_tier":"standard","speed":"standard","iterations":[]}},"requestId":"req_active_\#(n)","type":"assistant","uuid":"u\#(n)","timestamp":"\#(ts)","entrypoint":"claude-vscode","effort":"high"}"# + "\n"
+            body += #"{"parentUuid":"u\#(n)","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"\#(filler)"}]},"uuid":"t\#(n)","timestamp":"\#(ts)"}"# + "\n"
+            body += #"{"type":"attachment","sessionId":"active","content":"\#(filler)"}"# + "\n"
+        }
+        return body
+    }
+
+    /// `filler`: bytes of each non-usage record; 1,500 is a main transcript's
+    /// proportion (a 7k-record file is then ~38 MB), the synthetic test uses less.
+    private func writeActiveFile(records: Int, to url: URL, filler: Int = 1_500) throws {
+        try Data(activeLines(0..<records, filler: filler).utf8).write(to: url)
+    }
+
+    private func appendActiveRecords(_ count: Int, from start: Int, to url: URL, filler: Int = 1_500) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(activeLines(start..<start + count, filler: filler).utf8))
+        try handle.close()
+    }
+
+    /// What a scan costs each minute while one transcript grows: a warm
+    /// corpus, then 20 records appended to a small file and 200 to a large
+    /// one, each scanned in the same process and after a restart, with a
+    /// history attached (the delta is built). Asserts the facts — one file
+    /// read, resumed, its new records in the delta, the report equal to a
+    /// fresh parse — and prints the timings. The default run is a small
+    /// corpus (2 background files, a 200- and a 1,000-record file);
+    /// `AGENTMETER_HISTORY_PERF=1` times the benchmark size (6 background
+    /// files of 500 KB, a 1k- and a 7k-record file).
+    func testSyntheticIncrementalGrowth() async throws {
+        let full = ProcessInfo.processInfo.environment["AGENTMETER_HISTORY_PERF"] == "1"
+        // The background files are filler for this case (the real-corpus
+        // benchmarks measure the full corpus); every scan here re-parses them
+        // for the reference report, so their size is suite time.
+        let corpus = try writeSyntheticCorpus(files: full ? 6 : 2, bytesPerFile: full ? 500_000 : 100_000)
+        defer { try? FileManager.default.removeItem(at: corpus.root) }
+        let sizes = full ? (small: 1_000, large: 7_000) : (small: 200, large: 1_000)
+        let small = corpus.root.appendingPathComponent("logs/active-small.jsonl")
+        let large = corpus.root.appendingPathComponent("logs/active-large.jsonl")
+        try writeActiveFile(records: sizes.small, to: small, filler: 200)
+        try writeActiveFile(records: sizes.large, to: large, filler: 200)
+        let files = corpus.logs + [small, large]
+        let cacheDir = corpus.root.appendingPathComponent("cache", isDirectory: true)
+        let cache = ClaudeUsageCache(store: ClaudeUsageCacheStore(directory: cacheDir))
+        let sink = CountingHistorySink()
+        _ = await measure("cold", cache: cache, files: files, history: sink)
+        let (_, steady) = await measure("nothing changed, same process", cache: cache, files: files, history: sink)
+        XCTAssertEqual(steady.stats.filesOpened, 0)
+
+        var lines = [steady.line]
+        var next = sizes
+        for (name, url, count) in [("\(sizes.small)-record file + 20 records", small, 20),
+                                   ("\(sizes.large)-record file + 200 records", large, 200)] {
+            let snapshot = corpus.root.appendingPathComponent("cache-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.copyItem(at: cacheDir, to: snapshot)
+            let start = url == small ? next.small : next.large
+            try appendActiveRecords(count, from: start, to: url, filler: 200)
+            if url == small { next.small += count } else { next.large += count }
+            let reference = await ClaudeJSONLScanner.usageReport(files: files, cache: ClaudeUsageCache(store: nil))
+            for (when, scanCache) in [("same process", cache),
+                                      ("after restart", ClaudeUsageCache(store: ClaudeUsageCacheStore(directory: snapshot)))] {
+                let recorder = RecordingHistorySink()
+                let (report, run) = await measure("\(name), \(when)", cache: scanCache, files: files, history: recorder)
+                assertSameCounts(reference, report, "\(name), \(when)")
+                XCTAssertEqual(run.stats.filesOpened, 1, "\(name), \(when)")
+                XCTAssertEqual(run.stats.resumedParses, 1, "\(name), \(when)")
+                XCTAssertEqual(recorder.lastScan?.file(url)?.delta?.requests.count, count, "\(name), \(when): the delta")
+                lines.append(run.line)
+                if when == "same process" { continue }
+                // Bring the restarted store back in line for the next step.
+                _ = await ClaudeJSONLScanner.usageReport(files: files, cache: cache)
+            }
+        }
+        print(lines.map { "[bench] incremental: " + $0 }.joined(separator: "\n"))
+    }
+
+    // MARK: - Cost of the compaction search (opt-in)
+
+    /// What reading `system/compact_boundary` costs a cold scan of the real
+    /// corpus: the same line pass twice — the usage gate, then the extras
+    /// path for every line without usage — once with the compaction search
+    /// and once without, alternating, min of 2 each. JSON parses of usage
+    /// lines are left out of both, so the difference is the search and the
+    /// compaction parses alone. Read-only.
+    func testRealCorpusCompactEventCost() async throws {
+        guard ProcessInfo.processInfo.environment["AGENTMETER_REAL_CORPUS_BENCH"] == "1" else {
+            throw XCTSkip("set AGENTMETER_REAL_CORPUS_BENCH=1 to scan the real ~/.claude corpus (read-only)")
+        }
+        let files = ClaudeJSONLScanner.jsonlFiles()
+        guard !files.isEmpty else { throw XCTSkip("no Claude logs on this machine") }
+        let usageMarker = JSONLLineReader.Marker("\"usage\"")
+        func pass(compact: Bool) -> (cpu: Double, events: Int, costStates: Int) {
+            let cpuBefore = Double(clock()) / Double(CLOCKS_PER_SEC)
+            var events = 0, costStates = 0
+            for url in files {
+                var state = ClaudeJSONLScanner.ParseState(resuming: nil, collectsExtras: true, collectsCompactEvents: compact)
+                _ = try? JSONLLineReader.forEachCompleteLine(in: url, fromOffset: 0) { line in
+                    if !line.contains(usageMarker) { ClaudeJSONLScanner.consumeExtrasLine(line, into: &state) }
+                }
+                events += state.usage.extras.compactEvents.count
+                costStates += state.usage.extras.costStates.count
+            }
+            return (Double(clock()) / Double(CLOCKS_PER_SEC) - cpuBefore, events, costStates)
+        }
+        var off: [Double] = [], on: [Double] = []
+        var counts = (events: 0, costStates: 0)
+        for _ in 0..<2 {
+            off.append(pass(compact: false).cpu)
+            let result = pass(compact: true)
+            on.append(result.cpu)
+            counts = (result.events, result.costStates)
+        }
+        let cost = on.min()! - off.min()!
+        print(String(format: "[bench] compaction search over %d files: cpu without %.3f / %.3f s, with %.3f / %.3f s, cost %+.3f s; %d compactions, %d cost states",
+                     files.count, off[0], off[1], on[0], on[1], cost, counts.events, counts.costStates))
     }
 }

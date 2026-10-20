@@ -29,6 +29,11 @@ final class RefreshCoordinator {
     private var activeAgentsVisibleCount = 0
     private var pendingRefreshRequest = ProviderRefreshRequest()
     private var quotaFailureStreaks: [Provider: Int] = [:]
+    /// When each provider's quota fetch last brought back a reading (any
+    /// source but `.unavailable`), as that reading's `fetchedAt`. Kept apart
+    /// from what is on screen, which may be an older reading: see
+    /// `lastLiveQuotaFetch`.
+    private var lastQuotaRead: [Provider: Date] = [:]
     /// While a popover is open, Claude Code's session registry and the hook
     /// files are re-read on this cadence and re-attached to the rows the last
     /// full refresh built (`ActiveAgentService.refreshStatuses`): a dozen
@@ -74,6 +79,9 @@ final class RefreshCoordinator {
         // Notification permission is requested lazily by NotificationManager
         // the first time an alert actually needs to fire, not at launch.
         seedBackgroundRefreshDates(at: environment.now())
+        // Before the first refresh can land a live reading, so the history
+        // sees the older, source-less observations first.
+        submitLegacyQuotaOnce()
         refresh(forceVisibleQuota: true)
         installWakeObservers()
         scheduleTimer()
@@ -82,6 +90,18 @@ final class RefreshCoordinator {
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.rescheduleIfIntervalChanged() }
         }
+    }
+
+    private var legacyQuotaSubmitted = false
+
+    /// Hands the restored `quotaObservations` to the history, once per
+    /// process; the store keeps its own once-per-database mark. Apart from
+    /// `start()` so a test can reach it without the pricing refresh and the
+    /// timers `start()` also begins.
+    func submitLegacyQuotaOnce() {
+        guard !legacyQuotaSubmitted else { return }
+        legacyQuotaSubmitted = true
+        environment.importLegacyQuota(viewModel.quotaObservations)
     }
 
     private func scheduleTimer() {
@@ -166,9 +186,10 @@ final class RefreshCoordinator {
             let (cl, claudeResets, claudeResetsAttempted) = claudeResult
             // The 30 s escape above can start a second refresh beside a stalled
             // one. Only the latest-started refresh may land: a superseded one that
-            // finishes later would replay older windows as a rise (the trend
-            // tracker stamps samples at landing time), move the refresh markers
-            // backwards and overwrite the cache with the older snapshots.
+            // finishes later would put older windows on screen, move the refresh
+            // markers backwards and overwrite the cache with the older snapshots.
+            // (The trend tracker stamps samples at their reading time and only
+            // moves forward, so it would no longer replay them as a rise.)
             guard refreshStartedAt == startedAt else { return }
             let now = environment.now()
             if let status {
@@ -201,6 +222,10 @@ final class RefreshCoordinator {
             // answer. An empty state is a real answer and clears the line.
             if let claudeResets {
                 viewModel.claudeResetState = claudeResets
+                // The grant set as read this cycle, for the history; the store
+                // keeps it only when it changed. Here, after the supersede
+                // guard, a superseded refresh records nothing.
+                environment.recordResetGrants(ResetGrantObservation.observations(from: claudeResets), now)
             }
             var nextClaude = plan.refreshQuota.contains(.claude)
                 ? cl.preservingLiveQuota(from: previousClaudeQuota, at: now)
@@ -217,6 +242,22 @@ final class RefreshCoordinator {
             viewModel.pruneSessionDisclosure(
                 keeping: ActiveAgentGrouping.disclosureKeys(for: ActiveAgentGrouping.group(agents)))
             updateQuotaStaleness(plan: plan, rawResults: [.codex: c, .claude: cl, .copilot: cp])
+            for (provider, raw) in [(Provider.codex, c), (.claude, cl), (.copilot, cp)]
+            where plan.refreshQuota.contains(provider) && raw.quota.source != .unavailable {
+                lastQuotaRead[provider] = raw.quota.fetchedAt
+            }
+            // The history gets the RAW result of a fetch that brought back a
+            // reading, never what is on screen (`preservingLiveQuota` may have
+            // kept an older snapshot) and never `quotaObservations`. A scrape
+            // that only echoed an old cache is no reading. Here, after the
+            // supersede guard, a superseded refresh records nothing; the
+            // closure only enqueues, so landing does not wait on it.
+            for (provider, raw) in [(Provider.codex, c), (.claude, cl), (.copilot, cp)]
+            where plan.refreshQuota.contains(provider)
+                && raw.quota.source != .unavailable
+                && !raw.quota.echoesStaleCache {
+                environment.recordQuotaReading(raw.quota, now)
+            }
             // Any successful Claude quota source retires the Keychain primer:
             // OAuth means the prompt was answered, CLI never needs it.
             if viewModel.claudeKeychainPrimerNeeded, viewModel.claude.quota.source != .unavailable {
@@ -318,9 +359,18 @@ final class RefreshCoordinator {
     }
 
     private func evaluateNotifications() {
-        environment.evaluateNotifications(.codex, viewModel.codex.quota.windows)
-        environment.evaluateNotifications(.claude, viewModel.claude.quota.windows)
-        environment.evaluateNotifications(.copilot, viewModel.copilot.quota.windows)
+        environment.evaluateNotifications(.codex, Self.notificationWindows(for: viewModel.codex.quota))
+        environment.evaluateNotifications(.claude, Self.notificationWindows(for: viewModel.claude.quota))
+        environment.evaluateNotifications(.copilot, Self.notificationWindows(for: viewModel.copilot.quota))
+    }
+
+    /// The windows alerts may act on. A scrape that only repeated an old
+    /// cached reading hands over none: its numbers may be days old, from an
+    /// earlier reset epoch, and with no reset time the policy could neither
+    /// tell nor suppress a false "low" or "recovered". An empty list leaves
+    /// the alert state as it was.
+    nonisolated static func notificationWindows(for quota: QuotaSnapshot) -> [QuotaWindow] {
+        quota.echoesStaleCache ? [] : quota.windows
     }
 
     private func installWakeObservers() {
@@ -416,15 +466,19 @@ final class RefreshCoordinator {
         )
     }
 
-    /// When each provider's on-screen quota was last read live, for
+    /// When each provider's quota was last read, for
     /// `ProviderRefreshPlan.minimumForcedQuotaSpacing`. `.unavailable` carries
     /// no reading, and a snapshot `preservingLiveQuota` kept across a failed
-    /// fetch keeps its old `fetchedAt`, so a failing provider is never held back.
+    /// fetch keeps its old `fetchedAt`, so a failing provider is never held
+    /// back. The screen may also keep a reading older than the last read — a
+    /// scrape that only echoed an old cache does not displace a newer one —
+    /// so the later of the two counts: what is shown never moves the spacing
+    /// earlier than the read that just happened.
     private var lastLiveQuotaFetch: [Provider: Date] {
         var fetches: [Provider: Date] = [:]
         for state in [viewModel.codex, viewModel.claude, viewModel.copilot]
         where state.quota.source != .unavailable {
-            fetches[state.provider] = state.quota.fetchedAt
+            fetches[state.provider] = max(state.quota.fetchedAt, lastQuotaRead[state.provider] ?? .distantPast)
         }
         return fetches
     }
@@ -562,10 +616,13 @@ final class RefreshCoordinator {
             let streak = Self.nextQuotaFailureStreak(
                 previous: quotaFailureStreaks[provider] ?? 0,
                 rawSource: raw.quota.source,
-                shownSource: shown.quota.source
+                shownSource: shown.quota.source,
+                rawEchoesStaleCache: raw.quota.echoesStaleCache
             )
             quotaFailureStreaks[provider] = streak
-            if streak >= Self.staleQuotaFailureThreshold {
+            // A blip is what the threshold waits out; an echo of an old
+            // cache is dated, so it is stale from its first cycle.
+            if streak >= Self.staleQuotaFailureThreshold || raw.quota.echoesStaleCache {
                 viewModel.staleQuotaProviders.insert(provider)
             } else {
                 viewModel.staleQuotaProviders.remove(provider)
@@ -580,20 +637,26 @@ final class RefreshCoordinator {
     nonisolated static func nextQuotaFailureStreak(
         previous: Int,
         rawSource: QuotaSnapshot.SourceKind,
-        shownSource: QuotaSnapshot.SourceKind
+        shownSource: QuotaSnapshot.SourceKind,
+        rawEchoesStaleCache: Bool = false
     ) -> Int {
-        isQuotaStale(rawSource: rawSource, shownSource: shownSource) ? previous + 1 : 0
+        isQuotaStale(rawSource: rawSource, shownSource: shownSource,
+                     rawEchoesStaleCache: rawEchoesStaleCache) ? previous + 1 : 0
     }
 
     /// Stale = the fresh fetch came back unavailable but the UI is showing a
-    /// usable (older) snapshot preserved by `preservingLiveQuota`. A provider
-    /// that is genuinely unavailable (nothing preserved) is not stale — the UI
-    /// already says "unavailable" explicitly there.
+    /// usable (older) snapshot preserved by `preservingLiveQuota`, or the
+    /// fetch was a `claude /usage` scrape that only repeated Claude Code's
+    /// old cached reading (`QuotaSnapshot.echoesStaleCache`): numbers on
+    /// screen, no fresh read behind them. A provider that is genuinely
+    /// unavailable (nothing preserved) is not stale — the UI already says
+    /// "unavailable" explicitly there.
     nonisolated static func isQuotaStale(
         rawSource: QuotaSnapshot.SourceKind,
-        shownSource: QuotaSnapshot.SourceKind
+        shownSource: QuotaSnapshot.SourceKind,
+        rawEchoesStaleCache: Bool = false
     ) -> Bool {
-        rawSource == .unavailable && shownSource != .unavailable
+        (rawSource == .unavailable || rawEchoesStaleCache) && shownSource != .unavailable
     }
 
     /// Merges this cycle's results into the existing map instead of replacing it
@@ -804,6 +867,18 @@ extension ProviderState {
             state.quota = previousQuota
             return state
         }
+        // A scrape that only echoed an old cached reading does not displace a
+        // usable reading that is at least as recent: it would show older
+        // numbers, with no reset times. The cycle still counts as failed
+        // (staleness reads the raw result), and the forced-refresh spacing
+        // counts from the scrape, not from the reading kept on screen.
+        if quota.echoesStaleCache,
+           previousQuota.source != .unavailable,
+           previousQuota.hasUsableWindow(at: date),
+           previousQuota.readingTime >= quota.readingTime {
+            state.quota = previousQuota
+            return state
+        }
         guard provider == .codex else { return self }
         if quota.source.hasHigherCodexAuthority(than: previousQuota.source) {
             return self
@@ -876,7 +951,8 @@ extension QuotaSnapshot {
             resetCreditsExpiresAt: resetCreditsExpiresAt,
             extraUsageSpentUSD: extraUsageSpentUSD,
             fetchedAt: fetchedAt,
-            note: note
+            note: note,
+            cachedAt: cachedAt
         )
     }
 
@@ -905,7 +981,8 @@ extension QuotaSnapshot {
             resetCreditsExpiresAt: resetCreditsExpiresAt,
             extraUsageSpentUSD: extraUsageSpentUSD,
             fetchedAt: fetchedAt,
-            note: note
+            note: note,
+            cachedAt: cachedAt
         )
     }
 }

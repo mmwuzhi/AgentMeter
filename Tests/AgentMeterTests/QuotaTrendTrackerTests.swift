@@ -1049,6 +1049,123 @@ final class QuotaTrendTrackerTests: XCTestCase {
         XCTAssertEqual(result, existing)
     }
 
+    // MARK: Recording when the reading was taken
+
+    private func claudeState(
+        used: [String: Double], source: QuotaSnapshot.SourceKind = .oauth,
+        fetchedAt: Date, cachedAt: Date? = nil, resetsAt: Date? = nil
+    ) -> ProviderState {
+        let windows = used.keys.sorted().map {
+            QuotaWindow(id: $0, label: $0, usedPercent: used[$0]!, resetsAt: resetsAt)
+        }
+        return ProviderState(
+            provider: .claude,
+            quota: QuotaSnapshot(provider: .claude, windows: windows, source: source, planType: nil,
+                                 fetchedAt: fetchedAt, note: nil, cachedAt: cachedAt),
+            usage: .empty(.claude))
+    }
+
+    func testRecordStampsTheReadingTimeAndItsSource() {
+        let now = Date(timeIntervalSince1970: 100_000)
+        let state = claudeState(used: ["five_hour": 20], fetchedAt: now.addingTimeInterval(-3))
+
+        let result = QuotaTrendTracker.record(existing: [], states: [state], at: now)
+
+        XCTAssertEqual(result.map(\.observedAt), [now.addingTimeInterval(-3)], "when it was read, not when it landed")
+        XCTAssertEqual(result.map(\.source), [.oauth])
+    }
+
+    /// `preservingLiveQuota` keeps the last live snapshot across a failed or
+    /// rate-limited cycle, and a launch restores it from the cache: nothing
+    /// new was read, so nothing new is recorded — before, each such cycle
+    /// added the old numbers again at the current time.
+    func testRecordSkipsAReadingNoNewerThanWhatIsHeld() {
+        let readAt = Date(timeIntervalSince1970: 100_000)
+        let state = claudeState(used: ["five_hour": 20], fetchedAt: readAt)
+        let first = QuotaTrendTracker.record(existing: [], states: [state], at: readAt.addingTimeInterval(1))
+
+        let preserved = QuotaTrendTracker.record(existing: first, states: [state], at: readAt.addingTimeInterval(61))
+        let older = QuotaTrendTracker.record(
+            existing: first,
+            states: [claudeState(used: ["five_hour": 10], fetchedAt: readAt.addingTimeInterval(-30))],
+            at: readAt.addingTimeInterval(121))
+
+        XCTAssertEqual(first.count, 1)
+        XCTAssertEqual(preserved, first)
+        XCTAssertEqual(older, first, "an older reading never lands behind a newer one")
+    }
+
+    func testRecordAddsAWindowItHasNotSeenWhileSkippingKnownOnes() {
+        let readAt = Date(timeIntervalSince1970: 100_000)
+        let first = QuotaTrendTracker.record(
+            existing: [], states: [claudeState(used: ["five_hour": 20], fetchedAt: readAt)], at: readAt)
+
+        let result = QuotaTrendTracker.record(
+            existing: first,
+            states: [claudeState(used: ["five_hour": 20, "seven_day_fable": 40], fetchedAt: readAt)],
+            at: readAt.addingTimeInterval(60))
+
+        XCTAssertEqual(result.map(\.windowID).sorted(), ["five_hour", "seven_day_fable"])
+    }
+
+    /// The clock was set back after a sample was taken: that sample is in the
+    /// future now. It belongs to the abandoned clock and goes; kept, it would
+    /// hold off every reading, or sort last and stand in for the newest.
+    func testRecordKeepsRecordingAfterTheClockIsSetBack() {
+        let now = Date(timeIntervalSince1970: 100_000)
+        let fromTheFuture = QuotaTrendTracker.record(
+            existing: [], states: [claudeState(used: ["five_hour": 20], fetchedAt: now.addingTimeInterval(1_800))],
+            at: now.addingTimeInterval(1_800))
+
+        let result = QuotaTrendTracker.record(
+            existing: fromTheFuture, states: [claudeState(used: ["five_hour": 21], fetchedAt: now)], at: now)
+
+        XCTAssertEqual(result.map(\.remainingPercent), [79])
+        XCTAssertEqual(result.map(\.observedAt), [now])
+    }
+
+    /// A scrape that only repeated Claude Code's two-day-old cache is not an
+    /// observation, whatever the history holds.
+    func testRecordSkipsAScrapeThatEchoedAStaleCache() {
+        let now = Date(timeIntervalSince1970: 1_792_400_000)
+        let echo = claudeState(used: ["five_hour": 0, "seven_day": 67], source: .cli,
+                               fetchedAt: now, cachedAt: now.addingTimeInterval(-2 * 86_400))
+
+        XCTAssertEqual(QuotaTrendTracker.record(existing: [], states: [echo], at: now), [])
+    }
+
+    /// A repeated cache young enough to be current is a reading — of when the
+    /// cache was fetched.
+    func testRecordDatesAFreshCacheRepeatByTheCache() {
+        let now = Date(timeIntervalSince1970: 1_792_400_000)
+        let repeatState = claudeState(used: ["five_hour": 30], source: .cli,
+                                      fetchedAt: now, cachedAt: now.addingTimeInterval(-90))
+
+        let result = QuotaTrendTracker.record(existing: [], states: [repeatState], at: now)
+
+        XCTAssertEqual(result.map(\.observedAt), [now.addingTimeInterval(-90)])
+        XCTAssertEqual(result.map(\.source), [.cli])
+    }
+
+    /// A stale cache echo between two fresh readings leaves the history unchanged.
+    func testEchoBetweenLiveReadingsLeavesTheHistoryAlone() {
+        let t0 = Date(timeIntervalSince1970: 1_737_300_000)
+        let reset = t0.addingTimeInterval(4 * 3_600)
+        let live1 = claudeState(used: ["five_hour": 3, "seven_day": 58], fetchedAt: t0, resetsAt: reset)
+        let echo = claudeState(used: ["five_hour": 0, "seven_day": 57], source: .cli,
+                               fetchedAt: t0.addingTimeInterval(60), cachedAt: t0.addingTimeInterval(-2 * 86_400))
+        let live2 = claudeState(used: ["five_hour": 3, "seven_day": 58], fetchedAt: t0.addingTimeInterval(66), resetsAt: reset)
+
+        var withEcho = QuotaTrendTracker.record(existing: [], states: [live1], at: t0)
+        withEcho = QuotaTrendTracker.record(existing: withEcho, states: [echo], at: t0.addingTimeInterval(60))
+        withEcho = QuotaTrendTracker.record(existing: withEcho, states: [live2], at: t0.addingTimeInterval(66))
+        var without = QuotaTrendTracker.record(existing: [], states: [live1], at: t0)
+        without = QuotaTrendTracker.record(existing: without, states: [live2], at: t0.addingTimeInterval(66))
+
+        XCTAssertEqual(withEcho, without)
+        XCTAssertEqual(withEcho.count, 4)
+    }
+
     // MARK: Retention
 
     func testRetentionBoundsEachWindowIndependently() {

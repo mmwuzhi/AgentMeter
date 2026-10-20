@@ -134,26 +134,53 @@ enum QuotaTrendTracker {
 
     // MARK: Recording
 
+    /// Adds each state's windows, stamped when the reading was taken
+    /// (`QuotaSnapshot.readingTime`), not when it landed — and only where
+    /// that is later than everything already held for the window. A snapshot
+    /// `preservingLiveQuota` kept across a failed cycle, one restored from
+    /// the cache at launch, and a scrape that repeated an older reading all
+    /// say nothing new; stamped "now" they read as fresh samples, a flat
+    /// stretch or a fake rise. A scrape that only echoed a stale cache is no
+    /// observation at all.
     static func record(
         existing: [QuotaObservation],
         states: [ProviderState],
         at now: Date = Date()
     ) -> [QuotaObservation] {
+        // A sample dated after `now` means the clock was set back since. It
+        // belongs to the abandoned clock: kept, it would hold every new
+        // reading off — or, sorted last, stand in for the newest reading —
+        // until the clock caught up.
+        let existing = existing.filter { $0.observedAt <= now }
+        var latest: [WindowKey: Date] = [:]
+        for observation in existing {
+            let key = WindowKey(provider: observation.provider, windowID: observation.windowID)
+            latest[key] = max(latest[key] ?? observation.observedAt, observation.observedAt)
+        }
         let newest = states.flatMap { state in
-            observations(from: state.quota, at: now)
+            observations(from: state.quota, after: latest, at: now)
         }
         return bounded(existing + newest, at: now)
     }
 
-    private static func observations(from quota: QuotaSnapshot, at now: Date) -> [QuotaObservation] {
-        guard quota.source != .unavailable else { return [] }
-        return quota.windows.map { window in
-            QuotaObservation(
+    private static func observations(
+        from quota: QuotaSnapshot,
+        after latest: [WindowKey: Date],
+        at now: Date
+    ) -> [QuotaObservation] {
+        guard quota.source != .unavailable, !quota.echoesStaleCache else { return [] }
+        let readAt = min(quota.readingTime, now)
+        return quota.windows.compactMap { window in
+            if let held = latest[WindowKey(provider: quota.provider, windowID: window.id)], readAt <= held {
+                return nil
+            }
+            return QuotaObservation(
                 provider: quota.provider,
                 windowID: window.id,
                 remainingPercent: window.remainingPercent,
-                observedAt: now,
-                resetsAt: window.resetsAt
+                observedAt: readAt,
+                resetsAt: window.resetsAt,
+                source: quota.source
             )
         }
     }

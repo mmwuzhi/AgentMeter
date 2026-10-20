@@ -47,6 +47,12 @@ struct QuotaWindow: Identifiable, Codable, Sendable, Equatable {
     /// one cycle), falls back to its time to reset. Optional so cached
     /// `QuotaWindow` JSON written before this key still decodes.
     var cycle: TimeInterval? = nil
+    /// What Claude's `/api/oauth/usage` said about this window beyond its
+    /// percentage and reset time, kept for the history store. Display never
+    /// reads it. Optional so cached `QuotaWindow` JSON written before this key
+    /// still decodes, and a build that does not know the key ignores it; nil
+    /// for every provider and source that states none of it.
+    var detail: QuotaWindowDetail? = nil
 
     var remainingPercent: Double { max(0, min(100, 100 - usedPercent)) }
 
@@ -62,13 +68,45 @@ struct QuotaWindow: Identifiable, Codable, Sendable, Equatable {
     }
 }
 
+/// The extra facts Claude's usage response carries about one window, exactly as
+/// stated (a field the response did not state, or stated in a shape that is not
+/// the documented one, stays nil). Every field is optional so a window of
+/// another provider, an older cache or a response that names none of them
+/// carries no detail at all. Text is bounded and printable; see
+/// `ClaudeOAuthFetcher.boundedText`.
+struct QuotaWindowDetail: Codable, Sendable, Equatable {
+    /// `limits[].is_active`.
+    var isActive: Bool? = nil
+    /// `limits[].severity`.
+    var severity: String? = nil
+    /// `locked_reason` of a `five_hour` / `seven_day` object.
+    var lockedReason: String? = nil
+    /// The raw `scope.model.display_name` the window id was built from.
+    var scopeName: String? = nil
+    /// `weekly_scoped_shares[].used_percent_of_weekly`: how much of the
+    /// all-model weekly this scoped limit's use has consumed.
+    var shareUsedOfWeekly: Double? = nil
+    /// `weekly_scoped_shares[].allowance_percent_of_weekly`.
+    var shareAllowanceOfWeekly: Double? = nil
+    /// False when the window object had no numeric `utilization`: the window's
+    /// `usedPercent` is then the 0 placeholder the screen has always shown, not
+    /// a reading. Nil means not recorded (not Claude's OAuth path).
+    var utilizationStated: Bool? = nil
+}
+
 /// One observed quota point, captured after a successful provider refresh.
 struct QuotaObservation: Identifiable, Codable, Sendable, Equatable {
     let provider: Provider
     let windowID: String
     let remainingPercent: Double
+    /// When the reading was taken (`QuotaSnapshot.readingTime`), not when it
+    /// landed.
     let observedAt: Date
     let resetsAt: Date?
+    /// Where the reading came from. Nil in observations written before this
+    /// key, whose source is unknown — anything that may only trust a live
+    /// provider reading (Claude: `.oauth`) has to skip those.
+    var source: QuotaSnapshot.SourceKind? = nil
 
     var id: String {
         "\(provider.rawValue):\(windowID):\(observedAt.timeIntervalSince1970)"
@@ -286,8 +324,17 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
     let resetCreditsExpiresAt: Date? // Codex-only, nil when the protocol omits expiry
     /// Claude-only pay-as-you-go spend past plan limits, in USD.
     let extraUsageSpentUSD: Double?
+    /// When AgentMeter obtained this snapshot. The forced-refresh spacing
+    /// reads it, so it stays the time of the fetch even when the numbers are
+    /// older — see `cachedAt` and `readingTime`.
     let fetchedAt: Date
     let note: String?           // user-facing hint when degraded
+    /// `claude /usage` scrape only: when the panel only repeated the
+    /// `cachedUsageUtilization` Claude Code keeps in `~/.claude.json` (what it
+    /// prints when its own read fails), that cache's `fetchedAtMs` — the time
+    /// the numbers were really measured, possibly days ago. Nil for every
+    /// other reading and in caches written before this key.
+    let cachedAt: Date?
 
     init(
         provider: Provider,
@@ -299,7 +346,8 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
         resetCreditsExpiresAt: Date? = nil,
         extraUsageSpentUSD: Double? = nil,
         fetchedAt: Date,
-        note: String?
+        note: String?,
+        cachedAt: Date? = nil
     ) {
         self.provider = provider
         self.windows = windows
@@ -311,6 +359,26 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
         self.extraUsageSpentUSD = extraUsageSpentUSD
         self.fetchedAt = fetchedAt
         self.note = note
+        self.cachedAt = cachedAt
+    }
+
+    /// A repeated cache at most this much older than the scrape still counts
+    /// as current: Claude Code itself rewrites the cache at most every five
+    /// minutes, so a younger one is what it would show as live.
+    static let staleCacheTolerance: TimeInterval = 5 * 60
+
+    /// When the numbers were measured: the repeated cache's time for a
+    /// scrape that only echoed it, else `fetchedAt`.
+    var readingTime: Date {
+        guard let cachedAt else { return fetchedAt }
+        return min(cachedAt, fetchedAt)
+    }
+
+    /// A scrape that only repeated a cached reading older than
+    /// `staleCacheTolerance`: shown as the fallback it is, but never recorded
+    /// as an observation nor evaluated for alerts, and marked stale at once.
+    var echoesStaleCache: Bool {
+        fetchedAt.timeIntervalSince(readingTime) > Self.staleCacheTolerance
     }
 
     var resetCreditsCountText: String? {
@@ -331,7 +399,8 @@ struct QuotaSnapshot: Codable, Sendable, Equatable {
             resetCreditsExpiresAt: expiresAt,
             extraUsageSpentUSD: extraUsageSpentUSD,
             fetchedAt: fetchedAt,
-            note: note
+            note: note,
+            cachedAt: cachedAt
         )
     }
 
@@ -476,6 +545,12 @@ struct UsageReport: Codable, Sendable, Equatable {
     /// `LifetimeSpendTracker` day. Provenance of one scan, not state — kept out
     /// of `CodingKeys` so it is never restored from a cache.
     var isCompleteHistory = false
+    /// Claude only: per day, how many of the requests counted on it closed
+    /// with a final usage record, how many have only partial records (output
+    /// a lower bound) and how many only zeroed replays. Provenance of one
+    /// scan like `isCompleteHistory`, so not encoded; empty for a report
+    /// restored from a cache and for other providers.
+    var requestFinality: [Date: RequestFinalityCounts] = [:]
 
     init(
         provider: Provider,

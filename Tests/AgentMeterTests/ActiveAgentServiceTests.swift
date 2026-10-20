@@ -1177,9 +1177,10 @@ final class ActiveAgentServiceTests: XCTestCase {
         {"timestamp":"2026-07-05T00:01:00Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4","usage":{"input_tokens":20,"output_tokens":10}}}
 
         """
-        // Replays m1 (already counted before the resume) plus one new message.
+        // Replays m1 (already counted before the resume) the way Claude Code
+        // replays a message, top-level counts zeroed, plus one new message.
         let tail = """
-        {"timestamp":"2026-07-05T00:02:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":999,"output_tokens":999}}}
+        {"timestamp":"2026-07-05T00:02:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":999,"ephemeral_1h_input_tokens":0}}}}
         {"timestamp":"2026-07-05T00:03:00Z","requestId":"r3","message":{"id":"m3","model":"claude-sonnet-4","usage":{"input_tokens":7,"output_tokens":3}}}
 
         """
@@ -1357,10 +1358,10 @@ final class ActiveAgentServiceTests: XCTestCase {
         let first = await ActiveAgentService.enrichSessionUsage([agent])
         XCTAssertEqual(first.first?.session?.tokenCount, 180)
 
-        // The subagent replays m9 (already counted) and adds one message; the
-        // main transcript is untouched.
+        // The subagent replays m9 (already counted, top-level counts zeroed)
+        // and adds one message; the main transcript is untouched.
         try append("""
-        {"timestamp":"2026-07-05T00:02:00Z","requestId":"r9","message":{"id":"m9","model":"claude-haiku-4","usage":{"input_tokens":999,"output_tokens":999}}}
+        {"timestamp":"2026-07-05T00:02:00Z","requestId":"r9","message":{"id":"m9","model":"claude-haiku-4","stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":999,"ephemeral_1h_input_tokens":0}}}}
         {"timestamp":"2026-07-05T00:03:00Z","requestId":"r10","message":{"id":"m10","model":"claude-haiku-4","usage":{"input_tokens":10,"output_tokens":5}}}
 
         """, to: subagent)
@@ -1368,6 +1369,91 @@ final class ActiveAgentServiceTests: XCTestCase {
 
         XCTAssertEqual(second.first?.session?.tokenCount, 195)
         XCTAssertEqual(second.first?.session?.subagents.first?.tokenCount, 45)
+    }
+
+    /// A subagent request streams a record with its `message_start` usage
+    /// before the record that closes it. When the tick's parse stops between
+    /// the two, the resumed parse must swap the final record in — as the
+    /// usage report does — rather than keep the first one it saw.
+    func testSubagentFinalRecordAfterTheResumeReplacesItsStreamingRecord() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let main = try makeTempFile(contents: """
+        {"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50}}}
+
+        """, filename: "s4.jsonl")
+        let subagent = try writeSubagent(id: "a1", beside: main, meta: nil, transcript: """
+        {"timestamp":"2026-07-05T00:01:00Z","requestId":"r9","message":{"id":"m9","model":"claude-haiku-4","stop_reason":null,"usage":{"input_tokens":20,"output_tokens":3}}}
+
+        """)
+        let agent = claudeAgent(logPath: main.path)
+
+        let first = await ActiveAgentService.enrichSessionUsage([agent])
+        XCTAssertEqual(first.first?.session?.subagents.first?.tokenCount, 23, "only what has streamed so far")
+
+        try append("""
+        {"timestamp":"2026-07-05T00:01:00Z","requestId":"r9","message":{"id":"m9","model":"claude-haiku-4","stop_reason":null,"usage":{"input_tokens":20,"output_tokens":3}}}
+        {"timestamp":"2026-07-05T00:01:30Z","requestId":"r9","message":{"id":"m9","model":"claude-haiku-4","stop_reason":"tool_use","usage":{"input_tokens":20,"output_tokens":800}}}
+
+        """, to: subagent)
+        let second = await ActiveAgentService.enrichSessionUsage([agent])
+
+        XCTAssertEqual(second.first?.session?.subagents.first?.tokenCount, 820)
+        XCTAssertEqual(second.first?.session?.tokenCount, 150 + 820)
+    }
+
+    /// A request two of a session's transcripts both carry (a workflow agent
+    /// copied into a later run) is one request: the session's figure counts
+    /// it once, while each agent's row still shows its own transcript.
+    func testSessionCountsARequestTwoOfItsTranscriptsShareOnce() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let main = try makeTempFile(contents: """
+        {"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50}}}
+
+        """, filename: "s5.jsonl")
+        let shared = """
+        {"timestamp":"2026-07-05T00:01:00Z","requestId":"r7","message":{"id":"m7","model":"claude-haiku-4","stop_reason":"tool_use","usage":{"input_tokens":20,"output_tokens":400}}}
+
+        """
+        _ = try writeWorkflowAgent(id: "w1", run: "run-a", beside: main, meta: nil, transcript: shared)
+        _ = try writeWorkflowAgent(id: "w1", run: "run-b", beside: main, meta: nil, transcript: shared + """
+        {"timestamp":"2026-07-05T00:02:00Z","requestId":"r8","message":{"id":"m8","model":"claude-haiku-4","stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":5}}}
+
+        """)
+
+        let enriched = await ActiveAgentService.enrichSessionUsage([claudeAgent(logPath: main.path)])
+        let session = try XCTUnwrap(enriched.first?.session)
+
+        XCTAssertEqual(session.subagents.map(\.tokenCount).sorted { ($0 ?? 0) < ($1 ?? 0) }, [420, 430])
+        XCTAssertEqual(session.tokenCount, 150 + 420 + 10)
+    }
+
+    /// The session row and the usage report read records through the same
+    /// parser and pick one per key the same way, so over the same
+    /// transcripts they agree token for token and dollar for dollar.
+    func testSessionFigureMatchesTheUsageReportOverTheSameTranscripts() async throws {
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let main = try makeTempFile(contents: """
+        {"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","stop_reason":null,"usage":{"input_tokens":100,"output_tokens":5}}}
+        {"timestamp":"2026-07-05T00:00:05Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":4000,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+        {"timestamp":"2026-07-06T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+
+        """, filename: "s6.jsonl")
+        let subagent = try writeSubagent(id: "a1", beside: main, meta: nil, transcript: """
+        {"timestamp":"2026-07-05T00:01:00Z","requestId":"r9","message":{"id":"m9","model":"claude-opus-4-1-20250805","stop_reason":null,"usage":{"input_tokens":20,"output_tokens":3,"cache_creation_input_tokens":300,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":300}}}}
+        {"timestamp":"2026-07-05T00:01:30Z","requestId":"r9","message":{"id":"m9","model":"claude-opus-4-1-20250805","stop_reason":"tool_use","usage":{"input_tokens":20,"output_tokens":800,"cache_creation_input_tokens":300,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":300}}}}
+        {"timestamp":"2026-07-05T00:02:00Z","requestId":"r10","message":{"id":"m10","model":"claude-opus-4-1-20250805","stop_reason":null,"usage":{"input_tokens":7,"output_tokens":9}}}
+
+        """)
+
+        let enriched = await ActiveAgentService.enrichSessionUsage([claudeAgent(logPath: main.path)])
+        let session = try XCTUnwrap(enriched.first?.session)
+        let report = await ClaudeJSONLScanner.usageReport(files: [main, subagent])
+        let table = await PricingService.shared.snapshot()
+
+        let reportTokens = report.dayModels.reduce(0) { $0 + $1.counts.total }
+        XCTAssertEqual(session.tokenCount, reportTokens)
+        XCTAssertEqual(session.tokenCount, 100 + 50 + 4000 + 20 + 800 + 300 + 7 + 9)
+        XCTAssertEqual(session.estimatedCostUSD ?? -1, report.costUSD(from: nil, table: table), accuracy: 1e-9)
     }
 
     func testSubagentTranscriptsAcceptOnlyAgentFilesBesideTheMainTranscript() throws {

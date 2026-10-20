@@ -1007,25 +1007,31 @@ enum ActiveAgentService {
     ) async -> ActiveAgentSession {
         guard let logPath = session.logPath else { return session }
         var session = session
-        if let summary = await sessionUsageSummary(provider: provider, url: URL(fileURLWithPath: logPath)) {
+        let main = await sessionTotals(provider: provider, url: URL(fileURLWithPath: logPath))
+        if let main {
+            let summary = await summary(from: main)
             session.tokenCount = summary.tokenCount
             session.estimatedCostUSD = summary.estimatedCostUSD
             session.model = summary.model
             session.effort = summary.effort
             session.title = summary.title
         }
-        let subagents = await subagentSummaries(
+        let (subagents, subagentTotals) = await subagentSummaries(
             subagentTranscripts(for: logPath, provider: provider),
             observedAt: observedAt
         )
         session.subagents = subagents
-        let subagentTokens = subagents.compactMap(\.tokenCount).reduce(0, +)
-        if subagentTokens > 0 {
-            session.tokenCount = (session.tokenCount ?? 0) + subagentTokens
-            // Each file's summary priced its own per-model counts, and pricing
-            // is linear, so summing the costs is the cost of the sum.
-            session.estimatedCostUSD = (session.estimatedCostUSD ?? 0)
-                + subagents.compactMap(\.estimatedCostUSD).reduce(0, +)
+        guard !subagentTotals.isEmpty else { return session }
+        // The session's figure counts each request once across all of its
+        // transcripts, picked the way the usage report picks it: a request
+        // two of them carry (a resumed workflow agent's copy) is one request.
+        var selection = ClaudeJSONLScanner.UsageSelection()
+        if let main { selection.add(main.claude.usage) }
+        for totals in subagentTotals { selection.add(totals.claude.usage) }
+        let merged = await priced(selection.countsByModel())
+        if merged.tokenCount > 0 {
+            session.tokenCount = merged.tokenCount
+            session.estimatedCostUSD = merged.costUSD
         }
         return session
     }
@@ -1103,12 +1109,25 @@ enum ActiveAgentService {
     /// Claude Code wrote and is ignored rather than parsed.
     private static let subagentMetaByteCap = 64 * 1024
 
-    private static func subagentSummaries(_ urls: [URL], observedAt: Date) async -> [ActiveSubagent] {
+    /// The subagent rows, plus each transcript's parse for the session's own
+    /// figure.
+    private static func subagentSummaries(
+        _ urls: [URL],
+        observedAt: Date
+    ) async -> ([ActiveSubagent], [SessionTokenTotals]) {
         var subagents: [ActiveSubagent] = []
+        var parses: [SessionTokenTotals] = []
         for url in urls {
             guard let id = subagentID(fromTranscriptName: url.lastPathComponent),
                   let modifiedAt = modificationDate(for: url) else { continue }
-            let summary = await sessionUsageSummary(provider: .claude, url: url)
+            let totals = await sessionTotals(provider: .claude, url: url)
+            let summary: SessionUsageSummary?
+            if let totals {
+                parses.append(totals)
+                summary = await self.summary(from: totals)
+            } else {
+                summary = nil
+            }
             let meta = subagentMetadata(for: url)
             subagents.append(ActiveSubagent(
                 id: id,
@@ -1124,10 +1143,11 @@ enum ActiveAgentService {
             ))
         }
         // Newest activity first: what is running now sits above what finished.
-        return subagents.sorted { lhs, rhs in
+        let rows = subagents.sorted { lhs, rhs in
             if lhs.lastUpdatedAt != rhs.lastUpdatedAt { return lhs.lastUpdatedAt > rhs.lastUpdatedAt }
             return lhs.id < rhs.id
         }
+        return (rows, parses)
     }
 
     /// `description` and `agentType` from the sibling `agent-<id>.meta.json`.
@@ -1165,11 +1185,14 @@ enum ActiveAgentService {
     /// from the top: the popover polls this every refresh tick while it is open,
     /// and a busy session's transcript only grows.
     private struct SessionTokenTotals: Sendable {
+        /// Codex counts per model.
         var totalsByModel: [String: TokenCounts] = [:]
-        /// `message.id|requestId` values already counted (Claude only). Carried
-        /// so an incremental tail keeps the dedup a whole-file parse had,
-        /// instead of recounting a duplicate that straddles the resume point.
-        var seenDedupKeys: Set<String> = []
+        /// Claude records, one per `message.id|requestId`, kept and picked
+        /// exactly as the usage report's scan keeps them. Carried whole so an
+        /// incremental tail can still replace a record a whole-file parse
+        /// would have replaced — a streaming record whose final one lands
+        /// after the resume point.
+        var claude = ClaudeJSONLScanner.ParseState(resuming: nil)
         /// Codex rollouts name the model in a turn_context line and then emit
         /// bare `token_count` events, so a resume has to remember the last one.
         var lastModel = "gpt-5-codex"
@@ -1188,10 +1211,17 @@ enum ActiveAgentService {
     }
 
     static func sessionUsageSummary(provider: Provider, url: URL) async -> SessionUsageSummary? {
+        guard let totals = await sessionTotals(provider: provider, url: url) else { return nil }
+        return await summary(from: totals)
+    }
+
+    /// One transcript's parse, with a trailing record that is not yet
+    /// newline-terminated folded in for display. Nil for Copilot.
+    private static func sessionTotals(provider: Provider, url: URL) async -> SessionTokenTotals? {
         guard provider != .copilot else { return nil }
         let fingerprint = LogFileFingerprint.current(for: url)
         if let fingerprint, let cached = await sessionTotalsCache.value(for: fingerprint) {
-            return await summary(from: cached)
+            return cached
         }
 
         var totals = SessionTokenTotals()
@@ -1210,10 +1240,10 @@ enum ActiveAgentService {
             await sessionTotalsCache.store(totals, for: fingerprint,
                                            parsedBytes: result?.consumed ?? startOffset)
         }
-        guard let trailing = result?.trailing else { return await summary(from: totals) }
+        guard let trailing = result?.trailing else { return totals }
         var display = totals
         JSONLLineReader.withLine(trailing) { consume(line: $0, provider: provider, into: &display) }
-        return await summary(from: display)
+        return display
     }
 
     static func clearSessionUsageCacheForTests() async {
@@ -1221,25 +1251,33 @@ enum ActiveAgentService {
     }
 
     private static func summary(from totals: SessionTokenTotals) async -> SessionUsageSummary {
-        let tokenCount = totals.totalsByModel.values.reduce(0) { total, counts in
-            total + totalTokens(in: counts)
+        var byModel = totals.totalsByModel
+        for (model, counts) in totals.claude.usage.countsByModel() {
+            byModel[model, default: TokenCounts()].add(counts)
         }
-        var cost: Double?
-        if tokenCount > 0 {
-            await PricingService.shared.ensureLoaded()
-            var total = 0.0
-            for (model, counts) in totals.totalsByModel {
-                total += await PricingService.shared.cost(model: model, counts: counts)
-            }
-            cost = total
-        }
+        let spend = await priced(byModel)
         return SessionUsageSummary(
-            tokenCount: tokenCount > 0 ? tokenCount : nil,
-            estimatedCostUSD: cost,
+            tokenCount: spend.tokenCount > 0 ? spend.tokenCount : nil,
+            estimatedCostUSD: spend.costUSD,
             model: totals.currentModel,
             effort: totals.currentEffort,
             title: totals.customTitle ?? totals.aiTitle
         )
+    }
+
+    /// Tokens and their cost under the current price table; no cost until a
+    /// token has been counted.
+    private static func priced(_ byModel: [String: TokenCounts]) async -> (tokenCount: Int, costUSD: Double?) {
+        let tokenCount = byModel.values.reduce(0) { total, counts in
+            total + totalTokens(in: counts)
+        }
+        guard tokenCount > 0 else { return (0, nil) }
+        await PricingService.shared.ensureLoaded()
+        var total = 0.0
+        for (model, counts) in byModel {
+            total += await PricingService.shared.cost(model: model, counts: counts)
+        }
+        return (tokenCount, total)
     }
 
     /// Cheap per-line pre-filters. These run over whole session transcripts, so
@@ -1284,29 +1322,11 @@ enum ActiveAgentService {
         default:
             break
         }
-        guard let message = object["message"] as? [String: Any],
-              let usage = message["usage"] as? [String: Any] else { return }
-        let model = (message["model"] as? String) ?? "default"
-        if model == "<synthetic>" { return }
-
-        let messageID = (message["id"] as? String) ?? ""
-        let requestID = (object["requestId"] as? String) ?? ""
-        if !messageID.isEmpty {
-            guard totals.seenDedupKeys.insert(messageID + "|" + requestID).inserted else { return }
-        }
-
-        var counts = TokenCounts()
-        counts.input = (usage["input_tokens"] as? Int) ?? 0
-        counts.output = (usage["output_tokens"] as? Int) ?? 0
-        counts.cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
-        if let cacheCreation = usage["cache_creation"] as? [String: Any] {
-            counts.cacheWrite5m = (cacheCreation["ephemeral_5m_input_tokens"] as? Int) ?? 0
-            counts.cacheWrite1h = (cacheCreation["ephemeral_1h_input_tokens"] as? Int) ?? 0
-        } else {
-            counts.cacheWrite5m = (usage["cache_creation_input_tokens"] as? Int) ?? 0
-        }
-        add(counts, to: &totals.totalsByModel, model: model)
-        totals.currentModel = model
+        // Counted exactly as the usage report counts it: a streaming record
+        // gives way to its request's final one, a zeroed replay never counts.
+        guard ClaudeJSONLScanner.consume(object: object, into: &totals.claude, calendar: nil),
+              let message = object["message"] as? [String: Any] else { return }
+        totals.currentModel = (message["model"] as? String) ?? "default"
         // `effort` is the effective value; `perTurnEffort` only repeats it when
         // set, so the top-level key alone is what a row should show.
         totals.currentEffort = object["effort"] as? String

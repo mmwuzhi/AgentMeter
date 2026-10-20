@@ -242,6 +242,34 @@ final class RefreshCoordinatorMergeTests: XCTestCase {
         XCTAssertFalse(RefreshCoordinator.isQuotaStale(rawSource: .cli, shownSource: .cli))
     }
 
+    /// A `claude /usage` scrape that only repeated Claude Code's old cache
+    /// put numbers on screen without a fresh read behind them: the cycle
+    /// failed (the coordinator also marks it stale at once, being dated).
+    func testQuotaStaleWhenTheScrapeOnlyEchoedAnOldCache() {
+        XCTAssertTrue(RefreshCoordinator.isQuotaStale(rawSource: .cli, shownSource: .cli, rawEchoesStaleCache: true))
+        XCTAssertEqual(RefreshCoordinator.nextQuotaFailureStreak(
+            previous: 1, rawSource: .cli, shownSource: .cli, rawEchoesStaleCache: true), 2)
+        XCTAssertEqual(RefreshCoordinator.nextQuotaFailureStreak(
+            previous: 1, rawSource: .cli, shownSource: .cli, rawEchoesStaleCache: false), 0)
+    }
+
+    /// Alerts never act on an echo of an old cache; every other reading —
+    /// Copilot's `.cli` source included — is evaluated as before.
+    func testNotificationWindowsLeaveOutOnlyAStaleCacheEcho() {
+        let now = Date(timeIntervalSince1970: 1_792_400_000)
+        let windows = [QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 96, resetsAt: nil)]
+        let echo = QuotaSnapshot(provider: .claude, windows: windows, source: .cli, planType: nil,
+                                 fetchedAt: now, note: nil, cachedAt: now.addingTimeInterval(-2 * 86_400))
+        let freshScrape = QuotaSnapshot(provider: .claude, windows: windows, source: .cli, planType: nil,
+                                        fetchedAt: now, note: nil, cachedAt: now.addingTimeInterval(-10))
+        let copilot = QuotaSnapshot(provider: .copilot, windows: windows, source: .cli, planType: nil,
+                                    fetchedAt: now, note: nil)
+
+        XCTAssertEqual(RefreshCoordinator.notificationWindows(for: echo), [])
+        XCTAssertEqual(RefreshCoordinator.notificationWindows(for: freshScrape), windows)
+        XCTAssertEqual(RefreshCoordinator.notificationWindows(for: copilot), windows)
+    }
+
     func testQuotaNotStaleWhenGenuinelyUnavailable() {
         // Nothing preserved: the UI already shows "unavailable" explicitly.
         XCTAssertFalse(RefreshCoordinator.isQuotaStale(rawSource: .unavailable, shownSource: .unavailable))

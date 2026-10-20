@@ -309,6 +309,13 @@ usage presentation, cached state, or Claude live-session integration.
 - `LifetimeSpendStore` in `lifetime-spend.json` is authoritative. The
   `StateCache` copy exists only for compatibility because older builds rewrite
   `last-state.json` without unknown fields.
+- `history.sqlite` (`HistoryStore`, see [providers.md](providers.md), "History
+  store") is persisted app state, not user-visible: it lives in Application
+  Support next to `last-state.json` (never inside a `claude-usage-cache*`
+  directory, whose prune deletes foreign files), and nothing in the UI, the
+  ledger or `StateCache` reads it in Phase 0B. Losing or quarantining it never
+  changes a figure on screen. Do not add a view that reads it without a
+  derived-table design: its raw rows are observations, not display values.
 - `UsageReport.totalTokens`, `totalCostUSD`, and `byModel` are clamped to
   `UsageReport.totalsWindowDays` (30 days); the cutoff is
   `UsageReport.totalsCutoff()`, shared by `UsageRollup` and `ModelBreakdown` so
@@ -458,13 +465,15 @@ usage presentation, cached state, or Claude live-session integration.
   (`Claude.app/Contents/MacOS/Claude`, cwd `/`) is not an agent; its bundled
   Claude Code under `claude-code/` is.
 - Per-session token totals are cached as a partial parse
-  (`SessionTokenTotals`: per-model counts, the Claude dedup set, Codex's last
-  seen model, and the newest effort and titles), not as the finished summary. A live transcript grows between
+  (`SessionTokenTotals`: Codex per-model counts, the Claude records as
+  `ClaudeJSONLScanner.ParseState` — the usage report's own parser and
+  per-key pick — Codex's last seen model, and the newest effort and titles),
+  not as the finished summary. A live transcript grows between
   every tick, so caching the summary only ever hit on an idle session; the
   partial resumes from the last consumed line boundary instead. Cache only that
   boundary — folding the trailing, not-yet-terminated record into the cached
   value would count it again once it is complete. `enrichSessionUsage` prunes
-  the cache to the running sessions, because each entry now holds a dedup set.
+  the cache to the running sessions, because each entry holds a record per key.
 - A Claude session's tokens and cost include its subagent transcripts,
   `<projectKey>/<sessionID>/subagents/agent-<id>.jsonl`, and the agents of
   its Workflow runs, which Claude Code files one level further down as
@@ -475,12 +484,15 @@ usage presentation, cached state, or Claude live-session integration.
   charset; meta files, symlinks, the journal and anything deeper are skipped.
   A workflow of a hundred agents that read as a lone "working now" row with
   its pre-workflow total was the case this came from. Each file is its own cached partial
-  parse with its own dedup set (a sidechain's messages are never replayed into
-  the main transcript, so no cross-file dedup is needed), and the prune keeps
+  parse with its own records, and the prune keeps
   main *and* subagent fingerprints — dropping the latter would re-read every
   subagent from the top each tick. Model, effort and title stay the main
-  transcript's; subagent transcripts carry no title records. Per-file costs
-  are summed, which pricing's linearity makes exact. The row's name for a
+  transcript's; subagent transcripts carry no title records. A subagent row
+  shows its own file; the session's figure runs every file's records through
+  `ClaudeJSONLScanner.UsageSelection`, so a request two of its transcripts
+  carry counts once and the figure equals what the usage report makes of the
+  same files. (A fork's copied prefix still counts in the fork's row as well
+  as the parent's; the report attributes it once.) The row's name for a
   subagent is `description` from the sibling `agent-<id>.meta.json` (read
   under a 64 KB cap), else the first user prompt's opening words. Finished
   subagents stay in the total forever, like finished turns; only the listing

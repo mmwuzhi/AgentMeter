@@ -21,7 +21,7 @@ AgentMeter 是一个原生 macOS 菜单栏应用，可以快速查看 **Codex**�
 | | 实时额度 | 使用量和花费 |
 |---|---|---|
 | **Codex** | `codex app-server` JSON-RPC，然后回退到最新的 `~/.codex/sessions/**/rollout-*.jsonl`（`rate_limits`） | 汇总 rollout 日志里每天的 `last_token_usage` |
-| **Claude** | OAuth：先读 `~/.claude/.credentials.json`，再读 macOS 钥匙串 `Claude Code-credentials`，然后请求 `GET api.anthropic.com/api/oauth/usage`，再回退到抓取 `claude /usage`，最后回退到仅使用量 | 扫描 `~/.claude/projects/**/*.jsonl`，按 `message.id` 去重后汇总 `message.usage.*` |
+| **Claude** | OAuth：先读 `~/.claude/.credentials.json`，再读 macOS 钥匙串 `Claude Code-credentials`，然后请求 `GET api.anthropic.com/api/oauth/usage`，再回退到抓取 `claude /usage`，最后回退到仅使用量 | 扫描 `~/.claude/projects/**/*.jsonl`，每个 `message.id|requestId` 取一条记录（有最终记录时取最终记录）后汇总 `message.usage.*` |
 | **Copilot** | `gh api /copilot_internal/user`，复用已有 GitHub CLI 登录；如果缺少 `gh` 或未登录则不可用 | 固定费率，不显示 token 花费 |
 
 价格来自 [LiteLLM](https://github.com/BerriAI/litellm)，并以 models.dev 作为回退；缓存位置是 `~/Library/Application Support/AgentMeter/pricing.json`，应用内还带有 `Resources/embedded-pricing.json` 离线快照。

@@ -65,13 +65,22 @@ final class ClaudeUsageCacheGoldenTests: XCTestCase {
     private var d2: Date { day(2) }
     private var dOld: Date { day(40) }
 
+    /// One assistant record. `stop` is its `stop_reason` (none: a record
+    /// written mid-stream). `zeroedReplay` writes it the way Claude Code
+    /// replays a message it already wrote: top-level counts zero, the cache
+    /// split and stop reason kept.
     private func record(
         _ at: Date, mid: String?, rid: String?, model: String?,
         input: Int, output: Int, cacheRead: Int = 0, w5m: Int = 0, w1h: Int = 0,
-        flatCacheCreation: Bool = false
+        flatCacheCreation: Bool = false, stop: String? = nil, zeroedReplay: Bool = false
     ) -> String {
-        var usage: [String] = ["\"input_tokens\":\(input)", "\"output_tokens\":\(output)"]
-        if cacheRead > 0 { usage.append("\"cache_read_input_tokens\":\(cacheRead)") }
+        var usage: [String] = ["\"input_tokens\":\(zeroedReplay ? 0 : input)", "\"output_tokens\":\(zeroedReplay ? 0 : output)"]
+        if zeroedReplay {
+            usage.append("\"cache_read_input_tokens\":0")
+            usage.append("\"cache_creation_input_tokens\":0")
+        } else if cacheRead > 0 {
+            usage.append("\"cache_read_input_tokens\":\(cacheRead)")
+        }
         if flatCacheCreation {
             usage.append("\"cache_creation_input_tokens\":\(w5m)")
         } else if w5m > 0 || w1h > 0 {
@@ -80,6 +89,7 @@ final class ClaudeUsageCacheGoldenTests: XCTestCase {
         var message: [String] = []
         if let mid { message.append("\"id\":\"\(mid)\"") }
         if let model { message.append("\"model\":\"\(model)\"") }
+        if let stop { message.append("\"stop_reason\":\"\(stop)\"") }
         message.append("\"usage\":{\(usage.joined(separator: ","))}")
         var top: [String] = ["\"timestamp\":\"\(Self.iso().string(from: at))\"", "\"type\":\"assistant\""]
         if let rid { top.append("\"requestId\":\"\(rid)\"") }
@@ -108,8 +118,10 @@ final class ClaudeUsageCacheGoldenTests: XCTestCase {
             a1,
             a2,
             record(d1, mid: "msg-a3", rid: "req-a3", model: sonnet, input: 1, output: 2),
-            // A repeat of a1 inside the same file: the first occurrence wins.
-            record(d2, mid: "msg-a1", rid: "req-a1", model: sonnet, input: 999, output: 999),
+            // a1 replayed days later inside the same file: zeroed, so it adds
+            // nothing to d0 and does not displace a1 on d2.
+            record(d0, mid: "msg-a1", rid: "req-a1", model: sonnet, input: 10, output: 20,
+                   w5m: 7, w1h: 11, stop: "end_turn", zeroedReplay: true),
             record(d1, mid: "msg-syn", rid: "req-syn", model: "<synthetic>", input: 5000, output: 5000),
             // No message id: cannot be deduplicated, so every copy counts.
             record(d1, mid: nil, rid: nil, model: sonnet, input: 3, output: 4),
@@ -505,6 +517,110 @@ final class ClaudeUsageCacheGoldenTests: XCTestCase {
         await assertEquivalent(fresh, cached, "version mismatch")
         let stats = await cache.stats.snapshot()
         XCTAssertEqual(stats.fullParses, 1)
+    }
+
+    /// An entry of an earlier format — first-wins, the streaming record —
+    /// under a fingerprint that still matches the log exactly. Each released
+    /// format has its own directory, so this takes a misplaced file (or one
+    /// a development build of the unreleased version 3 left in the shared
+    /// directory); served, it would keep the undercount for good, so its
+    /// version alone has to send the log back to a parse.
+    func testEntryOfThePreviousFormatIsReparsedNotServed() async throws {
+        let haiku = "claude-3-5-haiku-20241022"
+        let target = fixture.file("f-agent.jsonl")
+        try write([
+            record(d0, mid: "msg-f1", rid: "req-f1", model: haiku, input: 3, output: 4, cacheRead: 900),
+            record(d0, mid: "msg-f1", rid: "req-f1", model: haiku, input: 3, output: 700, cacheRead: 900, stop: "tool_use")
+        ], to: target)
+        _ = await cachedReport(persistentCache())
+
+        let fingerprint = try XCTUnwrap(LogFileFingerprint.current(for: target))
+        let firstWins = ClaudeFileUsage(
+            keyed: [KeyedUsage(
+                key: DedupKey(messageID: "msg-f1", requestID: "req-f1"),
+                usage: DayModelUsage(day: Calendar.current.startOfDay(for: d0), model: haiku,
+                                     counts: TokenCounts(input: 3, output: 4, cacheWrite5m: 0, cacheWrite1h: 0, cacheRead: 900)))],
+            unkeyed: [], boundaryDigest: Data())
+        // Version 3 (u32 time offsets), version 2 (no stamps, no extras) and
+        // version 1 (first-wins).
+        for version: UInt8 in [3, 2, 1] {
+            var bytes = ClaudeUsageCacheStore.encode(
+                .init(fingerprint: fingerprint, parsedBytes: fingerprint.size, value: firstWins),
+                calendarTag: ClaudeUsageCacheStore.currentCalendarTag())
+            bytes.replaceSubrange(4..<8, with: [version, 0, 0, 0])
+            try bytes.write(to: entryFile(for: target))
+
+            let fresh = await freshReport()
+            XCTAssertEqual(fresh.totalTokens, 412 + 105 + 24 + 3 + 700 + 900)
+            let cache = persistentCache()
+            let cached = await cachedReport(cache)
+            await assertEquivalent(fresh, cached, "version \(version) entry")
+            let stats = await cache.stats.snapshot()
+            XCTAssertEqual(stats.fullParses, 1, "version \(version): only the log behind the old entry is parsed again")
+            XCTAssertEqual(stats.storeHits, fixture.files.count - 1)
+            let rewritten = try Data(contentsOf: entryFile(for: target))
+            XCTAssertEqual(Array(rewritten[4..<8]), [UInt8(ClaudeUsageCacheStore.formatVersion), 0, 0, 0])
+        }
+    }
+
+    /// A request that fell back from Fable to Opus carries both calls in
+    /// `iterations`; the persisted entry must bring both back, under their
+    /// own models, after a restart and across a resume.
+    func testIterationsSurviveTheStoreAndAResume() async throws {
+        let target = fixture.file("g-fallback.jsonl")
+        let at = Self.iso().string(from: d1)
+        let fallback = #"{"type":"assistant","timestamp":"\#(at)","requestId":"req-g1","message":{"id":"msg-g1","model":"claude-opus-4-8","stop_reason":"tool_use","usage":{"input_tokens":8,"output_tokens":16315,"cache_read_input_tokens":810092,"cache_creation_input_tokens":548,"cache_creation":{"ephemeral_5m_input_tokens":548,"ephemeral_1h_input_tokens":0},"iterations":[{"type":"message","model":"claude-fable-5-1","input_tokens":8,"output_tokens":7804,"cache_read_input_tokens":1018342,"cache_creation_input_tokens":548,"cache_creation":{"ephemeral_5m_input_tokens":548,"ephemeral_1h_input_tokens":0}},{"type":"fallback_message","model":"claude-opus-4-8","input_tokens":8,"output_tokens":16315,"cache_read_input_tokens":810092,"cache_creation_input_tokens":6140,"cache_creation":{"ephemeral_5m_input_tokens":6140,"ephemeral_1h_input_tokens":0}}]}}}"#
+        try write([fallback], to: target)
+        let cache = persistentCache()
+        _ = await cachedReport(cache)
+
+        try append([record(d0, mid: "msg-g2", rid: "req-g2", model: "claude-opus-4-8", input: 1, output: 1)], to: target)
+        let fresh = await freshReport()
+        let fable = fresh.dayModels.filter { $0.model == "claude-fable-5-1" }.reduce(0) { $0 + $1.counts.output }
+        XCTAssertEqual(fable, 7_804, "the Fable attempt counts under Fable")
+        for (name, cache) in try sameProcessAndRestart(cache) {
+            await cache.stats.reset()
+            let cached = await cachedReport(cache)
+            await assertEquivalent(fresh, cached, "iterations, \(name)")
+            let stats = await cache.stats.snapshot()
+            XCTAssertEqual(stats.resumedParses, 1, name)
+        }
+    }
+
+    /// A sidechain request writes records carrying its `message_start`
+    /// usage, and the record that closes it lands a few lines — often a
+    /// refresh — later. The cached head holds the streaming record; the
+    /// resumed parse has to replace it exactly as a parse from the top would.
+    func testFinalRecordAppendedPastTheBoundaryReplacesTheStreamingOne() async throws {
+        let haiku = "claude-3-5-haiku-20241022"
+        let today = Calendar.current.startOfDay(for: d0)
+        let baseReport = await freshReport()
+        let base = try XCTUnwrap(baseReport.requestFinality[today])
+        let target = fixture.file("f-agent.jsonl")
+        let streaming = record(d0, mid: "msg-f1", rid: "req-f1", model: haiku, input: 3, output: 4, cacheRead: 900, w5m: 60)
+        try write([streaming, streaming], to: target)
+        let cache = persistentCache()
+        let before = await cachedReport(cache)
+        XCTAssertEqual(before.totalTokens, 412 + 105 + 24 + 3 + 4 + 900 + 60)
+        XCTAssertEqual(before.requestFinality[today]?.partial, base.partial + 1)
+        XCTAssertEqual(before.requestFinality[today]?.partialOutput, base.partialOutput + 4)
+
+        try append([
+            record(d0, mid: "msg-f1", rid: "req-f1", model: haiku, input: 3, output: 700, cacheRead: 900, w5m: 60, stop: "tool_use")
+        ], to: target)
+        let fresh = await freshReport()
+        XCTAssertEqual(fresh.totalTokens, 412 + 105 + 24 + 3 + 700 + 900 + 60)
+        XCTAssertEqual(fresh.requestFinality[today]?.partial, base.partial)
+        XCTAssertEqual(fresh.requestFinality[today]?.final, base.final + 1)
+        for (name, cache) in try sameProcessAndRestart(cache) {
+            await cache.stats.reset()
+            let cached = await cachedReport(cache)
+            await assertEquivalent(fresh, cached, "final after the boundary, \(name)")
+            XCTAssertEqual(cached.requestFinality, fresh.requestFinality, name)
+            let stats = await cache.stats.snapshot()
+            XCTAssertEqual(stats.fullParses, 0, "\(name): the head is not re-read")
+            XCTAssertEqual(stats.resumedParses, 1, name)
+        }
     }
 
     func testInterruptedWriteLeavesNothingUsable() async throws {

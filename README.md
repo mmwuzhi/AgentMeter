@@ -38,7 +38,7 @@ agent usage tracking.
 | | Quota (live) | Usage + spend |
 |---|---|---|
 | **Codex** | `codex app-server` JSON-RPC, then falls back to newest `~/.codex/sessions/**/rollout-*.jsonl` (`rate_limits`) | sum `last_token_usage` per day from rollout logs |
-| **Claude** | OAuth: token from `~/.claude/.credentials.json` to macOS Keychain `Claude Code-credentials`, then `GET api.anthropic.com/api/oauth/usage`, then falls back to scraping `claude /usage`, then usage-only | `~/.claude/projects/**/*.jsonl`, dedup by `message.id`, sum `message.usage.*` |
+| **Claude** | OAuth: token from `~/.claude/.credentials.json` to macOS Keychain `Claude Code-credentials`, then `GET api.anthropic.com/api/oauth/usage`, then falls back to scraping `claude /usage`, then usage-only | `~/.claude/projects/**/*.jsonl`, one record per `message.id|requestId` (the final one when there is one), sum `message.usage.*` |
 | **Copilot** | `gh api /copilot_internal/user`, reusing your existing GitHub CLI login; unavailable if `gh` is missing or not authenticated | flat-rate, so no token spend is shown |
 
 Pricing comes from [LiteLLM](https://github.com/BerriAI/litellm) (fallback models.dev),

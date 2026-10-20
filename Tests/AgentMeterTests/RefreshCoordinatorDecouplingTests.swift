@@ -33,8 +33,30 @@ private enum Fixture {
                                   now: epoch, isCompleteHistory: complete)
     }
 
+    /// What `claude /usage` printed at 08:45 on 2026-10-19 while OAuth was
+    /// failing: Claude Code's cache from two days earlier, no reset times.
+    static func cacheEcho(at now: Date) -> QuotaSnapshot {
+        QuotaSnapshot(
+            provider: .claude,
+            windows: [QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 0, resetsAt: nil),
+                      QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 67, resetsAt: nil)],
+            source: .cli, planType: "max", fetchedAt: now, note: "Scraped from `claude /usage`",
+            cachedAt: now.addingTimeInterval(-2 * 86_400))
+    }
+
     static func state(_ provider: Provider, quota: QuotaSnapshot, usage: UsageReport? = nil) -> ProviderState {
         ProviderState(provider: provider, quota: quota, usage: usage ?? .empty(provider))
+    }
+}
+
+/// A flag the stand-in providers read from off the main actor.
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = false
+
+    var value: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _value }
+        set { lock.lock(); _value = newValue; lock.unlock() }
     }
 }
 
@@ -91,6 +113,7 @@ final class RefreshCoordinatorDecouplingTests: XCTestCase {
         private var _savedStates: [StateCache.Snapshot] = []
         private var _savedLedgers: [[LifetimeDayRecord]] = []
         private var _notifications: [Provider] = []
+        private var _notifiedWindows: [(Provider, [QuotaWindow])] = []
 
         func usageScan(completeHistory: Bool) { lock.lock(); _usageScans.append(completeHistory); lock.unlock() }
         func claudeQuotaRead() { lock.lock(); _claudeQuotaReads += 1; lock.unlock() }
@@ -98,7 +121,9 @@ final class RefreshCoordinatorDecouplingTests: XCTestCase {
         func resetRead() { lock.lock(); _resetReads += 1; lock.unlock() }
         func saved(_ state: StateCache.Snapshot) { lock.lock(); _savedStates.append(state); lock.unlock() }
         func saved(_ ledger: [LifetimeDayRecord]) { lock.lock(); _savedLedgers.append(ledger); lock.unlock() }
-        func notified(_ provider: Provider) { lock.lock(); _notifications.append(provider); lock.unlock() }
+        func notified(_ provider: Provider, _ windows: [QuotaWindow]) {
+            lock.lock(); _notifications.append(provider); _notifiedWindows.append((provider, windows)); lock.unlock()
+        }
 
         /// The `completeHistory` argument of every scan started, in order.
         var usageScans: [Bool] { lock.lock(); defer { lock.unlock() }; return _usageScans }
@@ -108,6 +133,11 @@ final class RefreshCoordinatorDecouplingTests: XCTestCase {
         var savedStates: [StateCache.Snapshot] { lock.lock(); defer { lock.unlock() }; return _savedStates }
         var savedLedgers: [[LifetimeDayRecord]] { lock.lock(); defer { lock.unlock() }; return _savedLedgers }
         var notifications: [Provider] { lock.lock(); defer { lock.unlock() }; return _notifications }
+        /// The windows the last evaluation for `provider` was handed.
+        func lastNotifiedWindows(_ provider: Provider) -> [QuotaWindow]? {
+            lock.lock(); defer { lock.unlock() }
+            return _notifiedWindows.last { $0.0 == provider }?.1
+        }
     }
 
     // MARK: - Fixtures
@@ -187,7 +217,7 @@ final class RefreshCoordinatorDecouplingTests: XCTestCase {
             foregroundRefreshKinds: { _ in [:] },
             saveState: { recorder.saved($0) },
             saveLedger: { recorder.saved($0) },
-            evaluateNotifications: { provider, _ in recorder.notified(provider) }
+            evaluateNotifications: { provider, windows in recorder.notified(provider, windows) }
         )
         let coordinator = RefreshCoordinator(viewModel: model, environment: environment)
         return Harness(clock: clock, recorder: recorder, model: model, coordinator: coordinator)
@@ -578,6 +608,152 @@ final class RefreshCoordinatorDecouplingTests: XCTestCase {
         await waitUntil("the complete scan lands") { h.model.claude.usage.totalTokens == 700 }
         XCTAssertEqual(h.recorder.usageScans, [true, false, true])
         XCTAssertEqual(h.model.lifetimeSpend.first?.tokens, 700)
+    }
+
+    // MARK: - Where a quota reading came from, and when
+
+    /// The echo is older than the live reading on screen (restored a minute
+    /// ago), so that reading stays; the echo is no observation, alerts see
+    /// only the kept reading, and the stale banner shows from the first
+    /// cycle, dated by the kept reading.
+    func testScrapeEchoingAnOldCacheDoesNotDisplaceANewerReading() async {
+        let h = makeHarness(quota: { clock, previous in
+            var next = previous
+            next.quota = Fixture.cacheEcho(at: clock.now)
+            return next
+        })
+        let restored = h.model.claude.quota
+
+        h.coordinator.refresh(forceAll: true)
+        await waitForRefreshToLand(h)
+
+        XCTAssertEqual(h.model.claude.quota, restored, "the newer reading stays on screen")
+        XCTAssertFalse(h.model.quotaObservations.contains { $0.provider == .claude && $0.windowID == "seven_day" },
+                       "the echo is not an observation")
+        XCTAssertTrue(h.model.quotaObservations.contains { $0.provider == .codex }, "live readings still are")
+        XCTAssertEqual(h.recorder.lastNotifiedWindows(.claude)?.map(\.usedPercent), [20],
+                       "alerts see the kept reading, as after any failed cycle")
+        XCTAssertTrue(h.model.staleQuotaProviders.contains(.claude), "stale from the first cycle")
+        XCTAssertEqual(h.model.claude.quota.readingTime, Fixture.epoch.addingTimeInterval(-60),
+                       "the banner dates the data by the kept reading")
+    }
+
+    /// With nothing usable on screen the echo is shown — as the CLI
+    /// fallback, dated by its cache — but still never observed and never
+    /// handed to alerts.
+    func testEchoWithNothingToKeepIsShownButNeitherObservedNorAlerted() async {
+        let h = makeHarness(quota: { clock, previous in
+            var next = previous
+            next.quota = Fixture.cacheEcho(at: clock.now)
+            return next
+        })
+        h.model.claude.quota = .unavailable(.claude, note: "nothing yet")
+
+        h.coordinator.refresh(forceAll: true)
+        await waitForRefreshToLand(h)
+
+        XCTAssertEqual(h.model.claude.quota.source, .cli)
+        XCTAssertEqual(h.model.claude.quota.windows.map(\.usedPercent), [0, 67], "the fallback is shown")
+        XCTAssertFalse(h.model.quotaObservations.contains { $0.provider == .claude })
+        XCTAssertEqual(h.recorder.lastNotifiedWindows(.claude), [])
+        XCTAssertTrue(h.model.staleQuotaProviders.contains(.claude))
+        XCTAssertEqual(h.model.claude.quota.readingTime, h.clock.now.addingTimeInterval(-2 * 86_400))
+    }
+
+    /// The screen keeps the older reading, but the forced-refresh spacing
+    /// counts from the scrape that just happened: a forced refresh right
+    /// behind it (wake fires three notifications) reads nothing, and one past
+    /// the spacing reads as usual — the same reads as when the echo itself
+    /// was shown.
+    func testKeepingTheOlderReadingSendsNoExtraQuotaRead() async {
+        let h = makeHarness(quota: { clock, previous in
+            var next = previous
+            next.quota = Fixture.cacheEcho(at: clock.now)
+            return next
+        })
+        h.coordinator.refresh(forceAll: true)
+        await waitForRefreshToLand(h)
+        XCTAssertEqual(h.recorder.claudeQuotaReads, 1)
+        XCTAssertEqual(h.model.claude.quota.source, .oauth, "the older live reading is on screen")
+
+        h.clock.advance(by: 5)
+        h.coordinator.refresh(forceVisibleQuota: true)
+        await waitForRefreshToLand(h)
+        XCTAssertEqual(h.recorder.claudeQuotaReads, 1, "held back by the scrape 5 s ago, not released by the older reading")
+
+        h.clock.advance(by: 5)
+        h.coordinator.refresh(forceAll: true)
+        await waitForRefreshToLand(h)
+        XCTAssertEqual(h.recorder.claudeQuotaReads, 1, "\"Refresh now\" is held back for Claude the same way")
+
+        h.clock.advance(by: 20)
+        h.coordinator.refresh(forceVisibleQuota: true)
+        await waitForRefreshToLand(h)
+        XCTAssertEqual(h.recorder.claudeQuotaReads, 2, "past the spacing it reads as usual")
+    }
+
+    /// Once OAuth answers again its reading replaces the kept one and is
+    /// recorded; the stale mark clears.
+    func testLiveReadingAfterAnEchoTakesTheScreenBack() async {
+        let echoing = LockedFlag()
+        echoing.value = true
+        let h = makeHarness(quota: { clock, previous in
+            var next = previous
+            next.quota = echoing.value
+                ? Fixture.cacheEcho(at: clock.now)
+                : Fixture.liveQuota(.claude, used: 35, at: clock.now)
+            return next
+        })
+        h.coordinator.refresh(forceAll: true)
+        await waitForRefreshToLand(h)
+        XCTAssertTrue(h.model.staleQuotaProviders.contains(.claude))
+
+        echoing.value = false
+        h.clock.advance(by: 60)
+        h.coordinator.refresh(forceAll: true)
+        await waitForRefreshToLand(h)
+
+        XCTAssertEqual(h.model.claude.quota.windows.map(\.usedPercent), [35])
+        XCTAssertFalse(h.model.staleQuotaProviders.contains(.claude))
+        XCTAssertEqual(h.model.quotaObservations.filter { $0.provider == .claude }.last?.observedAt, h.clock.now)
+        XCTAssertEqual(h.recorder.lastNotifiedWindows(.claude)?.map(\.usedPercent), [35])
+    }
+
+    /// A live reading is recorded once, at the time it was fetched and as
+    /// OAuth's; when OAuth then fails, the reading kept on screen adds
+    /// nothing, and the second failure shows the stale banner.
+    func testLiveReadingIsObservedOnceAndAFailedCycleAddsNothing() async {
+        let failing = LockedFlag()
+        let h = makeHarness(quota: { clock, previous in
+            var next = previous
+            if failing.value {
+                next.quota = .unavailable(.claude, note: "offline")
+            } else {
+                next.quota = Fixture.liveQuota(.claude, used: 30, at: clock.now)
+                clock.advance(by: 2)   // the answer lands two seconds after it was read
+            }
+            return next
+        })
+
+        h.coordinator.refresh(forceAll: true)
+        await waitForRefreshToLand(h)
+        let fetchedAt = h.model.claude.quota.fetchedAt
+        let observed = h.model.quotaObservations.filter { $0.provider == .claude }
+        XCTAssertEqual(observed.map(\.observedAt).max(), fetchedAt, "stamped when read, not when it landed")
+        XCTAssertEqual(observed.last?.source, .oauth)
+
+        failing.value = true
+        for _ in 0..<2 {
+            h.clock.advance(by: 60)
+            h.coordinator.refresh(forceAll: true)
+            await waitForRefreshToLand(h)
+        }
+        XCTAssertEqual(h.model.claude.quota.windows.first?.usedPercent, 30, "the last live reading stays on screen")
+        XCTAssertEqual(h.model.quotaObservations.filter { $0.provider == .claude }, observed,
+                       "the kept reading is not recorded again")
+        XCTAssertTrue(h.model.staleQuotaProviders.contains(.claude))
+        XCTAssertEqual(h.recorder.lastNotifiedWindows(.claude)?.map(\.usedPercent), [30],
+                       "alerts still see the last live reading")
     }
 
     // MARK: - A slow scan, in wall-clock terms

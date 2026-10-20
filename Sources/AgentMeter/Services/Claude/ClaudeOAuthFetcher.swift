@@ -70,8 +70,15 @@ enum ClaudeOAuthFetcher {
             // 0%-left row is noise. Recurring windows remain visible at 100%.
             if isOneTimeCredit && util >= 100 { return }
             let resets = (w["resets_at"] as? String).flatMap(CodexRolloutReader.parseISO)
+            // The screen keeps the 0 a window without `utilization` has always
+            // shown; the detail records that the number is not a reading.
+            var detail = QuotaWindowDetail(utilizationStated: strictNumber(w["utilization"]) != nil)
+            if lockedReasonWindowIDs.contains(key) {
+                detail.lockedReason = boundedText(w["locked_reason"])
+            }
             windows.append(QuotaWindow(id: key, label: label, usedPercent: util, resetsAt: resets,
-                                        isOneTimeCredit: isOneTimeCredit, cycle: cycle(forWindowID: key)))
+                                        isOneTimeCredit: isOneTimeCredit, cycle: cycle(forWindowID: key),
+                                        detail: detail))
         }
         add("five_hour", "5-hour")
         add("seven_day", "Weekly")
@@ -95,7 +102,8 @@ enum ClaudeOAuthFetcher {
         // window id and skip ids already added, so the named keys stay authoritative
         // when both are present and trend observations keep a stable window id
         // either way.
-        addLimits(from: obj, into: &windows)
+        let limitWindowIDs = addLimits(from: obj, into: &windows)
+        attachWeeklyScopedShares(from: obj, limitWindowIDs: limitWindowIDs, into: &windows)
 
         let plan = planType(in: obj, windows: windows, credentialPlan: credentialPlan)
         let extraUsage = extraUsageSpentUSD(in: obj)
@@ -152,14 +160,25 @@ enum ClaudeOAuthFetcher {
 
     /// Folds `limits` array entries into `windows`, skipping kinds already covered
     /// by a named key. Unknown kinds are ignored rather than guessed at, matching
-    /// how the named-key whitelist behaves.
-    private static func addLimits(from obj: [String: Any], into windows: inout [QuotaWindow]) {
-        guard let limits = obj["limits"] as? [[String: Any]] else { return }
-        for limit in limits {
+    /// how the named-key whitelist behaves. What a limit says beyond its percentage
+    /// (`is_active`, `severity`, the scope's display name) is merged into the
+    /// window of the same id, the named one included, by the first limit that
+    /// names it; the named window's own numbers are never replaced.
+    ///
+    /// Returns, for every limit that built or merged into a window, that limit's
+    /// index in the ORIGINAL `limits` array and the window id: `limit_index` of
+    /// `weekly_scoped_shares` counts entries the loop below skips as well.
+    @discardableResult
+    private static func addLimits(from obj: [String: Any], into windows: inout [QuotaWindow]) -> [Int: String] {
+        guard let limits = obj["limits"] as? [[String: Any]] else { return [:] }
+        var windowIDByLimitIndex: [Int: String] = [:]
+        var claimedIDs = Set<String>()
+        for (index, limit) in limits.enumerated() {
             guard let kind = limit["kind"] as? String else { continue }
             let id: String
             let label: String
             var modelScoped = false
+            var scopeName: String?
             switch kind {
             case "session":
                 id = "five_hour"
@@ -172,24 +191,141 @@ enum ClaudeOAuthFetcher {
                 // response carries (`scope.model.id` is null in live responses).
                 guard let scope = limit["scope"] as? [String: Any],
                       let model = scope["model"] as? [String: Any],
-                      let name = (model["display_name"] as? String)?
-                          .trimmingCharacters(in: .whitespacesAndNewlines),
-                      !name.isEmpty else { continue }
-                id = "seven_day_" + name.lowercased().replacingOccurrences(of: " ", with: "_")
+                      let rawName = model["display_name"] as? String,
+                      let scopedID = QuotaWindowID.scopedWeekly(displayName: rawName) else { continue }
+                let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+                id = scopedID
                 label = "Weekly (\(name))"
                 modelScoped = true
+                scopeName = boundedText(name)
             default:
+                continue
+            }
+            let stated = QuotaWindowDetail(
+                isActive: strictBool(limit["is_active"]),
+                severity: boundedText(limit["severity"]),
+                scopeName: scopeName
+            )
+            if let existing = windows.firstIndex(where: { $0.id == id }) {
+                // A named key (or an earlier limit) built this window. Only the
+                // first limit of an id adds its metadata, so a repeated kind
+                // cannot overwrite it.
+                guard claimedIDs.insert(id).inserted else { continue }
+                var detail = windows[existing].detail ?? QuotaWindowDetail()
+                detail.isActive = stated.isActive
+                detail.severity = stated.severity
+                detail.scopeName = stated.scopeName
+                windows[existing].detail = detail
+                windowIDByLimitIndex[index] = id
                 continue
             }
             // `percent` is a bare integer in live responses, so go
             // through NSNumber instead of an `as? Double` cast that only tolerates
             // one numeric shape.
-            guard !windows.contains(where: { $0.id == id }),
-                  let percent = (limit["percent"] as? NSNumber)?.doubleValue else { continue }
+            guard let percent = (limit["percent"] as? NSNumber)?.doubleValue else { continue }
             let resets = (limit["resets_at"] as? String).flatMap(CodexRolloutReader.parseISO)
+            var detail = stated
+            detail.utilizationStated = true
             windows.append(QuotaWindow(id: id, label: label, usedPercent: percent, resetsAt: resets,
-                                       isModelScoped: modelScoped, cycle: cycle(forWindowID: id)))
+                                       isModelScoped: modelScoped, cycle: cycle(forWindowID: id),
+                                       detail: detail))
+            claimedIDs.insert(id)
+            windowIDByLimitIndex[index] = id
         }
+        return windowIDByLimitIndex
+    }
+
+    /// `weekly_scoped_shares[]`: how much of the all-model weekly one scoped
+    /// limit has used and may use. `limit_index` counts into the ORIGINAL
+    /// `limits` array, so a limit of an unknown kind earlier in the list shifts
+    /// every index after it; the share goes to the window that limit produced,
+    /// and a share whose index names no such window is dropped. Not a window
+    /// of its own, so nothing a view shows changes. The first valid share of an
+    /// index wins; at most `maxScopedShares` entries are read.
+    private static func attachWeeklyScopedShares(
+        from obj: [String: Any],
+        limitWindowIDs: [Int: String],
+        into windows: inout [QuotaWindow]
+    ) {
+        guard let shares = obj["weekly_scoped_shares"] as? [Any], !limitWindowIDs.isEmpty else { return }
+        var attached = Set<Int>()
+        for raw in shares.prefix(maxScopedShares) {
+            guard let share = raw as? [String: Any],
+                  let limitIndex = strictInteger(share["limit_index"]),
+                  !attached.contains(limitIndex),
+                  let id = limitWindowIDs[limitIndex],
+                  let windowIndex = windows.firstIndex(where: { $0.id == id }) else { continue }
+            let used = shareFigure(share["used_percent_of_weekly"])
+            let allowance = shareFigure(share["allowance_percent_of_weekly"])
+            guard used != nil || allowance != nil else { continue }
+            var detail = windows[windowIndex].detail ?? QuotaWindowDetail()
+            detail.shareUsedOfWeekly = used
+            detail.shareAllowanceOfWeekly = allowance
+            windows[windowIndex].detail = detail
+            attached.insert(limitIndex)
+        }
+    }
+
+    // MARK: - Defensive field readers (history detail only)
+    //
+    // Nothing below is trusted: each reader returns nil for a value of the wrong
+    // type or outside a plausible range, and the window it describes is built
+    // exactly as before.
+
+    /// `locked_reason` is read from these named windows only: the two the
+    /// response has been seen to carry it in.
+    private static let lockedReasonWindowIDs: Set<String> = ["five_hour", "seven_day"]
+    /// A reason, a severity or a model name is a short token or a short phrase.
+    static let maxDetailTextLength = 64
+    /// A response lists a handful of limits; this bounds the work on one that does not.
+    private static let maxScopedShares = 64
+    /// Shares are percentages of a weekly; a figure past this is not one.
+    private static let maxShareFigure = 1000.0
+
+    /// A real JSON boolean. `as? Bool` also accepts an integer 0 or 1, which a
+    /// response that meant a count must not turn into a flag.
+    static func strictBool(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
+    /// A finite JSON number; a boolean is not one.
+    static func strictNumber(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let double = number.doubleValue
+        return double.isFinite ? double : nil
+    }
+
+    private static func strictInteger(_ value: Any?) -> Int? {
+        guard let double = strictNumber(value), double.rounded() == double,
+              double >= 0, double < 1_000_000 else { return nil }
+        return Int(double)
+    }
+
+    private static func shareFigure(_ value: Any?) -> Double? {
+        guard let double = strictNumber(value), double >= 0, double <= maxShareFigure else { return nil }
+        return double
+    }
+
+    /// The trimmed string when it is 1 to `maxDetailTextLength` printable scalars:
+    /// no control, format (bidi overrides, zero-width), separator, private-use
+    /// or unassigned scalar, no tab or newline. Anything else (a number, an
+    /// over-long value, an odd one) is nil, not a truncated or cleaned copy.
+    static func boundedText(_ value: Any?) -> String? {
+        guard let string = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !string.isEmpty,
+              string.unicodeScalars.count <= maxDetailTextLength else { return nil }
+        for scalar in string.unicodeScalars {
+            if scalar == " " { continue }
+            switch scalar.properties.generalCategory {
+            case .control, .format, .surrogate, .privateUse, .unassigned,
+                 .lineSeparator, .paragraphSeparator, .spaceSeparator:
+                return nil
+            default:
+                continue
+            }
+        }
+        return string
     }
 
     /// Best-effort capture of a window-less `/api/oauth/usage` body, so the real field

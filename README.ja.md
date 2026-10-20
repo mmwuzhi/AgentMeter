@@ -21,7 +21,7 @@ AgentMeterは、**Codex**、**Claude Code**、**GitHub Copilot**の利用状況�
 | | ライブクォータ | 利用量とコスト |
 |---|---|---|
 | **Codex** | `codex app-server` JSON-RPC、その後に最新の `~/.codex/sessions/**/rollout-*.jsonl`（`rate_limits`）へフォールバック | rolloutログの `last_token_usage` を日別に集計 |
-| **Claude** | OAuth：`~/.claude/.credentials.json`、macOS Keychainの `Claude Code-credentials`、`GET api.anthropic.com/api/oauth/usage` の順に使い、その後 `claude /usage` のスクレイピング、最後に利用量のみへフォールバック | `~/.claude/projects/**/*.jsonl` を読み、`message.id` で重複排除して `message.usage.*` を集計 |
+| **Claude** | OAuth：`~/.claude/.credentials.json`、macOS Keychainの `Claude Code-credentials`、`GET api.anthropic.com/api/oauth/usage` の順に使い、その後 `claude /usage` のスクレイピング、最後に利用量のみへフォールバック | `~/.claude/projects/**/*.jsonl` を読み、`message.id|requestId` ごとに1レコード（最終レコードがあればそれ）を選んで `message.usage.*` を集計 |
 | **Copilot** | `gh api /copilot_internal/user`。既存のGitHub CLIログインを再利用します。`gh` がない、または未認証の場合は利用できません | 定額制のため、tokenコストは表示しません |
 
 価格情報は[LiteLLM](https://github.com/BerriAI/litellm)から取得し、models.devをフォールバックとして使います。キャッシュは `~/Library/Application Support/AgentMeter/pricing.json` に保存され、アプリには `Resources/embedded-pricing.json` のオフラインスナップショットも含まれています。

@@ -103,6 +103,58 @@ final class ProviderStateQuotaTests: XCTestCase {
         XCTAssertEqual(result.quota, freshQuota)
     }
 
+    // MARK: A scrape that only echoed an old cached reading
+
+    private func claudeLive(used: Double, readAt: Date, resetsAt: Date) -> QuotaSnapshot {
+        QuotaSnapshot(provider: .claude,
+                      windows: [QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: used, resetsAt: resetsAt)],
+                      source: .oauth, planType: "max", fetchedAt: readAt, note: nil)
+    }
+
+    private func claudeEcho(used: Double, at now: Date, cachedAt: Date) -> ProviderState {
+        ProviderState(
+            provider: .claude,
+            quota: ClaudeCLIScraper.snapshot(
+                windows: [QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: used, resetsAt: nil)],
+                planType: "max", rateLimitTier: nil, fetchedAt: now, cachedAt: cachedAt),
+            usage: .empty(.claude))
+    }
+
+    /// OAuth read at T, then a 401 sends the next cycle to the scrape, whose
+    /// CLI prints a cache fetched 40 minutes before T. The older numbers do
+    /// not replace the newer reading on screen.
+    func testEchoOlderThanTheReadingOnScreenKeepsThatReading() {
+        let now = Date(timeIntervalSince1970: 1_792_400_000)
+        let previous = claudeLive(used: 30, readAt: now.addingTimeInterval(-120), resetsAt: now.addingTimeInterval(3_600))
+        let echo = claudeEcho(used: 22, at: now, cachedAt: now.addingTimeInterval(-120 - 2_400))
+
+        XCTAssertEqual(echo.preservingLiveQuota(from: previous, at: now).quota, previous)
+    }
+
+    /// An echo newer than what is on screen, or with nothing usable on
+    /// screen, is the best there is and is shown — as the fallback it is.
+    func testEchoNewerThanTheReadingOnScreenOrWithNothingToKeepIsShown() {
+        let now = Date(timeIntervalSince1970: 1_792_400_000)
+        let echo = claudeEcho(used: 22, at: now, cachedAt: now.addingTimeInterval(-1_800))
+        let olderLive = claudeLive(used: 30, readAt: now.addingTimeInterval(-7_200), resetsAt: now.addingTimeInterval(3_600))
+        let expiredLive = claudeLive(used: 30, readAt: now.addingTimeInterval(-60), resetsAt: now.addingTimeInterval(-10))
+
+        XCTAssertEqual(echo.preservingLiveQuota(from: olderLive, at: now).quota, echo.quota)
+        XCTAssertEqual(echo.preservingLiveQuota(from: expiredLive, at: now).quota, echo.quota)
+        XCTAssertEqual(echo.preservingLiveQuota(from: .unavailable(.claude, note: "x"), at: now).quota, echo.quota)
+    }
+
+    /// A scrape the CLI read live is not an echo and replaces the screen as
+    /// before, whatever is there.
+    func testLiveScrapeStillReplacesTheReadingOnScreen() {
+        let now = Date(timeIntervalSince1970: 1_792_400_000)
+        let previous = claudeLive(used: 30, readAt: now.addingTimeInterval(-60), resetsAt: now.addingTimeInterval(3_600))
+        let scrape = claudeEcho(used: 31, at: now, cachedAt: now.addingTimeInterval(-3))
+
+        XCTAssertFalse(scrape.quota.echoesStaleCache)
+        XCTAssertEqual(scrape.preservingLiveQuota(from: previous, at: now).quota, scrape.quota)
+    }
+
     func testCodexRolloutFallbackKeepsPreviousUsableAppServerQuota() {
         let now = Date()
         let previousQuota = QuotaSnapshot(

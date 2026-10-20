@@ -10,9 +10,12 @@ final class ClaudeJSONLScannerTests: XCTestCase {
         // Dynamic timestamp: totals apply a rolling 30-day cutoff, so a fixed
         // date here would silently age out of the window and start failing.
         let ts = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3_600))
+        // The second line is how Claude Code replays a message it already
+        // wrote: the same key, the top-level counts zeroed, the cache split
+        // and stop reason kept. It must add nothing.
         let payload = [
-            #"{"timestamp":"\#(ts)","requestId":"req-1","message":{"id":"msg-1","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation":{"ephemeral_5m_input_tokens":7,"ephemeral_1h_input_tokens":11}}}}"#,
-            #"{"timestamp":"\#(ts)","requestId":"req-1","message":{"id":"msg-1","model":"claude-sonnet-4-20250514","usage":{"input_tokens":999,"output_tokens":999}}}"#
+            #"{"timestamp":"\#(ts)","requestId":"req-1","message":{"id":"msg-1","model":"claude-sonnet-4-20250514","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":18,"cache_creation":{"ephemeral_5m_input_tokens":7,"ephemeral_1h_input_tokens":11}}}}"#,
+            #"{"timestamp":"\#(ts)","requestId":"req-1","message":{"id":"msg-1","model":"claude-sonnet-4-20250514","stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":7,"ephemeral_1h_input_tokens":11}}}}"#
         ].joined(separator: "\n")
         try payload.write(to: url, atomically: true, encoding: .utf8)
 
