@@ -20,10 +20,31 @@ usage presentation, cached state, or Claude live-session integration.
   window and store its old `resetsAt`, posting a false recovery on the next
   refresh. Delivery goes through the same `NotificationAuthorizationCenter`
   seam as the request, so tests observe posts without the real center.
+- Events (`Services/Events`, `NotificationManager+Events.swift`) are the
+  second, separate path through `NotificationManager`: a producer submits an
+  `AgentMeterEvent` whose id names the occurrence, and `AgentMeterEventStore`
+  (`events.jsonl` next to `history.sqlite`, an operation log replayed on load)
+  records it before anything is posted and refuses an id it already has, so a
+  restart or a rescan never announces it again. A run that ends mid-post
+  leaves the event pending; the next run's first read marks it
+  `interrupted`, terminal and never retried. Delivery re-reads the system
+  permission before every post, shares the lazy prompt and `requested` flag
+  with the quota path, and records instead of posting when the kind is
+  switched off, the event is older than `maximumDeliveryDelay`, or
+  permission is denied. Read state changes only on an explicit read (a tap
+  on the notification, `markEventsRead`), never with time, and unread events
+  never age out: the 180-day retention applies to read events, and at the
+  10,000-event cap read events go first. Only when unread events alone
+  exceed the cap do the oldest unread go, counted in `unreadOverflow()` (a
+  running total kept in the log) for a view to show. The quota
+  critical/recovery path is unchanged and records no events.
 - `@AppStorage` keys are a compatibility contract. Current keys include
   `menuBarItemsConfig` (plus per-slot `menuBarItemsConfig.<slot>` variants),
   `menuBarSlotsConfig`, `menuBarShowCaptions`, `refreshIntervalSeconds`,
-  threshold and notification settings, `launchAtLogin`,
+  threshold and notification settings, the event notification switches
+  (`taskCompletedNotificationsEnabled`, `taskFailedNotificationsEnabled` and
+  `taskWaitingNotificationsEnabled`, all default on; read on every delivery
+  by `AgentMeterNotificationPreferences`), `launchAtLogin`,
   `statusHooksEnabled`, and `claudeOAuthSucceededOnce` (gates the one-time
   Keychain primer in the popover).
 - `MenuBarLayout` owns which fields each status item shows, in what order.

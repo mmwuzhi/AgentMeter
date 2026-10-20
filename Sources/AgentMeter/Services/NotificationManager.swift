@@ -10,11 +10,29 @@ protocol NotificationAuthorizationCenter: AnyObject {
     /// test can see what would have been posted without touching the real
     /// center.
     func post(_ request: UNNotificationRequest)
+    /// Event delivery: like `post`, but says whether the center took it.
+    func deliver(_ request: UNNotificationRequest) async throws
+    /// The permission as it stands now. The user can change it in System
+    /// Settings at any time, so event delivery asks before every post.
+    func authorizationStatus() async -> UNAuthorizationStatus
+    func setCategories(_ categories: Set<UNNotificationCategory>)
 }
 
 extension UNUserNotificationCenter: NotificationAuthorizationCenter {
     func post(_ request: UNNotificationRequest) {
         add(request, withCompletionHandler: nil)
+    }
+
+    func deliver(_ request: UNNotificationRequest) async throws {
+        try await add(request)
+    }
+
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        await notificationSettings().authorizationStatus
+    }
+
+    func setCategories(_ categories: Set<UNNotificationCategory>) {
+        setNotificationCategories(categories)
     }
 }
 
@@ -108,31 +126,69 @@ enum QuotaNotificationPolicy {
 /// critical threshold. Dedups per window and reset epoch: each depletion
 /// notifies once, and a window re-arms once a later epoch has begun (its reset
 /// passed, or a limit reset spent early moved it).
+///
+/// Also the one deliverer of events (`NotificationManager+Events.swift`):
+/// session task outcomes now, rule alerts later. They share the permission
+/// request and the delegate with the quota path and nothing else; the quota
+/// path neither records events nor reads their settings.
 @MainActor
 final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationManager()
 
-    private let authorizationCenter: any NotificationAuthorizationCenter
+    let authorizationCenter: any NotificationAuthorizationCenter
     private let bundleIdentifier: () -> String?
     private(set) var authorized = false
     private(set) var requested = false
     private var notificationState = QuotaNotificationState()
+    /// The permission prompt while it is open, so an event that needs the
+    /// answer waits for the same prompt instead of asking again.
+    private(set) var authorizationRequest: Task<Void, Never>?
+
+    /// The event record: dedup, delivery outcome, read state.
+    let eventStore: AgentMeterEventStore
+    /// Read on every event delivery.
+    let preferences: @MainActor () -> AgentMeterNotificationPreferences
+    let now: () -> Date
+    /// An event that happened longer ago than this when it could be posted is
+    /// recorded but not announced: found after a restart, or held up behind
+    /// a permission prompt the user left open.
+    let maximumDeliveryDelay: TimeInterval
 
     /// Invoked on the main actor when the user taps a quota notification.
     var onOpenProvider: ((Provider) -> Void)?
+    /// Invoked on the main actor when the user taps an event's notification
+    /// (or one of its actions), after the event was marked read.
+    var onEventResponse: ((AgentMeterEvent, String) -> Void)?
+    /// Invoked on the main actor after events were recorded, settled or read
+    /// through this manager, so a view can re-query the store.
+    var onEventsChanged: (() -> Void)?
+
+    nonisolated static let defaultMaximumDeliveryDelay: TimeInterval = 15 * 60
 
     private override init() {
         authorizationCenter = UNUserNotificationCenter.current()
         bundleIdentifier = { Bundle.main.bundleIdentifier }
+        eventStore = .shared
+        preferences = { AgentMeterNotificationPreferences(defaults: .standard) }
+        now = { Date() }
+        maximumDeliveryDelay = Self.defaultMaximumDeliveryDelay
         super.init()
     }
 
     init(
         authorizationCenter: any NotificationAuthorizationCenter,
-        bundleIdentifier: @escaping () -> String?
+        bundleIdentifier: @escaping () -> String?,
+        eventStore: AgentMeterEventStore = .inMemory(),
+        preferences: @escaping @MainActor () -> AgentMeterNotificationPreferences = { AgentMeterNotificationPreferences() },
+        now: @escaping () -> Date = { Date() },
+        maximumDeliveryDelay: TimeInterval = NotificationManager.defaultMaximumDeliveryDelay
     ) {
         self.authorizationCenter = authorizationCenter
         self.bundleIdentifier = bundleIdentifier
+        self.eventStore = eventStore
+        self.preferences = preferences
+        self.now = now
+        self.maximumDeliveryDelay = maximumDeliveryDelay
         super.init()
     }
 
@@ -152,21 +208,32 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     /// UNUserNotificationCenter traps when there is no app bundle (bare `make debug`
     /// binary), so every entry point guards on a bundle identifier.
-    private var hasBundle: Bool { bundleIdentifier() != nil }
+    var hasBundle: Bool { bundleIdentifier() != nil }
 
     /// Become the notification-center delegate without asking for permission,
     /// so taps on already-delivered notifications route back even before (or
     /// without) an authorization request.
+    ///
+    /// Also registers the event categories and reads the event record on its
+    /// own queue, so the first event does not wait for the file.
     func activate() {
         guard hasBundle else { return }
         authorizationCenter.delegate = self
+        authorizationCenter.setCategories(Self.eventCategories)
+        let store = eventStore
+        Task.detached(priority: .utility) { await store.prepare() }
     }
 
     func requestAuthorizationIfNeeded() async {
         guard !requested, hasBundle else { return }
         requested = true
         authorizationCenter.delegate = self   // so banners show even while the app is active
-        authorized = (try? await authorizationCenter.requestAuthorization(options: [.alert, .sound])) ?? false
+        let center = authorizationCenter
+        let request = Task { @MainActor in
+            self.authorized = (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+        }
+        authorizationRequest = request
+        await request.value
     }
 
     /// The windows each provider last handed to `evaluate`. The permission
@@ -288,6 +355,12 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        if let eventID = response.notification.request.content.userInfo[Self.eventIDUserInfoKey] as? String {
+            let action = response.actionIdentifier
+            completionHandler()
+            Task { @MainActor in await self.handleEventResponse(eventID: eventID, actionIdentifier: action) }
+            return
+        }
         let raw = response.actionIdentifier == UNNotificationDefaultActionIdentifier
             ? response.notification.request.content.userInfo["provider"] as? String
             : nil

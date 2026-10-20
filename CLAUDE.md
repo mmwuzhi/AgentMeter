@@ -34,6 +34,10 @@ For cross-cutting changes, read every applicable reference before editing.
   quota readings, fed by the usage scan and the refresh without ever being
   awaited (quit alone waits, about 1.5 s at most, for it to close); read nothing
   from it in the UI yet
+- `Sources/AgentMeter/Services/Events` — `AgentMeterEvent` and
+  `AgentMeterEventStore` (`events.jsonl`): dedup, delivery outcome and read
+  state of what the shared event path (`NotificationManager+Events.swift`)
+  announces; nothing produces events yet
 - `Sources/AgentStatusCore` / `Sources/AgentMeterHook` — Claude status helper
 - `Tests/AgentMeterTests` — XCTest suite
 - `Scripts` / `.github/workflows/release.yml` — bundle and release tooling
