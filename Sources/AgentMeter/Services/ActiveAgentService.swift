@@ -3,14 +3,22 @@ import Darwin
 import Foundation
 
 enum ActiveAgentService {
-    private static let sessionTotalsCache = LogFileParseCache<SessionTokenTotals>()
+    /// Codex rollouts, parsed here: the Claude usage scan does not read them.
+    private static let codexTotalsCache = LogFileParseCache<CodexSessionTotals>()
+    /// Claude session titles. Claude usage is not parsed here: a session row
+    /// reads its transcripts' records through the usage scan's cache.
+    private static let claudeTitleCache = LogFileParseCache<ClaudeSessionTitles>()
 
-    static func fetch() async -> [ActiveAgent] {
+    /// `claudeCache` and `history` are the usage scan's (the app passes
+    /// `.shared` and its history store); the defaults keep a caller off both.
+    static func fetch(claudeCache: ClaudeUsageCache = .memoryOnly,
+                      history: (any HistoryIngesting)? = nil) async -> [ActiveAgent] {
         await Task.detached {
             let payloads = AgentStatusStore.readAll()
             let registry = ClaudeSessionRegistry.readAll()
             let agents = parsePSOutput(runPS().output, observedAt: Date(), payloads: payloads, registry: registry)
-            return presentable(await enrichSessionUsage(agents), payloads: payloads, registry: registry)
+            let enriched = await enrichSessionUsage(agents, claudeCache: claudeCache, history: history)
+            return presentable(enriched, payloads: payloads, registry: registry)
         }.value
     }
 
@@ -966,74 +974,94 @@ enum ActiveAgentService {
         let title: String?
     }
 
-    static func enrichSessionUsage(_ agents: [ActiveAgent]) async -> [ActiveAgent] {
+    static func enrichSessionUsage(
+        _ agents: [ActiveAgent],
+        claudeCache: ClaudeUsageCache = .memoryOnly,
+        history: (any HistoryIngesting)? = nil
+    ) async -> [ActiveAgent] {
         await PricingService.shared.ensureLoaded()
-        // Forget sessions that are no longer running. The cached parse state
-        // carries a per-file dedup set, so keeping entries for every
-        // transcript ever enriched would grow without bound over a long uptime.
-        // The subagent transcripts are kept alongside their session's: each is
-        // its own entry, and dropping them here would re-read every one of
-        // them from the top on the next tick.
-        await sessionTotalsCache.prune(keeping: transcriptURLs(for: agents).compactMap {
-            LogFileFingerprint.current(for: $0)
-        })
+        // Forget sessions that are no longer running: titles and Codex totals
+        // are kept per main transcript, and keeping one for every transcript
+        // ever enriched would grow without bound over a long uptime. Claude's
+        // records live in the usage scan's cache, which the scans prune.
+        let mains = agents.compactMap { agent in
+            agent.session?.logPath.flatMap { LogFileFingerprint.current(for: URL(fileURLWithPath: $0)) }
+        }
+        await claudeTitleCache.prune(keeping: mains)
+        await codexTotalsCache.prune(keeping: mains)
         var enriched: [ActiveAgent] = []
         for var agent in agents {
             if let session = agent.session, session.logPath != nil {
-                agent.session = await sessionWithUsage(session, provider: agent.provider, observedAt: agent.observedAt)
+                agent.session = await sessionWithUsage(session, provider: agent.provider, observedAt: agent.observedAt,
+                                                       claudeCache: claudeCache, history: history)
             }
             enriched.append(agent)
         }
         return enriched
     }
 
-    /// Every transcript file the session rows are read from — the main
-    /// transcript of each attributed session plus its subagents' — i.e. what
-    /// the parse cache has to keep between ticks.
-    static func transcriptURLs(for agents: [ActiveAgent]) -> [URL] {
-        agents.flatMap { agent -> [URL] in
-            guard let logPath = agent.session?.logPath else { return [] }
-            return [URL(fileURLWithPath: logPath)] + subagentTranscripts(for: logPath, provider: agent.provider)
-        }
-    }
-
     /// The session with spend and identity filled in from its transcript(s).
     /// Model, effort and title come from the main transcript only; tokens and
-    /// cost add every subagent transcript, each parsed and cached on its own.
+    /// cost add every subagent transcript. A Claude session's records are the
+    /// usage scan's own (`ClaudeJSONLScanner.fileUsages`, through
+    /// `claudeCache`), so the row counts each request as the usage report and
+    /// the history do.
     static func sessionWithUsage(
         _ session: ActiveAgentSession,
         provider: Provider,
-        observedAt: Date
+        observedAt: Date,
+        claudeCache: ClaudeUsageCache = .memoryOnly,
+        history: (any HistoryIngesting)? = nil
     ) async -> ActiveAgentSession {
         guard let logPath = session.logPath else { return session }
         var session = session
-        let main = await sessionTotals(provider: provider, url: URL(fileURLWithPath: logPath))
-        if let main {
-            let summary = await summary(from: main)
+        let mainURL = URL(fileURLWithPath: logPath)
+        func show(_ summary: SessionUsageSummary) {
             session.tokenCount = summary.tokenCount
             session.estimatedCostUSD = summary.estimatedCostUSD
             session.model = summary.model
             session.effort = summary.effort
             session.title = summary.title
         }
-        let (subagents, subagentTotals) = await subagentSummaries(
-            subagentTranscripts(for: logPath, provider: provider),
+        guard provider == .claude else {
+            if provider == .codex { show(await codexSummary(url: mainURL)) }
+            session.subagents = []
+            return session
+        }
+        let subagentURLs = subagentTranscripts(for: logPath, provider: provider)
+        let usages = await ClaudeJSONLScanner.fileUsages(([mainURL] + subagentURLs).map(scanSpelling),
+                                                         cache: claudeCache, history: history)
+        let main = usages[0]
+        show(await claudeSummary(main, titles: await claudeTitles(url: mainURL)))
+        let (subagents, subagentUsages) = await subagentSummaries(
+            Array(zip(subagentURLs, usages.dropFirst())),
             observedAt: observedAt
         )
         session.subagents = subagents
-        guard !subagentTotals.isEmpty else { return session }
+        guard !subagentUsages.isEmpty else { return session }
         // The session's figure counts each request once across all of its
         // transcripts, picked the way the usage report picks it: a request
         // two of them carry (a resumed workflow agent's copy) is one request.
         var selection = ClaudeJSONLScanner.UsageSelection()
-        if let main { selection.add(main.claude.usage) }
-        for totals in subagentTotals { selection.add(totals.claude.usage) }
+        selection.add(main)
+        for usage in subagentUsages { selection.add(usage) }
         let merged = await priced(selection.countsByModel())
         if merged.tokenCount > 0 {
             session.tokenCount = merged.tokenCount
             session.estimatedCostUSD = merged.costUSD
         }
         return session
+    }
+
+    /// `url` spelled the way the usage scan lists it: `jsonlFiles` resolves
+    /// the symlink a `projects/<key>` entry may be (a session's `logPath`
+    /// from the hook or the registry goes through it), and the scan's cache
+    /// and the history key on that spelling. Read through any other, the same
+    /// transcript would be cached and recorded twice. Rows keep showing the
+    /// path they were given.
+    static func scanSpelling(_ url: URL) -> URL {
+        url.deletingLastPathComponent().resolvingSymlinksInPath()
+            .appendingPathComponent(url.lastPathComponent, isDirectory: false)
     }
 
     /// Subagent transcripts of a Claude session: `agent-<id>.jsonl` under the
@@ -1109,25 +1137,20 @@ enum ActiveAgentService {
     /// Claude Code wrote and is ignored rather than parsed.
     private static let subagentMetaByteCap = 64 * 1024
 
-    /// The subagent rows, plus each transcript's parse for the session's own
-    /// figure.
+    /// The subagent rows, plus the records of each transcript that has one,
+    /// for the session's own figure.
     private static func subagentSummaries(
-        _ urls: [URL],
+        _ transcripts: [(URL, ClaudeFileUsage)],
         observedAt: Date
-    ) async -> ([ActiveSubagent], [SessionTokenTotals]) {
+    ) async -> ([ActiveSubagent], [ClaudeFileUsage]) {
         var subagents: [ActiveSubagent] = []
-        var parses: [SessionTokenTotals] = []
-        for url in urls {
+        var usages: [ClaudeFileUsage] = []
+        for (url, usage) in transcripts {
             guard let id = subagentID(fromTranscriptName: url.lastPathComponent),
                   let modifiedAt = modificationDate(for: url) else { continue }
-            let totals = await sessionTotals(provider: .claude, url: url)
-            let summary: SessionUsageSummary?
-            if let totals {
-                parses.append(totals)
-                summary = await self.summary(from: totals)
-            } else {
-                summary = nil
-            }
+            usages.append(usage)
+            // A subagent's title is never shown, so none is read.
+            let summary = await claudeSummary(usage, titles: ClaudeSessionTitles())
             let meta = subagentMetadata(for: url)
             subagents.append(ActiveSubagent(
                 id: id,
@@ -1136,10 +1159,10 @@ enum ActiveAgentService {
                 observedAt: observedAt,
                 description: meta.description ?? firstPrompt(in: url),
                 agentType: meta.agentType,
-                tokenCount: summary?.tokenCount,
-                estimatedCostUSD: summary?.estimatedCostUSD,
-                model: summary?.model,
-                effort: summary?.effort
+                tokenCount: summary.tokenCount,
+                estimatedCostUSD: summary.estimatedCostUSD,
+                model: summary.model,
+                effort: summary.effort
             ))
         }
         // Newest activity first: what is running now sits above what finished.
@@ -1147,7 +1170,7 @@ enum ActiveAgentService {
             if lhs.lastUpdatedAt != rhs.lastUpdatedAt { return lhs.lastUpdatedAt > rhs.lastUpdatedAt }
             return lhs.id < rhs.id
         }
-        return (rows, parses)
+        return (rows, usages)
     }
 
     /// `description` and `agentType` from the sibling `agent-<id>.meta.json`.
@@ -1180,19 +1203,12 @@ enum ActiveAgentService {
         return nil
     }
 
-    /// Partial parse of one session transcript. Cached so an actively-appended
-    /// log resumes at the last consumed line boundary rather than being re-read
-    /// from the top: the popover polls this every refresh tick while it is open,
-    /// and a busy session's transcript only grows.
-    private struct SessionTokenTotals: Sendable {
-        /// Codex counts per model.
+    /// Partial parse of one Codex rollout. Cached so an actively-appended log
+    /// resumes at the last consumed line boundary rather than being re-read
+    /// from the top: the popover polls this every refresh tick while it is
+    /// open, and a busy session's log only grows.
+    private struct CodexSessionTotals: Sendable {
         var totalsByModel: [String: TokenCounts] = [:]
-        /// Claude records, one per `message.id|requestId`, kept and picked
-        /// exactly as the usage report's scan keeps them. Carried whole so an
-        /// incremental tail can still replace a record a whole-file parse
-        /// would have replaced — a streaming record whose final one lands
-        /// after the resume point.
-        var claude = ClaudeJSONLScanner.ParseState(resuming: nil)
         /// Codex rollouts name the model in a turn_context line and then emit
         /// bare `token_count` events, so a resume has to remember the last one.
         var lastModel = "gpt-5-codex"
@@ -1201,67 +1217,106 @@ enum ActiveAgentService {
         /// spends anything, and a session that has produced no tokens under a
         /// model is not running it yet.
         var currentModel: String? = nil
-        /// Effort on that same record, so a switch mid-session shows up.
-        var currentEffort: String? = nil
-        /// Titles arrive on their own records (`ai-title` / `custom-title`),
-        /// each kind overwriting its predecessor. Kept apart because a generated
-        /// title can land after a user-set one and must not displace it.
+    }
+
+    /// A Claude transcript's titles. They arrive on their own records
+    /// (`ai-title` / `custom-title`), each kind overwriting its predecessor,
+    /// and are kept apart because a generated title can land after a user-set
+    /// one and must not displace it. Display text taken from the conversation,
+    /// so it is read here, held in memory only, and never reaches the usage
+    /// cache or the history.
+    private struct ClaudeSessionTitles: Sendable {
         var aiTitle: String? = nil
         var customTitle: String? = nil
+
+        var title: String? { customTitle ?? aiTitle }
     }
 
-    static func sessionUsageSummary(provider: Provider, url: URL) async -> SessionUsageSummary? {
-        guard let totals = await sessionTotals(provider: provider, url: url) else { return nil }
-        return await summary(from: totals)
+    static func sessionUsageSummary(
+        provider: Provider, url: URL, claudeCache: ClaudeUsageCache = .memoryOnly
+    ) async -> SessionUsageSummary? {
+        switch provider {
+        case .claude:
+            let usage = await ClaudeJSONLScanner.fileUsages([scanSpelling(url)], cache: claudeCache)[0]
+            return await claudeSummary(usage, titles: await claudeTitles(url: url))
+        case .codex:
+            return await codexSummary(url: url)
+        case .copilot:
+            return nil
+        }
     }
 
-    /// One transcript's parse, with a trailing record that is not yet
-    /// newline-terminated folded in for display. Nil for Copilot.
-    private static func sessionTotals(provider: Provider, url: URL) async -> SessionTokenTotals? {
-        guard provider != .copilot else { return nil }
+    /// One transcript read for what this service still parses itself (Codex
+    /// totals, Claude titles), resumed at the last line boundary `cache`
+    /// holds for it, with a trailing record that is not yet newline-terminated
+    /// folded in for display. Only the clean line-boundary state is cached, so
+    /// a resume can't double-count; the trailing record is re-read from there
+    /// once it is complete.
+    private static func incrementalParse<Value: Sendable>(
+        _ url: URL,
+        cache: LogFileParseCache<Value>,
+        empty: Value,
+        consume: (JSONLLineReader.LogLine, inout Value) -> Void
+    ) async -> Value {
         let fingerprint = LogFileFingerprint.current(for: url)
-        if let fingerprint, let cached = await sessionTotalsCache.value(for: fingerprint) {
+        if let fingerprint, let cached = await cache.value(for: fingerprint) {
             return cached
         }
-
-        var totals = SessionTokenTotals()
+        var value = empty
         var startOffset: Int64 = 0
-        if let fingerprint, let base = await sessionTotalsCache.incrementalBase(for: fingerprint) {
-            totals = base.value
+        if let fingerprint, let base = await cache.incrementalBase(for: fingerprint) {
+            value = base.value
             startOffset = base.parsedBytes
         }
         let result = try? JSONLLineReader.forEachCompleteLine(in: url, fromOffset: startOffset) { line in
-            consume(line: line, provider: provider, into: &totals)
+            consume(line, &value)
         }
-        // Cache only the clean line-boundary state so a resume can't double-count;
-        // the trailing (not yet newline-terminated) record is folded into what is
-        // shown now and re-read from `consumed` once it is complete.
         if let fingerprint {
-            await sessionTotalsCache.store(totals, for: fingerprint,
-                                           parsedBytes: result?.consumed ?? startOffset)
+            await cache.store(value, for: fingerprint, parsedBytes: result?.consumed ?? startOffset)
         }
-        guard let trailing = result?.trailing else { return totals }
-        var display = totals
-        JSONLLineReader.withLine(trailing) { consume(line: $0, provider: provider, into: &display) }
+        guard let trailing = result?.trailing else { return value }
+        var display = value
+        JSONLLineReader.withLine(trailing) { consume($0, &display) }
         return display
     }
 
-    static func clearSessionUsageCacheForTests() async {
-        await sessionTotalsCache.clear()
+    private static func claudeTitles(url: URL) async -> ClaudeSessionTitles {
+        await incrementalParse(url, cache: claudeTitleCache, empty: ClaudeSessionTitles()) { line, titles in
+            consumeTitle(line: line, into: &titles)
+        }
     }
 
-    private static func summary(from totals: SessionTokenTotals) async -> SessionUsageSummary {
-        var byModel = totals.totalsByModel
-        for (model, counts) in totals.claude.usage.countsByModel() {
-            byModel[model, default: TokenCounts()].add(counts)
+    static func clearSessionUsageCacheForTests() async {
+        await codexTotalsCache.clear()
+        await claudeTitleCache.clear()
+        await ClaudeUsageCache.memoryOnly.memory.clear()
+    }
+
+    /// A Claude transcript's row: its records' spend, model and effort of the
+    /// request it counted last, and its title.
+    private static func claudeSummary(_ usage: ClaudeFileUsage, titles: ClaudeSessionTitles) async -> SessionUsageSummary {
+        let spend = await priced(usage.countsByModel())
+        let latest = usage.latestCounted
+        return SessionUsageSummary(
+            tokenCount: spend.tokenCount > 0 ? spend.tokenCount : nil,
+            estimatedCostUSD: spend.costUSD,
+            model: latest?.model,
+            effort: latest?.effort,
+            title: titles.title
+        )
+    }
+
+    private static func codexSummary(url: URL) async -> SessionUsageSummary {
+        let totals = await incrementalParse(url, cache: codexTotalsCache, empty: CodexSessionTotals()) { line, totals in
+            consumeCodex(line: line, into: &totals)
         }
-        let spend = await priced(byModel)
+        let spend = await priced(totals.totalsByModel)
         return SessionUsageSummary(
             tokenCount: spend.tokenCount > 0 ? spend.tokenCount : nil,
             estimatedCostUSD: spend.costUSD,
             model: totals.currentModel,
-            effort: totals.currentEffort,
-            title: totals.customTitle ?? totals.aiTitle
+            effort: nil,
+            title: nil
         )
     }
 
@@ -1283,58 +1338,33 @@ enum ActiveAgentService {
     /// Cheap per-line pre-filters. These run over whole session transcripts, so
     /// they must not go through `String.contains`, which is locale-aware and
     /// allocates per candidate position.
-    private static let usageMarker = JSONLLineReader.Marker("\"usage\"")
     private static let tokenCountMarker = JSONLLineReader.Marker("token_count")
     private static let modelMarker = JSONLLineReader.Marker("\"model\"")
     /// Matches `"type":"ai-title"` and `"type":"custom-title"`; measured against
     /// a 190k-line transcript, every hit was one of the two.
     private static let titleMarker = JSONLLineReader.Marker("-title\"")
+    /// How far into a line the marker is looked for. Title records start with
+    /// their type, so the reader can check a bounded prefix.
+    static let titleSearchLength = 64
 
-    private static func consume(
-        line: JSONLLineReader.LogLine,
-        provider: Provider,
-        into totals: inout SessionTokenTotals
-    ) {
-        switch provider {
-        case .claude: consumeClaude(line: line, into: &totals)
-        case .codex: consumeCodex(line: line, into: &totals)
-        case .copilot: break
-        }
-    }
-
-    private static func consumeClaude(
-        line: JSONLLineReader.LogLine,
-        into totals: inout SessionTokenTotals
-    ) {
-        guard line.contains(Self.usageMarker) || line.contains(Self.titleMarker),
+    private static func consumeTitle(line: JSONLLineReader.LogLine, into titles: inout ClaudeSessionTitles) {
+        guard line.contains(Self.titleMarker, withinFirst: Self.titleSearchLength),
               let object = line.jsonObject() else { return }
-        // Title records carry no usage, so they are handled before the usage
-        // guard rather than sharing its early return.
         switch object["type"] as? String {
         case "custom-title":
             // An empty custom title is the user clearing theirs.
             let title = (object["customTitle"] as? String) ?? ""
-            totals.customTitle = title.isEmpty ? nil : title
-            return
+            titles.customTitle = title.isEmpty ? nil : title
         case "ai-title":
-            totals.aiTitle = object["aiTitle"] as? String
-            return
+            titles.aiTitle = object["aiTitle"] as? String
         default:
             break
         }
-        // Counted exactly as the usage report counts it: a streaming record
-        // gives way to its request's final one, a zeroed replay never counts.
-        guard ClaudeJSONLScanner.consume(object: object, into: &totals.claude, calendar: nil),
-              let message = object["message"] as? [String: Any] else { return }
-        totals.currentModel = (message["model"] as? String) ?? "default"
-        // `effort` is the effective value; `perTurnEffort` only repeats it when
-        // set, so the top-level key alone is what a row should show.
-        totals.currentEffort = object["effort"] as? String
     }
 
     private static func consumeCodex(
         line: JSONLLineReader.LogLine,
-        into totals: inout SessionTokenTotals
+        into totals: inout CodexSessionTotals
     ) {
         // Skip the JSON parse for lines that carry neither a model nor a
         // token_count event — the bulk of a rollout log.

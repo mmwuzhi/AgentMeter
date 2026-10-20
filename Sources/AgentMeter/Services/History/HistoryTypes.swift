@@ -376,6 +376,14 @@ struct HistoryScanBatch: Sendable {
     /// The scan read every log file (the 6-hourly complete scan), not the recent-file window.
     let isCompleteHistory: Bool
     let files: [HistoryFileBatch]
+    /// A session row's read (`ClaudeJSONLScanner.fileUsages`), not a scan.
+    /// It covers only the few files a row reads, so it records no scan
+    /// coverage, and each of its files applies only as a delta on exactly
+    /// the watermark the store holds: anything else (no delta, or a delta on
+    /// a state an in-flight scan has not submitted yet) is skipped without
+    /// noting its ticket, and the next scan's batch brings that file instead
+    /// of this read re-applying it whole.
+    var isSessionRead = false
 }
 
 // MARK: - Quota readings

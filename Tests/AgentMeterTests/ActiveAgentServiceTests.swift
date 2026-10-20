@@ -1267,31 +1267,45 @@ final class ActiveAgentServiceTests: XCTestCase {
     /// Proves the prefix is genuinely not re-read: after the first parse, the
     /// already-consumed bytes are overwritten in place with a record carrying no
     /// usage at all. A resume still reports the original tokens; a re-read from
-    /// the top would lose them.
+    /// the top would lose them. A session row resumes by the usage scan's rule,
+    /// so the overwrite has to stay out of the bytes right before the boundary
+    /// (`ClaudeUsageCacheStore.boundarySampleLength`), which a resume checks:
+    /// an overwrite there makes it read the file from the top, as the scan does.
     func testGrownLogDoesNotRereadTheAlreadyConsumedPrefix() async throws {
-        await ActiveAgentService.clearSessionUsageCacheForTests()
         let first = #"{"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50}}}"#
-        let file = try makeTempFile(contents: first + "\n", filename: "prefix.jsonl")
-
-        let before = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
-        XCTAssertEqual(before?.tokenCount, 150)
-
+        let filler = #"{"type":"user","message":{"role":"user","content":""# + String(repeating: "x", count: 5_000) + #""}}"#
+        let next = #"{"timestamp":"2026-07-05T00:01:00Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4","usage":{"input_tokens":20,"output_tokens":10}}}"#
         // Same byte length, no usage block — only a re-read would ever see this.
         let blank = #"{"note":"overwritten"}"#
         let scrubbed = blank + String(repeating: " ", count: first.utf8.count - blank.utf8.count)
         XCTAssertEqual(scrubbed.utf8.count, first.utf8.count)
-        let handle = try FileHandle(forUpdating: file)
-        try handle.seek(toOffset: 0)
-        try handle.write(contentsOf: Data(scrubbed.utf8))
-        try handle.seekToEnd()
-        try handle.write(contentsOf: Data(#"{"timestamp":"2026-07-05T00:01:00Z","requestId":"r2","message":{"id":"m2","model":"claude-sonnet-4","usage":{"input_tokens":20,"output_tokens":10}}}"#.utf8))
-        try handle.write(contentsOf: Data("\n".utf8))
-        try handle.close()
 
-        let after = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: file)
+        func grow(_ file: URL, scrubbingAt offset: UInt64) throws {
+            let handle = try FileHandle(forUpdating: file)
+            try handle.seek(toOffset: offset)
+            try handle.write(contentsOf: Data(scrubbed.utf8))
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data((next + "\n").utf8))
+            try handle.close()
+        }
 
+        // The first record sits more than 4 KiB before the boundary.
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let far = try makeTempFile(contents: first + "\n" + filler + "\n", filename: "prefix.jsonl")
+        let before = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: far)
+        XCTAssertEqual(before?.tokenCount, 150)
+        try grow(far, scrubbingAt: 0)
+        let after = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: far)
         XCTAssertEqual(after?.tokenCount, 180,
                        "150 carried from the cached prefix + 30 newly appended")
+
+        // The same overwrite within the bytes a resume checks: read from the top.
+        await ActiveAgentService.clearSessionUsageCacheForTests()
+        let near = try makeTempFile(contents: filler + "\n" + first + "\n", filename: "near.jsonl")
+        _ = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: near)
+        try grow(near, scrubbingAt: UInt64(filler.utf8.count + 1))
+        let reread = await ActiveAgentService.sessionUsageSummary(provider: .claude, url: near)
+        XCTAssertEqual(reread?.tokenCount, 30, "the overwritten record is gone, the appended one counted")
     }
 
     // MARK: - Subagent transcripts
@@ -1486,18 +1500,29 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertNil(ActiveAgentService.subagentID(fromTranscriptName: "session.jsonl"))
     }
 
-    func testTranscriptURLsForThePruneKeepTheSubagentFiles() throws {
-        let main = try makeTempFile(contents: "", filename: "s4.jsonl")
-        let subagent = try writeSubagent(id: "a1", beside: main, meta: nil, transcript: "")
-        let codex = try makeTempFile(contents: "", filename: "rollout.jsonl")
-        let codexAgent = ActiveAgent(
-            provider: .codex, pid: 2, parentPID: 1, command: "codex", elapsedSeconds: 1,
-            observedAt: Date(), session: claudeAgent(logPath: codex.path).session
-        )
+    /// A session's transcripts, its subagents' included, are read through the
+    /// usage scan's cache, which keeps them between ticks: the next tick opens
+    /// none of them again.
+    func testTheNextTickReadsNoTranscriptOfTheSessionAgain() async throws {
+        let main = try makeTempFile(contents: """
+        {"timestamp":"2026-07-05T00:00:00Z","requestId":"r1","message":{"id":"m1","model":"claude-sonnet-4","usage":{"input_tokens":100,"output_tokens":50}}}
 
-        let urls = ActiveAgentService.transcriptURLs(for: [claudeAgent(logPath: main.path), codexAgent])
+        """, filename: "s4.jsonl")
+        _ = try writeSubagent(id: "a1", beside: main, meta: nil, transcript: """
+        {"timestamp":"2026-07-05T00:01:00Z","requestId":"r9","message":{"id":"m9","model":"claude-haiku-4","usage":{"input_tokens":20,"output_tokens":10}}}
 
-        XCTAssertEqual(Set(urls.map(\.path)), [main.path, subagent.path, codex.path])
+        """)
+        let cache = ClaudeUsageCache(store: nil)
+
+        let first = await ActiveAgentService.enrichSessionUsage([claudeAgent(logPath: main.path)], claudeCache: cache)
+        await cache.stats.reset()
+        let second = await ActiveAgentService.enrichSessionUsage([claudeAgent(logPath: main.path)], claudeCache: cache)
+
+        let stats = await cache.stats.snapshot()
+        XCTAssertEqual(stats.filesOpened, 0)
+        XCTAssertEqual(stats.memoryHits, 2, "the main transcript and the subagent's")
+        XCTAssertEqual(first.first?.session?.tokenCount, 180)
+        XCTAssertEqual(second.first?.session?.tokenCount, 180)
     }
 
     func testSubagentDescriptionFallsBackToTheFirstPromptAndIsRenderedThroughSessionLabel() async throws {

@@ -257,9 +257,9 @@ struct ClaudeFileUsage: Sendable, Equatable {
     /// The (version, effort, entrypoint) triples `KeyedUsage.stamp.attributes`
     /// points into. Append-only within one parse lineage, never compacted.
     var attributeSets: [RecordAttributes] = []
-    /// What the global scan reads besides usage (`ParseState.collectsExtras`):
-    /// limit events, `/usage` reports, cost states, compactions, and the
-    /// file's first cwd / entrypoint / version. Empty on the session path.
+    /// What the scan reads besides usage: limit events, `/usage` reports,
+    /// cost states, compactions, and the file's first cwd / entrypoint /
+    /// version.
     var extras: HistoryFileEvents = .empty
     /// Running MAX timestamp over the usage records parsed so far (the
     /// `afterTsMs` of a cost state read next); `RecordStamp.noTime` if none.
@@ -267,6 +267,28 @@ struct ClaudeFileUsage: Sendable, Equatable {
 
     static let empty = ClaudeFileUsage(keyed: [], unkeyed: [],
                                        boundaryDigest: ClaudeUsageCacheStore.boundaryDigest(of: Data()))
+
+    /// Model and effort of the request the file counted last: the standing
+    /// record with the latest timestamp (a zeroed replay by its own time),
+    /// the later one in the file on a tie, so records without a time go by
+    /// file order. What a session row shows as "running now". Nil when the
+    /// file holds no keyed record.
+    var latestCounted: (model: String, effort: String?)? {
+        var best: Int?
+        var bestMs = Int64.min
+        for index in keyed.indices {
+            let stamp = keyed[index].stamp
+            let ms = stamp.latestMs != RecordStamp.noTime ? stamp.latestMs : stamp.firstMs
+            if best == nil || ms >= bestMs {
+                best = index
+                bestMs = ms
+            }
+        }
+        guard let best else { return nil }
+        let record = keyed[best]
+        let attributes = record.stamp.attributes == 0 ? nil : attributeSets[Int(record.stamp.attributes) - 1]
+        return (record.usage.model, attributes?.effort)
+    }
 
     /// The file's counts per model, each key once.
     func countsByModel() -> [String: TokenCounts] {

@@ -104,8 +104,8 @@ final class ClaudeUsageStampTests: XCTestCase {
     }
 
     /// `consume(object:)` answers "did it count" exactly as before the
-    /// stamps: `ActiveAgentService` sets a session's current model and
-    /// effort from that answer.
+    /// stamps: a record that counts is the one whose times a session row's
+    /// model and effort follow (`ClaudeFileUsage.latestCounted`).
     func testCountedFlagIsUnchanged() throws {
         let lines = [
             F.assistant(uuid: "a", ts: F.iso24(t0), mid: "m1", rid: "r1", counts: .init(output: 3)),            // new key
@@ -122,32 +122,9 @@ final class ClaudeUsageStampTests: XCTestCase {
         ]
         let expected = [true, false, true, true, false, false, false, true, true, false, false]
         let objects = lines.map { try! XCTUnwrap(JSONLLineReader.withLine(Data($0.utf8)) { $0.jsonObject() }) }
-        var session = ClaudeJSONLScanner.ParseState(resuming: nil)
-        XCTAssertEqual(objects.map { ClaudeJSONLScanner.consume(object: $0, into: &session, calendar: nil) }, expected,
-                       "session path")
-        var global = ClaudeJSONLScanner.ParseState(resuming: nil, collectsExtras: true)
-        XCTAssertEqual(objects.map { ClaudeJSONLScanner.consume(object: $0, into: &global, calendar: .current) }, expected,
-                       "global path")
-        XCTAssertEqual(session.usage.keyed.map(\.finality), global.usage.keyed.map(\.finality))
-        XCTAssertEqual(session.usage.keyed.map(\.usage.counts), global.usage.keyed.map(\.usage.counts))
-    }
-
-    func testSessionPathParsesNoTimesAndNoExtras() throws {
         var state = ClaudeJSONLScanner.ParseState(resuming: nil)
-        for line in [
-            F.assistant(uuid: "a", ts: F.iso24(t0), mid: "m1", rid: "r1", stop: "end_turn", thinking: 5, speed: "fast", aborted: true),
-            F.synthetic429(uuid: "b", ts: F.iso24(t0 + 1), rid: "r2", form: .quotaLimits),
-            F.usageCommand(uuid: "c", ts: F.iso24(t0 + 2), shape: .threeLimits),
-        ] {
-            let object = try XCTUnwrap(JSONLLineReader.withLine(Data(line.utf8)) { $0.jsonObject() })
-            ClaudeJSONLScanner.consume(object: object, into: &state, calendar: nil)
-        }
-        XCTAssertEqual(state.usage.keyed.count, 1)
-        XCTAssertEqual(state.usage.keyed[0].stamp, RecordStamp())
-        XCTAssertEqual(state.usage.keyed[0].usage.day, ClaudeJSONLScanner.undatedDay)
-        XCTAssertTrue(state.usage.attributeSets.isEmpty)
-        XCTAssertEqual(state.usage.extras, .empty)
-        XCTAssertEqual(state.usage.usageHighWaterMs, RecordStamp.noTime)
+        XCTAssertEqual(objects.map { ClaudeJSONLScanner.consume(object: $0, into: &state, calendar: .current) }, expected)
+        XCTAssertEqual(state.usage.keyed.map(\.finality), [.final, .final])
     }
 
     /// first = MIN, last = MAX over non-zeroed: the fold gives one value
@@ -531,22 +508,5 @@ final class ClaudeUsageStampTests: XCTestCase {
         XCTAssertEqual(replayed.finality, .final)
         XCTAssertEqual(replayed.ccVersion, "2.1.301")
         XCTAssertEqual(replayed.firstMs, t0 + 1_000)
-    }
-
-    func testExtrasAreNotCollectedOnTheSessionPath() throws {
-        var state = ClaudeJSONLScanner.ParseState(resuming: nil)
-        let cal = Calendar.current
-        for line in [
-            F.synthetic429(uuid: "q1", ts: F.iso24(t0), rid: "req_q1", form: .quotaLimits),
-            F.usageCommand(uuid: "r1", ts: F.iso24(t0), shape: .threeLimits),
-            F.costState(start: 1, total: 2),
-            F.compactBoundary(uuid: "cb1", ts: F.iso24(t0)),
-            F.assistant(uuid: "a", ts: F.iso24(t0), mid: "m1", rid: "r1", stop: "end_turn"),
-        ] {
-            JSONLLineReader.withLine(Data(line.utf8)) { ClaudeJSONLScanner.consume(line: $0, into: &state, calendar: cal) }
-        }
-        XCTAssertEqual(state.usage.extras, .empty)
-        XCTAssertEqual(state.usage.usageHighWaterMs, RecordStamp.noTime)
-        XCTAssertEqual(state.usage.keyed.count, 1)
     }
 }

@@ -405,7 +405,7 @@ final class ClaudeUsageCacheBenchmarkTests: XCTestCase {
             let cpuBefore = Double(clock()) / Double(CLOCKS_PER_SEC)
             var events = 0, costStates = 0
             for url in files {
-                var state = ClaudeJSONLScanner.ParseState(resuming: nil, collectsExtras: true, collectsCompactEvents: compact)
+                var state = ClaudeJSONLScanner.ParseState(resuming: nil, collectsCompactEvents: compact)
                 _ = try? JSONLLineReader.forEachCompleteLine(in: url, fromOffset: 0) { line in
                     if !line.contains(usageMarker) { ClaudeJSONLScanner.consumeExtrasLine(line, into: &state) }
                 }

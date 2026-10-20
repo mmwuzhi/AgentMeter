@@ -271,8 +271,9 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   (`ClaudeUsageStampTests.testKeyedUsageStrideIsPinned`). Per file: the
   attribute sets, the running MAX usage time, the first-of-key record's cwd
   / entrypoint / version, and the `<synthetic>` 429 limit events, `/usage`
-  reports, `cost-state` records and `compact_boundary` records (the global
-  scan only: `ParseState.collectsExtras`; the session path reads none).
+  reports, `cost-state` records and `compact_boundary` records. Every parse
+  reads them: since Phase 0C there is no second, undated parse mode (the
+  session rows' `calendar: nil` path without stamps or extras is gone).
   `replacing` and a record that does not stand fold their times into the
   held stamp (first = MIN, last = MAX; the standing record's own final time
   stays); stamps never decide which record counts. The codec is lossless —
@@ -293,6 +294,31 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   watermark (fingerprint, parsed bytes, boundary digest, format version),
   and for a resumed parse a delta of every keyed record whose value differs
   from the base in any field, stamps included (`ClaudeHistoryBatch.swift`).
+- Session rows read their transcripts through the same path
+  (`ClaudeJSONLScanner.fileUsages`: `cachedUsage` over the listed files, in
+  the given order, through the scan's cache, pruning nothing), so a row, the
+  report and the history count one set of records from one parse; the app
+  passes `.shared` and its history store (`RefreshEnvironment.live()`). The
+  row reads each path spelled as the scan lists it
+  (`ActiveAgentService.scanSpelling`: the directory's symlinks resolved, as
+  `jsonlFiles` resolves a symlinked `projects/<key>`); a hook or registry
+  `logPath` goes through the symlink, and read as given the one file would
+  be a second cache entry and a second history file.
+- What a row read takes further goes to the history as a session read
+  (`HistoryScanBatch.isSessionRead`): only the files it resumed and committed
+  new lines of, and the store applies such a file only as a delta on exactly
+  the watermark it holds (`HistoryFileDecision.skipNoDeltaBase` otherwise,
+  without noting the ticket, so the next scan's batch still applies). A row
+  read races the scan every refresh: its base can be the state of a scan
+  that has not submitted yet, and applying it whole would re-ingest an
+  active transcript every minute. A session read records no scan coverage
+  (`ingest_scan`, `latest_scan_ms`, `complete_scan_ms`): it read a few files,
+  not the corpus up to a time. A read that only hit memory or the store, or
+  parsed a file from the top, submits nothing (`SessionUsageUnificationTests`).
+- `cachedUsage` reads a file as it stands now when memory already holds it
+  further on than the fingerprint the caller took (a row read it after the
+  scan listed it): from the older fingerprint no base is left to resume from
+  and the whole file would be parsed again.
 - Scanners must not touch log lines through `String`. `JSONLLineReader` hands
   each record over as a `LogLine` of raw bytes: `String(data:encoding:)`
   validated every byte and `String.contains` resolved to
@@ -790,7 +816,10 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   and every complete-history scan, records an `ingest_scan` row and advances
   `meta.latest_scan_ms`; a complete scan none of whose files failed (each
   applied, or skipped because its watermark was stored or a newer scan of the
-  path was applied) also advances `meta.complete_scan_ms`. Neither moves back
+  path was applied) also advances `meta.complete_scan_ms`. A session read's
+  applied delta counts as such a newer scan: it drew its ticket, then took
+  its fingerprint, after the scan fingerprinted every file, so it holds at
+  least what the scan listed. Neither moves back
   (scans overlap and land out of order). A windowed scan that wrote no file —
   the per-minute scan while nothing changes — writes no row, and
   `latest_scan_ms` only once the stored value is 15 minutes old
@@ -921,7 +950,8 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   occurrence, file, event, session and reset-grant rows are never deleted
   automatically. Phase 0B performs no compaction.
 - Deferred to later phases: anything that reads the store (attribution,
-  calibration, dashboards, alerts, the per-session switch), Codex and Copilot
+  calibration, dashboards, alerts; session rows read the same records
+  through the usage cache since Phase 0C, not the store), Codex and Copilot
   quota samples (`QuotaHistoryPolicy.ingestedProviders` is Claude only),
   `request_start_ms`, `extra_usage.utilization`, request compaction. Derived
   data goes in derived tables keyed by `(key, iteration_idx)`, never by

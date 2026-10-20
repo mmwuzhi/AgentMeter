@@ -37,7 +37,9 @@ extension HistoryStore {
             // A path twice in one scan: its first batch must land before the
             // second one's watermark comparison reads it.
             if run.paths.contains(batch.path) { try await flush(&run) }
-            let plan = try guarded { db in try db.planFile(batch, lastScan: memory.scanTickets[batch.path]) }
+            let plan = try guarded { db in
+                try db.planFile(batch, lastScan: memory.scanTickets[batch.path], deltasOnly: scan.isSessionRead)
+            }
             counters.skippedInvalidObservations += plan.invalidObservations
             counters.skippedInvalidEvents += plan.invalidEvents
             guard plan.decision.applies else {
@@ -58,7 +60,10 @@ extension HistoryStore {
         let filesWritten = run.filesWritten
         let complete = scan.isCompleteHistory && run.failed.isEmpty
         try guarded { db in
-            try db.recordScanCoverage(scan, filesWritten: filesWritten, complete: complete)
+            // A session read covers a few files, never the corpus up to a time.
+            if !scan.isSessionRead {
+                try db.recordScanCoverage(scan, filesWritten: filesWritten, complete: complete)
+            }
             // After an ingest of some size only: a checkpoint fsyncs the file.
             // PASSIVE, never TRUNCATE: the integrity reader may be open.
             let changes = db.conn.totalChanges

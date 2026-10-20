@@ -283,7 +283,7 @@ final class ClaudeHistoryBatchTests: XCTestCase {
         let later = F.assistant(uuid: "b", ts: F.iso24(t0 + 40_000), mid: "m1", rid: "r1", counts: .init(output: 1))
         var probe = ClaudeJSONLScanner.ParseState(resuming: F.parse([
             F.assistant(uuid: "a", ts: F.iso24(t0), mid: "m1", rid: "r1", stop: "end_turn"),
-        ]), collectsExtras: true)
+        ]))
         let object = try XCTUnwrap(JSONLLineReader.withLine(Data(later.utf8)) { $0.jsonObject() })
         XCTAssertFalse(ClaudeJSONLScanner.consume(object: object, into: &probe, calendar: .current), "it does not count")
 

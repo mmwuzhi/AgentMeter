@@ -81,7 +81,9 @@ struct RefreshEnvironment: Sendable {
             fetchCopilot: { previous in
                 await copilot.fetch(refreshQuota: true, previous: previous)
             },
-            fetchActiveAgents: { await ActiveAgentService.fetch() },
+            // Session rows read their transcripts through the usage scan's
+            // cache and hand what they parse to the same history.
+            fetchActiveAgents: { await ActiveAgentService.fetch(claudeCache: .shared, history: store) },
             fetchCodexResetCredits: { try? await CodexResetCreditFetcher.fetch() },
             fetchProviderStatus: { await ProviderStatusService.fetchAll() },
             visibleSlots: { MenuBarLayout.visibleSlots($0) },

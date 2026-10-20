@@ -18,6 +18,10 @@ enum HistoryFileDecision: String, Sendable, Equatable {
     /// per-path ticket kept in memory). The only defence against a stale batch:
     /// tickets reset on every open, so after a restart any batch is accepted.
     case skipOlderScan
+    /// A session read's file whose delta is not based on the stored
+    /// watermark, or that has none (`HistoryScanBatch.isSessionRead`): left
+    /// to the next scan, whose ticket stays good.
+    case skipNoDeltaBase
     /// The batch's delta is based on exactly the stored watermark.
     case delta
     /// Everything the batch's committed state holds.
@@ -77,7 +81,8 @@ extension HistoryDatabase {
     /// semantics keep what the earlier content contributed). There is no
     /// "fewer bytes than stored" skip: it stalled such a file until it grew past
     /// the old size.
-    func planFile(_ batch: HistoryFileBatch, lastScan: UInt64?) throws -> HistoryFilePlan {
+    /// `deltasOnly`: the batch is a session read's (`HistoryScanBatch.isSessionRead`).
+    func planFile(_ batch: HistoryFileBatch, lastScan: UInt64?, deltasOnly: Bool = false) throws -> HistoryFilePlan {
         let stored = try storedFile(path: batch.path)
         func skip(_ d: HistoryFileDecision) -> HistoryFilePlan {
             HistoryFilePlan(path: batch.path, scan: batch.scan, decision: d,
@@ -94,6 +99,8 @@ extension HistoryDatabase {
            wm.parserVersion == delta.basedOnParserVersion {
             decision = .delta
             raw = delta.requests
+        } else if deltasOnly {
+            return skip(.skipNoDeltaBase)
         } else {
             decision = .whole
             raw = batch.allRequests()

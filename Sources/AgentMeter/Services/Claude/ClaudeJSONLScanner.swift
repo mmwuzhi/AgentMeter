@@ -176,6 +176,50 @@ enum ClaudeJSONLScanner {
         return report
     }
 
+    /// Each of `files`, in the order given, read through `cache` exactly as a
+    /// scan reads it (`cachedUsage`): from memory, from the store, or parsed,
+    /// resumed where an earlier read stopped. A session row reads its
+    /// transcripts here, so the row, the usage report and the history all
+    /// count the same records from one parse. Prunes nothing; the scans own
+    /// that. The usage is `display` (an unterminated last line folded in); a
+    /// file that cannot be stat'ed is `.empty`. Pass each path spelled as the
+    /// scan lists it (`ActiveAgentService.scanSpelling`): the cache and the
+    /// history key on the path, and a second spelling of one file would be a
+    /// second entry and a second history file.
+    ///
+    /// With a `history`, each file this read resumed and took further goes to
+    /// it as a session read (`HistoryScanBatch.isSessionRead`): applied when
+    /// its delta sits on exactly what the store holds, so the next scan finds
+    /// the file in step; otherwise skipped, and that scan brings it. A file
+    /// read from the top, or not read at all, is left to the scans.
+    static func fileUsages(
+        _ files: [URL], cache: ClaudeUsageCache, history: (any HistoryIngesting)? = nil
+    ) async -> [ClaudeFileUsage] {
+        let startedMs = HistoryTime.ms(Date())
+        let scan = await cache.memory.beginScan()
+        var usages: [ClaudeFileUsage] = []
+        usages.reserveCapacity(files.count)
+        var batches: [HistoryFileBatch] = []
+        for url in files {
+            guard let fingerprint = LogFileFingerprint.current(for: url) else {
+                usages.append(.empty)
+                continue
+            }
+            let fileScan = await cachedUsage(in: url, fingerprint: fingerprint, cache: cache, scan: scan,
+                                             tracksChanges: history != nil)
+            usages.append(fileScan.display)
+            if history != nil, let base = fileScan.resume, base.parsedBytes < fileScan.parsedBytes,
+               let batch = fileScan.historyBatch(scan: scan) {
+                batches.append(batch)
+            }
+        }
+        if let history, !batches.isEmpty {
+            history.submit(scan: HistoryScanBatch(ticket: scan, startedMs: startedMs, isCompleteHistory: false,
+                                                   files: batches, isSessionRead: true))
+        }
+        return usages
+    }
+
     struct DayModelKey: Hashable {
         let day: Date
         let model: String
@@ -357,13 +401,24 @@ enum ClaudeJSONLScanner {
     /// since the fingerprint was taken wait for the next scan, so what is
     /// stored never claims more than the fingerprint it is stored under.
     /// `tracksChanges` computes `FileScan.Resume.changed` for a resumed parse.
+    ///
+    /// When memory already holds the same file further on than `taken` (a
+    /// session row read it after this scan fingerprinted it), the file is
+    /// read as it stands now: from `taken`, no base is left to resume from,
+    /// and the whole file would be parsed again.
     static func cachedUsage(
         in url: URL,
-        fingerprint: LogFileFingerprint,
+        fingerprint taken: LogFileFingerprint,
         cache: ClaudeUsageCache,
         scan: UInt64,
         tracksChanges: Bool = false
     ) async -> FileScan {
+        var fingerprint = taken
+        if let held = await cache.memory.fingerprint(forPath: taken.path), held.size > taken.size,
+           held.hasSameStableIdentity(as: taken), let now = LogFileFingerprint.current(for: url),
+           now.hasSameStableIdentity(as: held), now.size >= held.size {
+            fingerprint = now
+        }
         if let cached = await cache.memory.value(for: fingerprint) {
             await cache.stats.memoryHit()
             return FileScan(fingerprint: fingerprint, parsedBytes: fingerprint.size, usage: cached, display: cached,
@@ -390,7 +445,7 @@ enum ClaudeJSONLScanner {
             base = nil
         }
 
-        var state = ParseState(resuming: base?.value, collectsExtras: true)
+        var state = ParseState(resuming: base?.value)
         let startOffset = base?.parsedBytes ?? 0
         let cal = Calendar.current
         await cache.stats.opened()
@@ -404,7 +459,7 @@ enum ClaudeJSONLScanner {
         } catch {
             // A read that failed partway must not leave half its lines in the
             // cache: keep what was known before it.
-            state = ParseState(resuming: base?.value, collectsExtras: true)
+            state = ParseState(resuming: base?.value)
             result = nil
         }
         let consumed = result?.consumed ?? startOffset
@@ -473,10 +528,6 @@ enum ClaudeJSONLScanner {
     /// the same transition a parse from the top makes.
     struct ParseState: Sendable {
         var usage: ClaudeFileUsage
-        /// Read limit events, `/usage` reports, cost states, compactions and
-        /// the first cwd (the global scan). The session path
-        /// (`ActiveAgentService`) leaves it false and is unchanged.
-        let collectsExtras: Bool
         /// `collectsCompactEvents` of the scanner, unless a benchmark turns it off.
         let collectsCompactEvents: Bool
         private var keyedIndex: [DedupKey: Int]
@@ -492,10 +543,9 @@ enum ClaudeJSONLScanner {
             let totalDurationMs: Int64
         }
 
-        init(resuming base: ClaudeFileUsage?, collectsExtras: Bool = false,
+        init(resuming base: ClaudeFileUsage?,
              collectsCompactEvents: Bool = ClaudeJSONLScanner.collectsCompactEvents) {
             usage = base ?? .empty
-            self.collectsExtras = collectsExtras
             self.collectsCompactEvents = collectsCompactEvents
             keyedIndex = Dictionary(
                 usage.keyed.enumerated().map { ($0.element.key, $0.offset) },
@@ -539,13 +589,6 @@ enum ClaudeJSONLScanner {
             }
             usage.keyed[index] = record.replacing(held)
             return (.replaced, index)
-        }
-
-        /// Keeps `record` if it is the first of its key in the file or
-        /// outranks the one held, in place of it. Returns whether it was kept.
-        @discardableResult
-        mutating func add(_ record: KeyedUsage) -> Bool {
-            insert(record).outcome != .kept
         }
 
         /// The standing record's own attributes and thinking tokens.
@@ -744,7 +787,7 @@ enum ClaudeJSONLScanner {
         if line.contains(usageMarker) {
             guard let obj = line.jsonObject() else { return }
             consume(object: obj, into: &state, calendar: cal)
-        } else if state.collectsExtras {
+        } else {
             consumeExtrasLine(line, into: &state)
         }
     }
@@ -778,22 +821,17 @@ enum ClaudeJSONLScanner {
     /// is read as the top level alone. Two is all Claude Code has written.
     static let maxIterations = 32
 
-    /// The day every record is filed under when the caller has no use for
-    /// days (`consume(object:into:calendar: nil)`).
-    static let undatedDay = Date(timeIntervalSince1970: 0)
-
     /// Folds one transcript record into `state`. Returns whether it counted:
     /// a usage record that is the first of its key, outranks the one held,
-    /// or has no message id to dedup on. The usage report and a session's row
-    /// both read records through here, so they count the same way. A nil
-    /// `calendar` files every record under `undatedDay` and skips the
-    /// timestamp parse, which costs more than the rest of the record: the
-    /// session rows sum a transcript whole and never split it by day.
+    /// or has no message id to dedup on. The only reader of usage records:
+    /// the usage report, the history and the session rows all take their
+    /// records from a parse through here (session rows through the scan's
+    /// cache, `fileUsages`), so they count the same way.
     @discardableResult
     static func consume(
         object obj: [String: Any],
         into state: inout ParseState,
-        calendar cal: Calendar?
+        calendar cal: Calendar
     ) -> Bool {
         guard let message = obj["message"] as? [String: Any],
               let usage = message["usage"] as? [String: Any] else {
@@ -801,19 +839,18 @@ enum ClaudeJSONLScanner {
             // `message.usage`: read exactly those records here — a usage
             // record never pays for the lookups. A `/usage` record passes
             // the line gate only through `commandRun.command == "usage"`.
-            if state.collectsExtras { consumeExtrasObject(obj, into: &state) }
+            consumeExtrasObject(obj, into: &state)
             return false
         }
 
         let model = (message["model"] as? String) ?? "default"
-        // One timestamp parse per record on the dated path: it is needed for
-        // the day anyway. The session path (no calendar) parses none.
-        let date: Date? = cal == nil ? nil : (obj["timestamp"] as? String).flatMap(CodexRolloutReader.parseISO)
+        // One timestamp parse per record: it is needed for the day anyway.
+        let date: Date? = (obj["timestamp"] as? String).flatMap(CodexRolloutReader.parseISO)
         let ms = date.flatMap(epochMs)
-        if state.collectsExtras, let ms { state.noteUsageTime(ms) }
+        if let ms { state.noteUsageTime(ms) }
         if model == "<synthetic>" {
             // A 429's window and reset time; the record itself never counts.
-            if state.collectsExtras { state.addLimitEvent(obj, tsMs: ms) }
+            state.addLimitEvent(obj, tsMs: ms)
             return false
         }
 
@@ -836,7 +873,7 @@ enum ClaudeJSONLScanner {
 
         // A record without a timestamp is filed under today (the fallback the
         // scan always had; none in the corpus); its stamp states no time.
-        let day: Date = cal.map { $0.startOfDay(for: date ?? Date()) } ?? undatedDay
+        let day = cal.startOfDay(for: date ?? Date())
         var entry = DayModelUsage(day: day, model: model, counts: finality == .zeroed ? TokenCounts() : counts)
         var earlier: [DayModelUsage] = []
         // A request that fell back to another model reports each attempt in
@@ -866,7 +903,6 @@ enum ClaudeJSONLScanner {
         }
         let key = DedupKey(messageID: mid, requestID: rid)
         var record = KeyedUsage(key: key, usage: entry, earlierIterations: earlier, finality: finality)
-        guard cal != nil else { return state.add(record) }
         record.stamp = .of(ms: ms, finality: finality, flags: recordFlags(obj, usage: usage))
         let (outcome, index) = state.insert(record)
         guard outcome != .kept else { return false }
@@ -876,7 +912,7 @@ enum ClaudeJSONLScanner {
         // A zeroed replay contributes nothing, its thinking count included.
         state.setAttributes(attributes, thinking: finality == .zeroed ? RecordStamp.noThinking : thinkingTokens(usage),
                             at: index)
-        if state.collectsExtras, outcome == .newKey, let ms {
+        if outcome == .newKey, let ms {
             state.noteFirstRecord(ms, cwd: obj["cwd"], attributes: attributes)
         }
         return true

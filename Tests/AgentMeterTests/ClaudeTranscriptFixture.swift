@@ -145,8 +145,7 @@ enum TranscriptFixture {
     /// One parse of `lines` from the top on the global (dated, extras) path.
     static func parse(_ lines: [String], resuming base: ClaudeFileUsage? = nil,
                       collectsCompactEvents: Bool = ClaudeJSONLScanner.collectsCompactEvents) -> ClaudeFileUsage {
-        var state = ClaudeJSONLScanner.ParseState(resuming: base, collectsExtras: true,
-                                                  collectsCompactEvents: collectsCompactEvents)
+        var state = ClaudeJSONLScanner.ParseState(resuming: base, collectsCompactEvents: collectsCompactEvents)
         let cal = Calendar.current
         for line in lines {
             JSONLLineReader.withLine(Data(line.utf8)) { ClaudeJSONLScanner.consume(line: $0, into: &state, calendar: cal) }

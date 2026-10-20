@@ -215,7 +215,13 @@ usage presentation, cached state, or Claude live-session integration.
 - The model reported is the one behind the newest *counted* record, not the
   newest one named. A Codex `turn_context` can name a model before that turn
   spends anything, and a session that has produced no tokens under a model is
-  not running it yet.
+  not running it yet. For Claude it is read off the usage scan's records
+  (`ClaudeFileUsage.latestCounted`): the standing record with the latest
+  timestamp (a zeroed replay by its own time), the later one in the file on
+  a tie, so a final record that replaced a streaming one counts as newest and
+  a replay of an older request does not. Unlike the parser the rows had
+  before Phase 0C, a record without a message id is not keyed and does not
+  take part. Effort uses the validated label (1–64 printable ASCII bytes, else none).
 - The reasoning effort sits right after the model on the row
   (`ActiveAgentSession.effort`, via `SessionLabel.effort`) because it multiplies
   the model's cost. It is read from the same newest counted record: Claude
@@ -228,8 +234,10 @@ usage presentation, cached state, or Claude live-session integration.
   takes the identity slot: it replaces branch/tty/PID as an in-group row's
   title and stands beside the project name on a lone row, with the branch
   moving into the tooltip. Claude writes titles on their own records,
-  `ai-title` / `custom-title`, which carry no `usage`, so `consumeClaude`
-  pre-filters on `-title"` too. A user-set custom title outranks the generated
+  `ai-title` / `custom-title`, which carry no `usage`; `consumeTitle` reads
+  them (pre-filtered on `-title"`) into `ClaudeSessionTitles`, in memory only:
+  they are conversation text and never reach the usage cache or the history.
+  A user-set custom title outranks the generated
   one whatever order they were written in (a generated title routinely lands
   after a custom one); an empty custom title is the user clearing theirs.
   Codex titles live in `~/.codex/state_5.sqlite`, not the rollout, and are not
@@ -464,16 +472,22 @@ usage presentation, cached state, or Claude live-session integration.
   (`\xe6\x97\xa5…`), which matches no project key. Claude Desktop's own main process
   (`Claude.app/Contents/MacOS/Claude`, cwd `/`) is not an agent; its bundled
   Claude Code under `claude-code/` is.
-- Per-session token totals are cached as a partial parse
-  (`SessionTokenTotals`: Codex per-model counts, the Claude records as
-  `ClaudeJSONLScanner.ParseState` — the usage report's own parser and
-  per-key pick — Codex's last seen model, and the newest effort and titles),
-  not as the finished summary. A live transcript grows between
-  every tick, so caching the summary only ever hit on an idle session; the
-  partial resumes from the last consumed line boundary instead. Cache only that
-  boundary — folding the trailing, not-yet-terminated record into the cached
-  value would count it again once it is complete. `enrichSessionUsage` prunes
-  the cache to the running sessions, because each entry holds a record per key.
+- A Claude session row's tokens, cost, model and effort come from the usage
+  scan's own records: `sessionWithUsage` reads the transcripts through
+  `ClaudeJSONLScanner.fileUsages`, i.e. the scan's cache and `cachedUsage`
+  (memory, then the store, then a resumed parse checked against the
+  boundary digest), and hands what it parsed to the history. There is no
+  second Claude parser: until Phase 0C the rows kept their own
+  `ParseState` per file in a memory-only cache and re-read every attributed
+  transcript and subagent from the top after each launch. What is still
+  parsed here is cached as a partial parse resumed at the last line boundary
+  (`incrementalParse`): Codex rollouts (`CodexSessionTotals`: per-model
+  counts, the last seen model) and Claude titles (`ClaudeSessionTitles`).
+  Cache only that boundary — folding the trailing, not-yet-terminated record
+  into the cached value would count it again once it is complete.
+  `enrichSessionUsage` prunes those two caches to the running sessions' main
+  transcripts; the scan's cache is the scans' to prune. Tests default to
+  `ClaudeUsageCache.memoryOnly`, so they never touch the real store.
 - A Claude session's tokens and cost include its subagent transcripts,
   `<projectKey>/<sessionID>/subagents/agent-<id>.jsonl`, and the agents of
   its Workflow runs, which Claude Code files one level further down as
@@ -483,10 +497,9 @@ usage presentation, cached state, or Claude live-session integration.
   input — and only for names (file and run directory alike) in the session-id
   charset; meta files, symlinks, the journal and anything deeper are skipped.
   A workflow of a hundred agents that read as a lone "working now" row with
-  its pre-workflow total was the case this came from. Each file is its own cached partial
-  parse with its own records, and the prune keeps
-  main *and* subagent fingerprints — dropping the latter would re-read every
-  subagent from the top each tick. Model, effort and title stay the main
+  its pre-workflow total was the case this came from. Each file's records
+  come from the usage scan's cache like any transcript's, kept between ticks
+  by the scans, so a tick reads only what was appended. Model, effort and title stay the main
   transcript's; subagent transcripts carry no title records. A subagent row
   shows its own file; the session's figure runs every file's records through
   `ClaudeJSONLScanner.UsageSelection`, so a request two of its transcripts

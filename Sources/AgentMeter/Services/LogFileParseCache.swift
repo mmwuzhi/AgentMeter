@@ -77,6 +77,11 @@ actor LogFileParseCache<Value: Sendable> {
         }
     }
 
+    /// The fingerprint of the entry held for `path`, whatever its age.
+    func fingerprint(forPath path: String) -> LogFileFingerprint? {
+        entries[path]?.fingerprint
+    }
+
     func value(for fingerprint: LogFileFingerprint) -> Value? {
         guard let entry = entries[fingerprint.path],
               entry.fingerprint == fingerprint,
