@@ -47,6 +47,13 @@ final class AppViewModel {
     /// Drives the popover primer shown before macOS's first Keychain prompt,
     /// so "choose Always Allow" guidance no longer lives only in the README.
     var claudeKeychainPrimerNeeded = !UserDefaults.standard.bool(forKey: "claudeOAuthSucceededOnce")
+    /// Task notifications as the menu lists them, from the event log
+    /// (`TaskEventFeed`). `.loading` until the log has been read once, so
+    /// "not read yet" never shows as "nothing happened".
+    var taskEvents: TaskEventsState = .loading
+    /// Why the last click on a task did not bring its session forward. Not
+    /// persisted; cleared when the popover closes or the task is handled.
+    var taskEventNotice: TaskEventNotice?
 
     /// The app restores the last cached state and the spend ledger; a test
     /// passes what it wants restored (nil and `[]` for a model with nothing

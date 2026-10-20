@@ -20,6 +20,11 @@ final class MenuBarContentView: NSView {
     var dimmed = false {
         didSet { if dimmed != oldValue { needsDisplay = true } }
     }
+    /// Unread task notifications, drawn as a count after the fields. Only the
+    /// status item that lists them sets it; the Settings chips never do.
+    var unreadBadge = 0 {
+        didSet { if unreadBadge != oldValue { needsDisplay = true } }
+    }
 
     // Layout constants (Stats-like horizontal columns).
     static let iconSize: CGFloat = 15
@@ -89,6 +94,35 @@ final class MenuBarContentView: NSView {
         return ceil(max(lw, barWidth))
     }
 
+    // The unread count: a small filled capsule after the fields, in one fixed
+    // color that no quota cue uses (those are yellow and red dots and fills).
+    static let badgeGap: CGFloat = 3
+    static let badgeHeight: CGFloat = 12
+    static func badgeFont() -> NSFont { .monospacedDigitSystemFont(ofSize: 9, weight: .semibold) }
+
+    static func badgeText(_ count: Int) -> String {
+        count > 99 ? "99+" : "\(count)"
+    }
+
+    /// Zero without unread tasks: the item keeps its exact width then.
+    static func badgeWidth(_ count: Int) -> CGFloat {
+        guard count > 0 else { return 0 }
+        let text = NSAttributedString(string: badgeText(count), attributes: [.font: badgeFont()]).size().width
+        return max(badgeHeight, ceil(text) + 5)
+    }
+
+    static func unreadSummary(_ count: Int) -> String {
+        guard count > 0 else { return "" }
+        return ", \(count) unread task \(count == 1 ? "notification" : "notifications")"
+    }
+
+    /// Total width for an arrangement (icon + columns + uniform gaps), plus
+    /// the unread count when there is one.
+    static func width(elements: [MenuBarElement], showCaptions: Bool, unreadBadge: Int) -> CGFloat {
+        let badge = badgeWidth(unreadBadge)
+        return width(elements: elements, showCaptions: showCaptions) + (badge > 0 ? badgeGap + badge : 0)
+    }
+
     /// Total width for an arrangement (icon + columns + uniform gaps).
     static func width(elements: [MenuBarElement], showCaptions: Bool) -> CGFloat {
         guard !elements.isEmpty else { return iconSize + horizontalInset * 2 }
@@ -110,6 +144,7 @@ final class MenuBarContentView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        drawUnreadBadge(height: bounds.height)
         let height = bounds.height
         let fg = foreground
 
@@ -178,6 +213,26 @@ final class MenuBarContentView: NSView {
                 x += w + Self.spacing
             }
         }
+    }
+
+    /// After everything else, at the width the fields end. Not dimmed with
+    /// stale quota: the count is local and always current.
+    private func drawUnreadBadge(height: CGFloat) {
+        let width = Self.badgeWidth(unreadBadge)
+        guard width > 0 else { return }
+        let x = Self.width(elements: elements, showCaptions: showCaptions) + Self.badgeGap
+        let rect = NSRect(x: x, y: floor((height - Self.badgeHeight) / 2), width: width, height: Self.badgeHeight)
+        NSColor.systemBlue.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: Self.badgeHeight / 2, yRadius: Self.badgeHeight / 2).fill()
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        let font = Self.badgeFont()
+        let text = NSAttributedString(string: Self.badgeText(unreadBadge), attributes: [
+            .font: font, .foregroundColor: NSColor.white, .paragraphStyle: style])
+        // Baseline-anchored like the fields: digits centred on their cap height.
+        let baseline = rect.midY - font.capHeight / 2
+        text.draw(with: NSRect(x: rect.minX, y: baseline, width: rect.width, height: font.pointSize + 1),
+                  options: [], context: nil)
     }
 
     /// A mini gauge filled left→right, reading the same end as the popover's bar

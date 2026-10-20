@@ -33,6 +33,15 @@ enum TaskOutcomeAnnouncement {
         static let backgroundShellRunning = "backgroundShellRunning"
     }
 
+    /// The reasons an outcome is recorded for the history only: nothing asks
+    /// the user to look at it, so the menu neither lists nor counts it and it
+    /// is recorded read (`TaskEventAttention`). `backgroundShellRunning` is
+    /// not one of them: an unconfirmed task is listed, just never posted.
+    static let historyOnlyReasons: Set<String> = [
+        Reason.beforeLaunch, Reason.reportOrigin, Reason.cronsArmed,
+        Reason.belowMinimumDuration, Reason.notAnnounced,
+    ]
+
     static func intent(for outcome: TaskOutcome, launchedAt: Date) -> AgentMeterDeliveryIntent {
         if outcome.occurredAt < launchedAt.addingTimeInterval(-beforeLaunchSlack) {
             return .recordOnly(reason: Reason.beforeLaunch)
@@ -57,7 +66,7 @@ enum TaskOutcomeAnnouncement {
     /// - Parameter showsSessionTitle: name the session by its title instead
     ///   of its short id. Off by default: without a custom title it is
     ///   Claude's summary of the first prompt, and banners show on the lock
-    ///   screen. Phase 1c brings the switch.
+    ///   screen. The switch is `AgentMeterNotificationPreferences.showsSessionTitle`.
     static func event(for outcome: TaskOutcome, label: TaskSessionLabel?, discoveredAt: Date,
                       showsSessionTitle: Bool = false) -> AgentMeterEvent? {
         guard let kind = outcome.kind.eventKind else { return nil }
@@ -89,9 +98,11 @@ enum TaskOutcomeAnnouncement {
             }
             detail = "\(lead) · \(format(outcome.duration))"
         case .uncertain:
-            title = "\(project) stopped, background work running"
+            // What was seen, when: the shell may have ended since without a
+            // hook to say so (docs/agent/ui-state.md, known limit).
+            title = "\(project) task status unconfirmed"
             let count = outcome.shellsStillRunning
-            detail = "\(count) background \(count == 1 ? "shell" : "shells") still running · after \(format(outcome.duration))"
+            detail = "\(count) background \(count == 1 ? "task" : "tasks") running at the last check · after \(format(outcome.duration))"
         case .interrupted:
             title = "\(project) interrupted"
             detail = "Stopped after \(format(outcome.duration))"

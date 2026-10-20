@@ -256,13 +256,19 @@ struct AgentMeterEventLogState: Sendable {
     /// old it is. Past `maximumEvents`, the oldest read events go first; only
     /// when unread events alone exceed it do the oldest unread ones go, and
     /// those are counted in `unreadOverflow`.
-    func pruning(now: Date, retention: TimeInterval, maximumEvents: Int) -> Pruning {
+    ///
+    /// An unread event its producer recorded for the history only (its
+    /// delivery suppressed with one of `historyOnlyReasons`) waits for no
+    /// one: it is kept and dropped like a read event, and never counted as
+    /// overflow. It stays unread; nothing invents a time the user read it.
+    func pruning(now: Date, retention: TimeInterval, maximumEvents: Int,
+                 historyOnlyReasons: Set<String> = []) -> Pruning {
         let horizon = now.addingTimeInterval(-retention)
         var drop: [String] = []
         var read: [AgentMeterEvent] = []
         var unread: [AgentMeterEvent] = []
         for event in events.values {
-            if event.isUnread {
+            if event.isUnread, !Self.isHistoryOnly(event, reasons: historyOnlyReasons) {
                 unread.append(event)
             } else if event.occurredAt < horizon {
                 drop.append(event.id)
@@ -280,6 +286,10 @@ struct AgentMeterEventLogState: Sendable {
         unread.sort(by: Self.oldestFirst)
         let oldestUnread = Array(unread.prefix(excess))
         return Pruning(ids: drop + oldestUnread.map(\.id), unread: oldestUnread)
+    }
+
+    static func isHistoryOnly(_ event: AgentMeterEvent, reasons: Set<String>) -> Bool {
+        event.delivery.state == .suppressed && reasons.contains(event.delivery.reason ?? "")
     }
 
     /// Discovery order, then occurrence, then id: total, so a rewrite of the

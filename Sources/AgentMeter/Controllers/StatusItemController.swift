@@ -7,12 +7,14 @@ import SwiftUI
 final class StatusItemController {
     private let model: AppViewModel
     private let coordinator: RefreshCoordinator
+    private let taskEvents: TaskEventFeed?
     private var slotControllers: [MenuBarSlot: StatusItemSlotController] = [:]
     private var slotOrder: [MenuBarSlot] = []
 
-    init(model: AppViewModel, coordinator: RefreshCoordinator) {
+    init(model: AppViewModel, coordinator: RefreshCoordinator, taskEvents: TaskEventFeed? = nil) {
         self.model = model
         self.coordinator = coordinator
+        self.taskEvents = taskEvents
         reconcileSlots()
         observeModel()
 
@@ -42,17 +44,27 @@ final class StatusItemController {
         slotControllers.removeAll()
         slotOrder = visible
 
+        let host = Self.taskEventsSlot(visible: visible)
         for slot in visible {
             slotControllers[slot] = StatusItemSlotController(
                 slot: slot,
                 model: model,
                 coordinator: coordinator,
+                taskEvents: slot == host ? taskEvents : nil,
                 closeOthers: { [weak self] activeSlot in
                     self?.closePopovers(except: activeSlot)
                 }
             )
         }
         updateAll()
+    }
+
+    /// The status item that carries the unread count and whose popover lists
+    /// the task notifications: Claude's (the tasks are Claude Code's), or the
+    /// first visible one while Claude's is hidden, so the count never
+    /// disappears with it.
+    static func taskEventsSlot(visible: [MenuBarSlot]) -> MenuBarSlot? {
+        visible.contains(.claude) ? .claude : visible.first
     }
 
     /// Refresh the menubar text when the model changes.
@@ -62,6 +74,7 @@ final class StatusItemController {
             _ = model.claude
             _ = model.copilot
             _ = model.staleQuotaProviders
+            _ = model.taskEvents.unreadCount
         } onChange: { [weak self] in
             Task { @MainActor in
                 self?.observeModel()
@@ -91,6 +104,12 @@ final class StatusItemController {
             ?? slotOrder.first.flatMap { slotControllers[$0] }
         controller?.showPopover()
     }
+
+    /// Opens the popover that lists the task notifications.
+    func showTaskEvents() {
+        guard let slot = Self.taskEventsSlot(visible: slotOrder) else { return }
+        slotControllers[slot]?.showPopover()
+    }
 }
 
 @MainActor
@@ -100,6 +119,8 @@ private final class StatusItemSlotController: NSObject {
     private let popover = NSPopover()
     private let model: AppViewModel
     private let coordinator: RefreshCoordinator
+    /// Set on the one slot that carries the task notifications.
+    private let taskEvents: TaskEventFeed?
     private let closeOthers: (MenuBarSlot) -> Void
     private let contentView = MenuBarContentView()
     private var lastLength: CGFloat = -1
@@ -108,11 +129,13 @@ private final class StatusItemSlotController: NSObject {
         slot: MenuBarSlot,
         model: AppViewModel,
         coordinator: RefreshCoordinator,
+        taskEvents: TaskEventFeed?,
         closeOthers: @escaping (MenuBarSlot) -> Void
     ) {
         self.slot = slot
         self.model = model
         self.coordinator = coordinator
+        self.taskEvents = taskEvents
         self.closeOthers = closeOthers
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
@@ -151,6 +174,7 @@ private final class StatusItemSlotController: NSObject {
         let root = MenuView(
             model: model,
             scope: MenuViewScope(slot: slot),
+            taskEvents: taskEvents,
             onRefresh: { [weak self] in self?.coordinator.refresh(forceAll: true) },
             onQuit: { NSApp.terminate(nil) }
         )
@@ -166,11 +190,14 @@ private final class StatusItemSlotController: NSObject {
         let showsQuota = elements.contains { $0.segment?.remaining != nil }
         let stale = showsQuota && model.staleQuotaProviders.contains(slot.provider)
         contentView.dimmed = stale
+        let unread = taskEvents == nil ? 0 : model.taskEvents.unreadCount
+        contentView.unreadBadge = unread
         let summary = accessibilitySummary() + (stale ? " — quota data stale, refresh failing" : "")
+            + MenuBarContentView.unreadSummary(unread)
         button.toolTip = summary
         button.setAccessibilityLabel(summary)
 
-        let width = MenuBarContentView.width(elements: elements, showCaptions: showCaptions)
+        let width = MenuBarContentView.width(elements: elements, showCaptions: showCaptions, unreadBadge: unread)
         let statusLength = MenuBarContentView.statusLength(forVisualWidth: width)
         if abs(statusLength - lastLength) > 0.5 {
             lastLength = statusLength
@@ -261,6 +288,8 @@ private final class StatusItemSlotController: NSObject {
             forcedUsageProviders: slot.provider == .copilot ? [] : [slot.provider],
             forceActiveAgents: true
         )
+        // Another instance may have written the log meanwhile.
+        taskEvents?.scheduleReload()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
     }
@@ -269,5 +298,6 @@ private final class StatusItemSlotController: NSObject {
 extension StatusItemSlotController: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
         coordinator.setActiveAgentsVisible(false)
+        if taskEvents != nil { model.taskEventNotice = nil }
     }
 }

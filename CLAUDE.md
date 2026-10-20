@@ -40,7 +40,9 @@ For cross-cutting changes, read every applicable reference before editing.
   announces
 - `Sources/AgentMeter/Services/Sessions` — the first event producer: Claude
   task outcomes (Completed / Failed / Waiting / Interrupted) from the hook
-  helper's turn ledgers (`agent-status/turns/`), the registry and the payloads
+  helper's turn ledgers (`agent-status/turns/`), the registry and the payloads;
+  and what the menu does with them: `TaskEventFeed` (unread list, menu bar
+  count, handled, overflow) and `TaskSessionRouting` (where a click goes)
 - `Sources/AgentStatusCore` / `Sources/AgentMeterHook` — Claude status helper
 - `Tests/AgentMeterTests` — XCTest suite
 - `Scripts` / `.github/workflows/release.yml` — bundle and release tooling

@@ -32,11 +32,16 @@ usage presentation, cached state, or Claude live-session integration.
   with the quota path, and records instead of posting when the kind is
   switched off, the event is older than `maximumDeliveryDelay`, or
   permission is denied. Read state changes only on an explicit read (a tap
-  on the notification, `markEventsRead`), never with time, and unread events
+  on the notification that reached what it is about, `markEventsRead`),
+  never with time, and unread events
   never age out: the 180-day retention applies to read events, and at the
   10,000-event cap read events go first. Only when unread events alone
   exceed the cap do the oldest unread go, counted in `unreadOverflow()` (a
-  running total kept in the log) for a view to show. The quota
+  running total kept in the log) for a view to show. An unread event its
+  producer recorded for the history only (delivery suppressed with one of
+  `Limits.historyOnlyReasons`) waits for no one: it is kept and dropped like
+  a read one and never counted as overflow, and it stays unread (no read
+  time is invented for it). The quota
   critical/recovery path is unchanged and records no events.
 - `@AppStorage` keys are a compatibility contract. Current keys include
   `menuBarItemsConfig` (plus per-slot `menuBarItemsConfig.<slot>` variants),
@@ -44,7 +49,10 @@ usage presentation, cached state, or Claude live-session integration.
   threshold and notification settings, the event notification switches
   (`taskCompletedNotificationsEnabled`, `taskFailedNotificationsEnabled` and
   `taskWaitingNotificationsEnabled`, all default on; read on every delivery
-  by `AgentMeterNotificationPreferences`), `launchAtLogin`,
+  by `AgentMeterNotificationPreferences`), `taskNotificationsShowSessionTitle`
+  (default off, read when a task event is built), the overflow
+  acknowledgement (`taskEventsOverflowAcknowledgedCount` and
+  `taskEventsOverflowAcknowledgedDroppedAt`), `launchAtLogin`,
   `statusHooksEnabled`, and `claudeOAuthSucceededOnce` (gates the one-time
   Keychain primer in the popover).
 - `MenuBarLayout` owns which fields each status item shows, in what order.
@@ -305,6 +313,94 @@ usage presentation, cached state, or Claude live-session integration.
   "incl. N subagents (tokens · $cost of the total)" over every subagent the
   session ran, listed or not.
 
+## Task notifications in the menu
+
+- `TaskEventFeed` keeps `AppViewModel.taskEvents` in step with the event log:
+  it reads on `NotificationManager.onEventsChanged` (one reload per 150 ms
+  burst), when the listing popover opens (another instance may have
+  written), and at launch. Never on a timer. `.loading` until the first
+  read, so "not read yet" never reads as "nothing happened"; the popover
+  header always says which of Loading / None yet (Off without the hooks) /
+  All handled / N unread holds.
+- One item per task (`<session>|<task>`, `TaskEventItem`): a wait and the
+  end replace each other on screen as their banners do, and the item shows
+  the latest status. The menu bar counts tasks, not events. Marking an item
+  seen marks every event of the task read; Mark all seen covers the items
+  the user was shown, not what arrived since.
+- Status, unread and "for the user" are kept apart. The status is the event
+  kind and never changes. "Seen" is the read state and says only that the
+  user looked: the wording never suggests a wait is over or an unconfirmed
+  task finished (an unconfirmed task marked seen stays "Task status
+  unconfirmed"). Unread clears only when a click reaches the session (a tap
+  on the banner, then the feed reads the task's other events too; a click on
+  the item) or on Mark seen. A click that cannot reach it reads nothing and
+  the menu says why; closing a banner, opening the popover and time read
+  nothing either. An event its producer recorded for the history only
+  (`TaskOutcomeAnnouncement.historyOnlyReasons`: before launch, under a
+  minute, a report's turn, crons, interruptions) asks nobody to read it: it
+  is never listed or counted, stays unread in the log, and the log keeps and
+  drops it like a read event (`Limits.historyOnlyReasons`). A kind whose
+  banner is switched off in Settings is still listed and counted: the
+  switches are about banners only, and Settings says so. Pending events are
+  not counted, so the badge does not flicker while an event settles.
+- `task_unknown` reads "Task status unconfirmed" with
+  `TaskEventStatus.unconfirmedExplanation` ("Background tasks were still
+  running at the last check…"), never the stored detail line: 1b wrote
+  "N background shells still running", and the shell may have ended since
+  with no hook to say so. New events say "N background tasks running at the
+  last check". It is listed, never posted.
+- The unread count is a blue capsule after the fields of Claude's status
+  item, or of the first visible item while Claude's is hidden
+  (`StatusItemController.taskEventsSlot`); that item's popover lists the
+  tasks. It adds width only while something is unread (`badgeWidth` 0
+  otherwise), is capped at "99+", is not dimmed with stale quota, and uses
+  no quota cue color. The accessibility label appends the count.
+- `unreadOverflow()` shows as a notice in the list until the user
+  acknowledges that exact total (count and `lastDroppedAt`, kept in
+  defaults); a later drop shows only what was dropped since, and a total
+  below the acknowledged one (the log started over) shows all of it.
+- Clicks (`TaskSessionRouting`) bring forward only what already runs the
+  session, and only a click that does so reads the task. Live processes come from the rows (with the row's start time
+  checked against the kernel's) and from the registry read at click time
+  (`ClaudeSessionRegistry.entry` guard); helpers registered under the
+  session's id descend from it and do not count; unrelated processes make it
+  ambiguous. A terminal tab is selected by tty (it only selects a tab that
+  exists). Everything else, editors included, gets nothing on its own: the
+  popover says why (`TaskEventNotice`, opened for a banner click), the task
+  stays unread, and it offers Mark seen and to activate the app, which never
+  creates a window. The session row's click (`AgentAppActivator.focus`) is
+  the same: the terminal tab, else the app. No URL is ever opened
+  (`AgentAppActivatorTests.testNoSourceOpensAnEditorOrSessionURL`), so no
+  click can open or resume a session.
+- Why no editor window is switched, kept for a future safe way to name the
+  window (all as of VS Code 1.142.0 and Claude Code 2.1.301, 2026-10-20):
+  `vscode://anthropic.claude-code/open?session=` is handed to the active
+  window, and a window that does not own the session opens a panel bound to
+  it, a second process resuming it. `vscode://file/<folder>` focuses only a
+  window whose single folder is exactly `<folder>` (a `.code-workspace`
+  window matches only by its workspace file); with none it reuses the last
+  active window and reloads it with the folder (`openInBrowserWindow` →
+  `unload(window, LOAD)` in the installed `out/mainImpl.js`), replacing its
+  workspace and ending the sessions in it. The Claude Code extension's
+  `~/.claude/ide/<port>.lock` lists each window's `workspaceFolders` and the
+  editor's main `pid` (and an auth token, never to be read), which shows a
+  window holding a folder but neither a one-folder `.code-workspace` nor a
+  window closing before the link lands; a link built on it was tried and
+  removed (patch `phase1c-wip-on-f249f9c-20261020-2013` in the AgentMeter
+  backups). Extension-launched sessions have no tty, are children of their
+  window's extension host, and run in realpath(first folder). The CLI's
+  hidden `--open-url` with `--user-data-dir` reaches only that instance, the
+  isolation route for an experiment; no experiment was run.
+- Settings › Alerts shows the three banner switches (default on; labelled as
+  banners, with the note that the menu still records, lists and counts the
+  task), the session-title switch (default off) and what System Settings says
+  (`AgentMeterNotificationSettings`: permission, alert style, lock screen,
+  previews), read when the pane appears and when AgentMeter becomes active
+  again. AgentMeter never changes them and never imitates a persistent
+  notification; it says to choose Persistent in System Settings and links to
+  AgentMeter's page there. With previews hidden, a task banner reads as the
+  category's placeholder ("Claude Code task update").
+
 ## Spend and usage
 
 - Token counts are what is stored and carried; dollars are derived where they
@@ -480,7 +576,8 @@ usage presentation, cached state, or Claude live-session integration.
   time and error kind; never a prompt, assistant text or error details. The
   session title is left out by default (without a custom title it is
   Claude's summary of the first prompt, and banners reach the lock screen);
-  `showsSessionTitle` is there for a Phase 1c switch.
+  `AgentMeterNotificationPreferences.showsSessionTitle` (Settings › Alerts)
+  turns it on, from the next event.
   Ledgers untouched for 24 h whose session has no live process are swept
   hourly.
 - A payload attaches to a process by its recorded ancestry only, which is

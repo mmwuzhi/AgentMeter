@@ -13,9 +13,13 @@ enum MenuViewScope: Equatable {
 struct MenuView: View {
     @Bindable var model: AppViewModel
     var scope: MenuViewScope
+    /// Set on the popover of the status item that carries the unread count
+    /// (`StatusItemController.taskEventsSlot`); that popover lists the tasks.
+    var taskEvents: TaskEventFeed? = nil
     var onRefresh: () -> Void
     var onQuit: () -> Void
     @State private var sectionsHeight: CGFloat = 0
+    @AppStorage("statusHooksEnabled") private var statusHooksEnabled = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -40,6 +44,14 @@ struct MenuView: View {
 
     private var sections: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let taskEvents {
+                TaskEventsSection(
+                    state: model.taskEvents,
+                    notice: model.taskEventNotice,
+                    hooksEnabled: statusHooksEnabled,
+                    sessionTitles: sessionTitles,
+                    actions: TaskEventActions(feed: taskEvents))
+            }
             ForEach(visibleProviders, id: \.self) { p in
                 let providerState = PopoverOrder.state(p, model)
                 ProviderSection(
@@ -61,6 +73,16 @@ struct MenuView: View {
             }
         }
         .padding(12)
+    }
+
+    /// Live sessions' titles, for naming tasks in the list.
+    private var sessionTitles: [String: String] {
+        var titles: [String: String] = [:]
+        for agent in model.activeAgents {
+            guard let session = agent.session, let title = SessionLabel.title(session.title) else { continue }
+            titles[session.id] = titles[session.id] ?? title
+        }
+        return titles
     }
 
     private func resetCreditItems(for provider: Provider) -> [ResetCreditItem] {

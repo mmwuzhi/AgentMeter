@@ -72,6 +72,17 @@ final class AuthorizationCenterStub: NotificationAuthorizationCenter {
         return status
     }
 
+    /// What `currentSettings()` reports beyond the status.
+    var settings = AgentMeterNotificationSettings(authorization: .unknown)
+    private(set) var settingsQueries = 0
+
+    func currentSettings() async -> AgentMeterNotificationSettings {
+        settingsQueries += 1
+        var current = settings
+        current.authorization = AgentMeterNotificationSettings.authorization(status)
+        return current
+    }
+
     func setCategories(_ categories: Set<UNNotificationCategory>) {
         self.categories = categories
     }

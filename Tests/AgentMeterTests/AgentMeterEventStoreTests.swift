@@ -529,6 +529,47 @@ final class AgentMeterEventStoreTests: XCTestCase {
         XCTAssertEqual(stats.unreadOverflow, 3)
     }
 
+    // MARK: - History-only events (recorded for the history, never read)
+
+    private func recordSettled(_ store: AgentMeterEventStore, _ id: String, reason: String?, clock: EventTestClock) async {
+        await store.record(makeTaskEvent(id, at: clock.now))
+        await store.setDelivery(reason.map { .suppressed($0, at: clock.now) } ?? .posted(at: clock.now), forEventID: id)
+    }
+
+    func testHistoryOnlyUnreadEventsAgeOutLikeReadOnesWithoutAReadTime() async throws {
+        let dir = historyTempDirectory()
+        let clock = EventTestClock()
+        let writer = store(dir, clock: clock)
+        await recordSettled(writer, "short", reason: TaskOutcomeAnnouncement.Reason.belowMinimumDuration, clock: clock)
+        await recordSettled(writer, "unconfirmed", reason: TaskOutcomeAnnouncement.Reason.backgroundShellRunning, clock: clock)
+        await recordSettled(writer, "bannerOff", reason: AgentMeterEventDelivery.Suppression.disabledByUser, clock: clock)
+        await recordSettled(writer, "posted", reason: nil, clock: clock)
+        let short = await writer.event(id: "short")
+        XCTAssertNil(short?.readAt, "no read time is invented")
+
+        clock.advance(181 * 86_400)
+        let ids = await store(dir, clock: clock).events().map(\.id)
+        XCTAssertEqual(Set(ids), ["unconfirmed", "bannerOff", "posted"],
+                       "the history-only event aged out; the ones waiting for the user never do")
+    }
+
+    func testAtTheCapHistoryOnlyEventsGoBeforeUnreadOnesAndAreNotOverflow() async throws {
+        let dir = historyTempDirectory()
+        let clock = EventTestClock()
+        let writer = store(dir, clock: clock)
+        for i in 0..<5 {
+            await recordSettled(writer, "e\(i)", reason: i % 2 == 1 ? TaskOutcomeAnnouncement.Reason.beforeLaunch : nil,
+                                clock: clock)
+            clock.advance(1)
+        }
+        let limits = AgentMeterEventStore.Limits(retention: 180 * 86_400, maximumEvents: 3, minimumSupersededLines: 512)
+        let capped = store(dir, clock: clock, limits: limits)
+        let ids = await capped.events().map(\.id)
+        XCTAssertEqual(ids, ["e4", "e2", "e0"], "the two history-only events went first, though unread")
+        let overflow = await capped.unreadOverflow()
+        XCTAssertNil(overflow, "nothing waiting for the user was dropped")
+    }
+
     func testSupersededLinesAreCompactedAwayWithoutChangingTheEvents() async throws {
         let dir = historyTempDirectory()
         let clock = EventTestClock()

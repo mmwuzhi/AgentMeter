@@ -115,8 +115,11 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
         let uncertain = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.uncertain, ran: 125, shells: 2),
                                                                      label: nil, discoveredAt: launchedAt))
         XCTAssertEqual(uncertain.kind, .taskUnknown)
-        XCTAssertEqual(uncertain.content.title, "agentmeter stopped, background work running")
-        XCTAssertEqual(uncertain.content.body, "Session ffafe0d9\n2 background shells still running · after 2m")
+        XCTAssertEqual(uncertain.content.title, "agentmeter task status unconfirmed")
+        XCTAssertEqual(uncertain.content.body, "Session ffafe0d9\n2 background tasks running at the last check · after 2m")
+        // The shell may have ended since with no hook to say so: what was
+        // seen, when, never that it still runs.
+        XCTAssertFalse((uncertain.content.title + uncertain.content.body).contains("still running"))
 
         let interrupted = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.interrupted, ran: 45),
                                                                        label: nil, discoveredAt: launchedAt))

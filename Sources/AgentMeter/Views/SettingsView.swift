@@ -115,6 +115,7 @@ private struct AlertSettings: View {
                 Text("A yellow then red dot appears as quota runs low. Critical notifications fire once, and recovery notifications fire only after a critical window resets.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            TaskNotificationSettingsSections()
         }
         .formStyle(.grouped)
         // Warn must stay at or above critical. Adjust the *other* field so the

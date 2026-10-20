@@ -34,12 +34,18 @@ extension NotificationManager {
     /// handler behind it (Open Session, Mute arrive with the task
     /// notifications, Snooze with the rule alerts). `didReceive` already
     /// routes any action identifier to `onEventResponse`.
+    ///
+    /// Where System Settings hides previews (the lock screen, by default),
+    /// a task notification reads as the placeholder, not the project.
     static var eventCategories: Set<UNNotificationCategory> {
         [
-            UNNotificationCategory(identifier: taskCategoryIdentifier, actions: [], intentIdentifiers: [], options: []),
+            UNNotificationCategory(identifier: taskCategoryIdentifier, actions: [], intentIdentifiers: [],
+                                   hiddenPreviewsBodyPlaceholder: taskHiddenPreviewPlaceholder, options: []),
             UNNotificationCategory(identifier: ruleCategoryIdentifier, actions: [], intentIdentifiers: [], options: []),
         ]
     }
+
+    static let taskHiddenPreviewPlaceholder = "Claude Code task update"
 
     /// Records `event` and, when allowed, posts it. Returns the event as
     /// recorded with its delivery decided, or why nothing happened.
@@ -69,16 +75,19 @@ extension NotificationManager {
         return changed.count
     }
 
-    /// A tap on an event's notification, or one of its actions: marks it read
-    /// and hands it on. Apart from the delegate callback, whose response
-    /// object a test cannot build.
+    /// A tap on an event's notification, or one of its actions: hands it on,
+    /// and marks it read when the handler says the tap reached what the event
+    /// is about (a task's session came forward), or when there is no handler.
+    /// A tap that could not get there leaves it unread for the menu to
+    /// explain. Apart from the delegate callback, whose response object a
+    /// test cannot build.
     func handleEventResponse(eventID: String, actionIdentifier: String) async {
         // Only with `.customDismissAction`, which no category sets: closing a
         // banner is not reading it.
         guard actionIdentifier != UNNotificationDismissActionIdentifier else { return }
-        await markEventsRead(ids: [eventID])
         guard let event = await eventStore.event(id: eventID) else { return }
-        onEventResponse?(event, actionIdentifier)
+        let reached = await onEventResponse?(event, actionIdentifier) ?? true
+        if reached { await markEventsRead(ids: [eventID]) }
     }
 
     private func decideAndPost(_ event: AgentMeterEvent, intent: AgentMeterDeliveryIntent) async -> AgentMeterEventDelivery {

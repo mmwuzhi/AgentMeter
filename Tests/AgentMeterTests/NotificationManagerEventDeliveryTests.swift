@@ -299,7 +299,10 @@ final class NotificationManagerEventDeliveryTests: XCTestCase {
         let store = AgentMeterEventStore.inMemory(clock: clock.function)
         let manager = manager(center, store: store, clock: clock)
         var responses: [(String, String)] = []
-        manager.onEventResponse = { responses.append(($0.id, $1)) }
+        manager.onEventResponse = {
+            responses.append(($0.id, $1))
+            return true
+        }
         await manager.submit(makeTaskEvent("a", at: clock.now))
         clock.advance(120)
 
@@ -316,6 +319,28 @@ final class NotificationManagerEventDeliveryTests: XCTestCase {
 
         await manager.handleEventResponse(eventID: "pruned", actionIdentifier: UNNotificationDefaultActionIdentifier)
         XCTAssertEqual(responses.count, 1, "an event no longer on record is not handed on")
+    }
+
+    func testATapThatDidNotReachTheEventLeavesItUnread() async {
+        let clock = EventTestClock()
+        let center = AuthorizationCenterStub(result: .success(true), status: .authorized)
+        let store = AgentMeterEventStore.inMemory(clock: clock.function)
+        let manager = manager(center, store: store, clock: clock)
+        await manager.submit(makeTaskEvent("a", at: clock.now))
+        var handed = 0
+        manager.onEventResponse = { _, _ in
+            handed += 1
+            return false
+        }
+        await manager.handleEventResponse(eventID: "a", actionIdentifier: UNNotificationDefaultActionIdentifier)
+        XCTAssertEqual(handed, 1)
+        var readAt = await store.event(id: "a")?.readAt
+        XCTAssertNil(readAt, "the handler could not get there: it stays unread for the menu to explain")
+
+        manager.onEventResponse = nil
+        await manager.handleEventResponse(eventID: "a", actionIdentifier: UNNotificationDefaultActionIdentifier)
+        readAt = await store.event(id: "a")?.readAt
+        XCTAssertEqual(readAt, clock.now, "without a handler a tap reads it")
     }
 
     func testChangesAreAnnouncedOnlyWhenSomethingChanged() async {

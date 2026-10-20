@@ -11,20 +11,30 @@ import Foundation
 /// waiting banner's 60-120 s delay belongs to its producer). Interrupted,
 /// unknown, and kinds this build does not know are recorded only, with no
 /// switch.
+///
+/// `showsSessionTitle` decides what a task banner calls the session, its
+/// title or its short id, and defaults off: without a custom title the title
+/// is Claude's summary of the first prompt, and banners can show on the lock
+/// screen. It is read when the event is built, so it applies from the next
+/// one; events already recorded keep their text.
 struct AgentMeterNotificationPreferences: Equatable, Sendable {
     static let taskCompletedKey = "taskCompletedNotificationsEnabled"
     static let taskFailedKey = "taskFailedNotificationsEnabled"
     static let taskWaitingKey = "taskWaitingNotificationsEnabled"
+    static let showsSessionTitleKey = "taskNotificationsShowSessionTitle"
 
     var taskCompleted: Bool
     var taskFailed: Bool
     var taskWaiting: Bool
+    var showsSessionTitle: Bool
 
     /// The defaults live here and nowhere else.
-    init(taskCompleted: Bool = true, taskFailed: Bool = true, taskWaiting: Bool = true) {
+    init(taskCompleted: Bool = true, taskFailed: Bool = true, taskWaiting: Bool = true,
+         showsSessionTitle: Bool = false) {
         self.taskCompleted = taskCompleted
         self.taskFailed = taskFailed
         self.taskWaiting = taskWaiting
+        self.showsSessionTitle = showsSessionTitle
     }
 
     init(defaults: UserDefaults) {
@@ -37,6 +47,7 @@ struct AgentMeterNotificationPreferences: Equatable, Sendable {
         taskCompleted = value(Self.taskCompletedKey) as? Bool ?? taskCompleted
         taskFailed = value(Self.taskFailedKey) as? Bool ?? taskFailed
         taskWaiting = value(Self.taskWaitingKey) as? Bool ?? taskWaiting
+        showsSessionTitle = value(Self.showsSessionTitleKey) as? Bool ?? showsSessionTitle
     }
 
     func notifies(_ kind: AgentMeterEventKind) -> Bool {

@@ -1,7 +1,10 @@
 import AppKit
 
-/// Brings the exact terminal tab or editor workspace hosting an agent forward,
-/// with whole-app activation as the fallback.
+/// Brings the exact terminal tab hosting an agent forward, with whole-app
+/// activation as the fallback. Editor windows are never switched with a URL:
+/// `vscode://file/<folder>` replaces the last active window's workspace when
+/// no window holds exactly that single folder, ending the sessions in it
+/// (docs/agent/ui-state.md, "Task notifications in the menu").
 enum AgentAppActivator {
     @MainActor
     @discardableResult
@@ -11,36 +14,7 @@ enum AgentAppActivator {
            focusTerminalTab(bundleID: host?.bundleIdentifier, tty: tty, cwd: agent.cwd) {
             return true
         }
-        if let cwd = agent.cwd,
-           focusEditorWindow(bundleID: host?.bundleIdentifier, cwd: cwd) {
-            return true
-        }
         return host?.activate() ?? false
-    }
-
-    @MainActor
-    static func focusEditorWindow(bundleID: String?, cwd: String) -> Bool {
-        guard let url = editorURL(bundleID: bundleID, cwd: cwd) else { return false }
-        return NSWorkspace.shared.open(url)
-    }
-
-    static func editorURL(bundleID: String?, cwd: String) -> URL? {
-        guard let scheme = editorURLScheme(for: bundleID), cwd.hasPrefix("/") else { return nil }
-        var components = URLComponents()
-        components.scheme = scheme
-        components.host = "file"
-        components.path = cwd
-        return components.url
-    }
-
-    static func editorURLScheme(for bundleID: String?) -> String? {
-        switch bundleID {
-        case "com.microsoft.VSCode": return "vscode"
-        case "com.microsoft.VSCodeInsiders": return "vscode-insiders"
-        case "com.vscodium.codium", "com.visualstudio.code.oss": return "vscodium"
-        case "com.todesktop.230313mzl4w4u92": return "cursor"
-        default: return nil
-        }
     }
 
     @MainActor
@@ -95,6 +69,20 @@ enum AgentAppActivator {
         guard sysctl(&mib, 4, &info, &size, nil, 0) == 0,
               size >= MemoryLayout<kinfo_proc>.stride else { return nil }
         return info.kp_eproc.e_ppid
+    }
+
+    /// The process's controlling terminal as `ps` names it ("ttys003"), or nil
+    /// for none (`??`): a session the editor's extension started has none.
+    static func controllingTTY(of pid: Int) -> String? {
+        guard pid > 0, let value = pid_t(exactly: pid) else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, value]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size >= MemoryLayout<kinfo_proc>.stride else { return nil }
+        let device = info.kp_eproc.e_tdev
+        guard device != -1, let name = devname(device, S_IFCHR) else { return nil }
+        let tty = String(cString: name)
+        return tty.isEmpty || tty == "??" ? nil : tty
     }
 
     private static func isSafeTTY(_ tty: String) -> Bool {

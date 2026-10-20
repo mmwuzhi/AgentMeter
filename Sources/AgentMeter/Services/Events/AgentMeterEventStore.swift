@@ -24,7 +24,9 @@ import os
 ///    go; unread ones stay however old. Past `maximumEvents` the oldest read
 ///    events go first; only when unread events alone exceed it do the oldest
 ///    unread ones go, counted in `unreadOverflow()` and logged, never
-///    silently. Nothing here ever marks an event read on its own.
+///    silently. An unread event recorded for the history only
+///    (`Limits.historyOnlyReasons`) counts as read for these limits. Nothing
+///    here ever marks an event read on its own.
 ///  * The first read of the log in a run marks events an earlier run left
 ///    `pending` as `interrupted`: terminal, never retried.
 actor AgentMeterEventStore {
@@ -37,6 +39,11 @@ actor AgentMeterEventStore {
         /// A compaction runs once superseded lines (delivery and read
         /// updates, unreadable lines) outnumber both the live events and this.
         var minimumSupersededLines = 512
+        /// Suppression reasons of events their producer recorded for the
+        /// history only: nothing asks the user to read them, so unread they
+        /// age out and yield to the cap like read events, and never count as
+        /// overflow (`AgentMeterEventLogState.pruning`).
+        var historyOnlyReasons: Set<String> = TaskOutcomeAnnouncement.historyOnlyReasons
 
         static let standard = Limits()
     }
@@ -318,7 +325,8 @@ actor AgentMeterEventStore {
     }
 
     private func compactIfDue() {
-        let pruning = state.pruning(now: clock(), retention: limits.retention, maximumEvents: limits.maximumEvents)
+        let pruning = state.pruning(now: clock(), retention: limits.retention, maximumEvents: limits.maximumEvents,
+                                    historyOnlyReasons: limits.historyOnlyReasons)
         let superseded = state.supersededLines > max(state.liveLines, limits.minimumSupersededLines)
         guard !pruning.isEmpty || superseded else { return }
         guard let fileURL else {

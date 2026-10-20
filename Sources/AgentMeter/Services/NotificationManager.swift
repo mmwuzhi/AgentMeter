@@ -15,6 +15,9 @@ protocol NotificationAuthorizationCenter: AnyObject {
     /// The permission as it stands now. The user can change it in System
     /// Settings at any time, so event delivery asks before every post.
     func authorizationStatus() async -> UNAuthorizationStatus
+    /// Everything System Settings says about these notifications, for the
+    /// Settings window (style, lock screen, previews).
+    func currentSettings() async -> AgentMeterNotificationSettings
     func setCategories(_ categories: Set<UNNotificationCategory>)
 }
 
@@ -29,6 +32,10 @@ extension UNUserNotificationCenter: NotificationAuthorizationCenter {
 
     func authorizationStatus() async -> UNAuthorizationStatus {
         await notificationSettings().authorizationStatus
+    }
+
+    func currentSettings() async -> AgentMeterNotificationSettings {
+        AgentMeterNotificationSettings(await notificationSettings())
     }
 
     func setCategories(_ categories: Set<UNNotificationCategory>) {
@@ -157,8 +164,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     /// Invoked on the main actor when the user taps a quota notification.
     var onOpenProvider: ((Provider) -> Void)?
     /// Invoked on the main actor when the user taps an event's notification
-    /// (or one of its actions), after the event was marked read.
-    var onEventResponse: ((AgentMeterEvent, String) -> Void)?
+    /// (or one of its actions). Returns whether the tap reached what the
+    /// event is about; only then is the event marked read. Without a handler
+    /// a tap reads it.
+    var onEventResponse: (@MainActor (AgentMeterEvent, String) async -> Bool)?
     /// Invoked on the main actor after events were recorded, settled or read
     /// through this manager, so a view can re-query the store.
     var onEventsChanged: (() -> Void)?
@@ -222,6 +231,13 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         authorizationCenter.setCategories(Self.eventCategories)
         let store = eventStore
         Task.detached(priority: .utility) { await store.prepare() }
+    }
+
+    /// What System Settings says now; nil without an app bundle, where the
+    /// center would trap.
+    func notificationSettings() async -> AgentMeterNotificationSettings? {
+        guard hasBundle else { return nil }
+        return await authorizationCenter.currentSettings()
     }
 
     func requestAuthorizationIfNeeded() async {

@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: RefreshCoordinator!
     private var statusController: StatusItemController!
     private var taskOutcomes: TaskOutcomeMonitor?
+    private var taskEvents: TaskEventFeed?
     private var quit: QuitSequence?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -41,11 +42,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start Sparkle's background update checks (relocated to Settings → manual check).
         _ = UpdaterController.shared
         coordinator = RefreshCoordinator(viewModel: model)
-        statusController = StatusItemController(model: model, coordinator: coordinator)
+        let feed = TaskEventFeed(manager: NotificationManager.shared, model: model)
+        taskEvents = feed
+        statusController = StatusItemController(model: model, coordinator: coordinator, taskEvents: feed)
+        feed.showList = { [weak self] in self?.statusController.showTaskEvents() }
         NotificationManager.shared.activate()
         NotificationManager.shared.onOpenProvider = { [weak self] provider in
             self?.statusController.showPopover(for: provider)
         }
+        NotificationManager.shared.onEventsChanged = { [weak feed] in feed?.scheduleReload() }
+        NotificationManager.shared.onEventResponse = { [weak feed] event, _ in
+            await feed?.handleNotificationResponse(event) ?? true
+        }
+        feed.scheduleReload()
         coordinator.start()
         startTaskOutcomes(launchedAt: launchedAt)
     }
@@ -61,7 +70,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 for outcome in outcomes {
                     let row = model.activeAgents.first { $0.session?.id == outcome.sessionID }?.session
                     let label = row.map { TaskSessionLabel(project: $0.displayProject, title: $0.title) }
-                    guard let event = TaskOutcomeAnnouncement.event(for: outcome, label: label, discoveredAt: Date()) else { continue }
+                    let showsTitle = AgentMeterNotificationPreferences(defaults: .standard).showsSessionTitle
+                    guard let event = TaskOutcomeAnnouncement.event(
+                        for: outcome, label: label, discoveredAt: Date(), showsSessionTitle: showsTitle) else { continue }
                     await NotificationManager.shared.submit(
                         event, intent: TaskOutcomeAnnouncement.intent(for: outcome, launchedAt: launchedAt))
                 }
