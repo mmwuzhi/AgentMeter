@@ -37,7 +37,10 @@ For cross-cutting changes, read every applicable reference before editing.
 - `Sources/AgentMeter/Services/Events` — `AgentMeterEvent` and
   `AgentMeterEventStore` (`events.jsonl`): dedup, delivery outcome and read
   state of what the shared event path (`NotificationManager+Events.swift`)
-  announces; nothing produces events yet
+  announces
+- `Sources/AgentMeter/Services/Sessions` — the first event producer: Claude
+  task outcomes (Completed / Failed / Waiting / Interrupted) from the hook
+  helper's turn ledgers (`agent-status/turns/`), the registry and the payloads
 - `Sources/AgentStatusCore` / `Sources/AgentMeterHook` — Claude status helper
 - `Tests/AgentMeterTests` — XCTest suite
 - `Scripts` / `.github/workflows/release.yml` — bundle and release tooling

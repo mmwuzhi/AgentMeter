@@ -12,7 +12,13 @@ public enum AgentStatusStore {
     }
 
     public static func fileURL(forSession sessionID: String) -> URL {
-        directory.appendingPathComponent("\(sanitized(sessionID)).json", isDirectory: false)
+        directory.appendingPathComponent("\(fileStem(forSession: sessionID)).json", isDirectory: false)
+    }
+
+    /// The file name a session's records use here and in `TaskLedgerStore`:
+    /// path-safe characters only, at most 128 of them.
+    public static func fileStem(forSession sessionID: String) -> String {
+        sanitized(sessionID)
     }
 
     @discardableResult

@@ -8,9 +8,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppViewModel()
     private var coordinator: RefreshCoordinator!
     private var statusController: StatusItemController!
+    private var taskOutcomes: TaskOutcomeMonitor?
     private var quit: QuitSequence?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Task outcomes that happened before this (while AgentMeter was not
+        // running) are recorded, not announced.
+        let launchedAt = Date()
         // Menubar-only app: no Dock icon.
         NSApp.setActivationPolicy(.accessory)
 
@@ -43,6 +47,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.statusController.showPopover(for: provider)
         }
         coordinator.start()
+        startTaskOutcomes(launchedAt: launchedAt)
+    }
+
+    /// Session task outcomes (Completed / Failed / Waiting / Interrupted)
+    /// from the hook helper's turn ledgers, through the shared event path.
+    /// Off the main thread except for naming the session from the latest
+    /// rows and handing the event to `NotificationManager`.
+    private func startTaskOutcomes(launchedAt: Date) {
+        let model = model
+        let monitor = TaskOutcomeMonitor { outcomes in
+            Task { @MainActor in
+                for outcome in outcomes {
+                    let row = model.activeAgents.first { $0.session?.id == outcome.sessionID }?.session
+                    let label = row.map { TaskSessionLabel(project: $0.displayProject, title: $0.title) }
+                    guard let event = TaskOutcomeAnnouncement.event(for: outcome, label: label, discoveredAt: Date()) else { continue }
+                    await NotificationManager.shared.submit(
+                        event, intent: TaskOutcomeAnnouncement.intent(for: outcome, launchedAt: launchedAt))
+                }
+            }
+        }
+        monitor.start()
+        taskOutcomes = monitor
     }
 
     /// Quit (the menu, a Sparkle relaunch, logout) first closes the history
@@ -50,7 +76,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let sequence = quit ?? QuitSequence(
             deadline: QuitSequence.historyDeadline,
-            stopRefreshing: { [weak self] in self?.coordinator?.stop() },
+            stopRefreshing: { [weak self] in
+                self?.coordinator?.stop()
+                self?.taskOutcomes?.stop()
+            },
             closeHistory: Self.closeHistory)
         quit = sequence
         return sequence.begin { sender.reply(toApplicationShouldTerminate: true) }
@@ -64,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Already stopped by the quit sequence when AppKit asked first; stop()
         // is idempotent and covers a termination that skipped the question.
         coordinator?.stop()
+        taskOutcomes?.stop()
     }
 }
 

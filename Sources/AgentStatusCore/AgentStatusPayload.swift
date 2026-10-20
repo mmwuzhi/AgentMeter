@@ -81,8 +81,41 @@ public struct HookBackgroundTasks: Decodable, Sendable, Equatable {
     }
 
     public init(from decoder: Decoder) throws {
-        var total = 0
-        var subagents = 0
+        self.init(try HookBackgroundTaskList(from: decoder))
+    }
+
+    public init(_ list: HookBackgroundTaskList) {
+        self.init(total: list.entries.count, subagents: list.entries.filter { $0.type == "subagent" }.count)
+    }
+}
+
+/// The same `background_tasks` array, entry by entry: what the turn ledger
+/// (`TaskLedger`) needs to tell a pause from an end. Same leniency and the
+/// same artifact-subscription skip as `HookBackgroundTasks`, which is its
+/// count.
+public struct HookBackgroundTaskList: Decodable, Sendable, Equatable {
+    public struct Entry: Sendable, Equatable {
+        /// `shell`, `subagent`, `monitor`, `workflow`, … as Claude Code names
+        /// the kind; nil when absent or not a string.
+        public var type: String?
+        /// Claude Code's task id: a shell's matches the `backgroundTaskId` the
+        /// launching `Bash` call returned, a subagent's is its `agent_id`.
+        public var id: String?
+
+        public init(type: String?, id: String?) {
+            self.type = type
+            self.id = id
+        }
+    }
+
+    public var entries: [Entry]
+
+    public init(entries: [Entry]) {
+        self.entries = entries
+    }
+
+    public init(from decoder: Decoder) throws {
+        var entries: [Entry] = []
         if var array = try? decoder.unkeyedContainer() {
             while !array.isAtEnd {
                 let index = array.currentIndex
@@ -92,18 +125,19 @@ public struct HookBackgroundTasks: Decodable, Sendable, Equatable {
                 guard let element = try? array.superDecoder(), array.currentIndex > index else { break }
                 guard let entry = try? element.container(keyedBy: EntryKey.self) else { continue }
                 let description = try? entry.decodeIfPresent(String.self, forKey: .description)
-                if description?.hasPrefix(Self.artifactSubscriptionPrefix) == true { continue }
-                total += 1
-                if (try? entry.decodeIfPresent(String.self, forKey: .type)) == "subagent" {
-                    subagents += 1
-                }
+                if description?.hasPrefix(HookBackgroundTasks.artifactSubscriptionPrefix) == true { continue }
+                entries.append(Entry(
+                    type: try? entry.decodeIfPresent(String.self, forKey: .type),
+                    id: try? entry.decodeIfPresent(String.self, forKey: .id)
+                ))
             }
         }
-        self.init(total: total, subagents: subagents)
+        self.init(entries: entries)
     }
 
     private enum EntryKey: String, CodingKey {
         case type
+        case id
         case description
     }
 }

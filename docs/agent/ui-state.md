@@ -414,6 +414,75 @@ usage presentation, cached state, or Claude live-session integration.
   write (the session id is inside it); invalid JSON still exits 64 so a
   schema change stays visible. It writes bounded per-session JSON through
   `AgentStatusCore`.
+- Task outcomes (`Services/Sessions`) come from a second per-session file the
+  helper keeps, the turn ledger (`agent-status/turns/<session>.json`,
+  `TaskLedger`): replaced atomically, 0600, under a `flock` on `turns/.lock`
+  (a write that waits past 0.5 s is dropped, never the hook). Only the main
+  thread's `UserPromptSubmit`, `Stop` and `StopFailure`, permission and
+  elicitation `Notification`s, `SessionEnd`, and any agent's `PostToolUse`
+  whose `tool_response.backgroundTaskId` names a shell it left running move
+  it; every new hook field is decoded leniently, so the payload write cannot
+  break on it. The task key is the human prompt's `prompt_id`: each report
+  from background work arrives as a new prompt with a new `prompt_id`
+  (`<task-notification`, `<agent-message`, or any `<tag` while subagents or
+  workflows run or within 10 min of an uncertain end) and joins the task, as
+  a new segment when the task had really ended. Its location (`cwd`,
+  transcript) comes from main-thread events only. No prompt, message or tool
+  text is kept.
+- `TaskOutcomeDetector` decides from the ledger, the live registry entry and
+  the payload (POC C1–C3 and C1d on 2.1.301). Completed: a main `Stop` with
+  no subagent or workflow in flight, and the registry turned idle (or
+  `shell`) after it and stayed so 2 s. The registry stays `busy`, keeping
+  the stamp of the turn's start, while background agents run, so a busy
+  entry holds the task whatever its stamp; a Stop hook that continues the
+  turn is expected to keep it busy too (not measured). Paused: the `Stop`
+  lists a subagent or workflow. A background shell this task started (main
+  agent or subagent) that still runs makes the end uncertain: when it ends,
+  its owner wakes and reports, and neither hook input nor registry
+  says when — on the SDK path the registry is plain `idle` meanwhile. Such a
+  task is never called finished: after `uncertainWindow` (10 min) with no
+  report the state is recorded once as `task_unknown`, not announced, and
+  the report that eventually comes joins the task, whose real end is then
+  announced as Completed. A shell with no launch on record counts as the
+  task's that first sees it; a shell an earlier task started or saw (a dev
+  server) does not hold it. A session that ends meanwhile ends the watch
+  without an outcome. Known limit: completion needs the owner's wake-up
+  (a report, then a `Stop`). No hook fires when a background shell ends, the
+  SDK registry stays `idle` throughout, and the REPL's `shell` → `idle` edge
+  only says the shells ended (a revival followed it by 60 ms in C1a), so a
+  shell that ends without waking anyone (killed, or its notification lost)
+  leaves the task unknown for good; it is not guessed Completed. Failed: the main `StopFailure`, once the registry is
+  idle (10 s quiet without one, 30 s if it stays busy; never seen live
+  yet). Waiting: the registry `waiting` for 60 s, timed from the first stamp
+  of the wait; without a registry, a permission notice the payload still
+  shows for 120 s; at most one per turn. Permission dialogs read
+  `permission prompt` and questions `input needed`; `dialog open` counts
+  only while the turn runs (Claude Code's "Session paused" decisions:
+  fallback model, usage credits), not between turns (a command UI the user
+  opened). Interrupted: idle after the prompt with no `Stop` (Esc fires
+  none) and the transcript's last message record is the interruption
+  marker; without the marker nothing is recorded.
+- `TaskOutcomeMonitor` runs the detector on a private utility queue: on a
+  directory watch of `turns/` (the ledger's renames), on a timer while a turn
+  runs or an end awaits confirmation (Claude Code rewrites registry files in
+  place, which a directory watch misses), and every 30 s otherwise. A
+  registry entry counts only for a live process that started before it was
+  written (the rows' PID-reuse guard), and a single pass that misses it
+  reuses the reading from up to 3 s before. It hands
+  each outcome on once per run, and the event store's id dedup
+  (`task_<kind>|<session>|<task>|<segment>[|…]`) keeps a restart from
+  announcing it again. `TaskOutcomeAnnouncement` records without posting
+  what happened over 120 s before launch, tasks under 60 s, tasks a report
+  opened, sessions with crons armed, uncertain ends, and every interruption.
+  All of one
+  task's banners share `agentmeter.task.<session>.<task>`, so a wait and the
+  end replace each other. The text is the project, the short session id, run
+  time and error kind; never a prompt, assistant text or error details. The
+  session title is left out by default (without a custom title it is
+  Claude's summary of the first prompt, and banners reach the lock screen);
+  `showsSessionTitle` is there for a Phase 1c switch.
+  Ledgers untouched for 24 h whose session has no live process are swept
+  hourly.
 - A payload attaches to a process by its recorded ancestry only, which is
   what distinguishes sessions that share a directory. There is no session-id
   fallback: the only payloads it could match are the ones the PID-lifetime
