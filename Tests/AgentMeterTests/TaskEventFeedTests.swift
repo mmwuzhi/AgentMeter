@@ -374,6 +374,57 @@ final class TaskEventFeedTests: XCTestCase {
         XCTAssertTrue(rig.model.taskEventRoutes.isEmpty)
     }
 
+    /// `resetTaskEventsPresentation` is what `popoverDidClose` calls.
+    func testAClickOrALookupStillRunningWhenThePopoverClosesLeavesTheNextOneClean() async throws {
+        let rig = rig(lookup: { recorder, now in
+            var lookup = stubLookup(now: now, recorder: recorder)
+            lookup.readRegistry = {
+                usleep(200_000)
+                return [:]
+            }
+            return lookup
+        })
+        await rig.manager.submit(event("a", at: rig.clock))
+        await settle { rig.model.taskEvents.unreadCount == 1 }
+        let item = try XCTUnwrap(try snapshot(rig).unread.first)
+
+        let click = Task { await rig.feed.open(item) }
+        try? await Task.sleep(for: .milliseconds(50))
+        rig.model.resetTaskEventsPresentation()
+        await click.value
+        XCTAssertNil(rig.model.taskEventNotice, "no old line in the next popover")
+        XCTAssertTrue(rig.model.taskEventRoutes.isEmpty, "no old route for its tooltips")
+        await settle({ rig.model.taskEvents.unreadCount == 0 }, "the click still read the task")
+
+        let look = Task { await rig.feed.preview(item) }
+        try? await Task.sleep(for: .milliseconds(50))
+        rig.model.resetTaskEventsPresentation()
+        await look.value
+        XCTAssertTrue(rig.model.taskEventRoutes.isEmpty)
+        // The next popover looks it up afresh, not held off by the dropped one.
+        let again = Task { await rig.feed.preview(item) }
+        await rig.feed.preview(item)
+        await again.value
+        XCTAssertEqual(rig.model.taskEventRoutes["ffafe0d9-aaaa"], .ended)
+    }
+
+    func testABannerTapThatWorksClearsAnEarlierLine() async throws {
+        let observed = Date(timeIntervalSince1970: 1_792_458_306)
+        let rig = rig(lookup: { recorder, now in
+            stubLookup(starts: [77: observed.addingTimeInterval(-60)], parents: [77: 500],
+                       hosts: [77: itermHost], now: now, recorder: recorder)
+        })
+        rig.model.activeAgents = [liveRow(77, tty: "ttys002", observed: observed)]
+        await rig.manager.submit(event("gone", task: "p1", session: "gone-session", at: rig.clock))
+        await rig.manager.submit(event("live", task: "p2", at: rig.clock))
+        await settle { rig.model.taskEvents.unreadCount == 2 }
+        await rig.feed.open(try XCTUnwrap(try snapshot(rig).unread.first { $0.sessionID == "gone-session" }))
+        XCTAssertEqual(rig.model.taskEventNotice?.reason, .ended)
+        await rig.manager.handleEventResponse(eventID: "live", actionIdentifier: UNNotificationDefaultActionIdentifier)
+        XCTAssertEqual(rig.recorder.focused, [77])
+        XCTAssertNil(rig.model.taskEventNotice, "the last click worked: nothing left to explain")
+    }
+
     func testThePointerOnARowLooksUpWhereItsClickGoesAndActivatesNothing() async throws {
         let observed = Date(timeIntervalSince1970: 1_792_458_306)
         let rig = rig(lookup: { recorder, now in

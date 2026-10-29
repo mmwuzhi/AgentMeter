@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: RefreshCoordinator!
     private var statusController: StatusItemController!
     private var taskOutcomes: TaskOutcomeMonitor?
+    private var taskOutcomeQueue: TaskOutcomeQueue?
     private var taskEvents: TaskEventFeed?
     private var quit: QuitSequence?
 
@@ -73,22 +74,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Session task outcomes (Completed / Failed / Waiting / Interrupted)
     /// from the hook helper's turn ledgers, through the shared event path.
     /// Off the main thread except for naming the session from the latest
-    /// rows and handing the event to `NotificationManager`.
+    /// rows and handing the event to `NotificationManager`, one outcome at a
+    /// time in the order they were found (`TaskOutcomeQueue`).
     private func startTaskOutcomes(launchedAt: Date) {
         let model = model
-        let monitor = TaskOutcomeMonitor { outcomes in
-            Task { @MainActor in
-                for outcome in outcomes {
-                    let label = await TaskSessionLabel.resolve(for: outcome, rows: model.activeAgents)
-                    let showsTitle = AgentMeterNotificationPreferences(defaults: .standard).showsSessionTitle
-                    guard let event = TaskOutcomeAnnouncement.event(
-                        for: outcome, label: label, discoveredAt: Date(), showsSessionTitle: showsTitle) else { continue }
-                    await NotificationManager.shared.submit(
-                        event, intent: TaskOutcomeAnnouncement.intent(for: outcome, launchedAt: launchedAt))
-                }
-            }
+        let queue = TaskOutcomeQueue { outcome in
+            await TaskOutcomeAnnouncement.announce(outcome, rows: model.activeAgents, manager: .shared,
+                                                   launchedAt: launchedAt)
         }
+        let monitor = TaskOutcomeMonitor { queue.enqueue($0) }
         monitor.start()
+        taskOutcomeQueue = queue
         taskOutcomes = monitor
     }
 

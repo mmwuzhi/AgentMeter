@@ -590,9 +590,12 @@ usage presentation, cached state, or Claude live-session integration.
   then); looking never activates or reads anything. When a click could not
   do what it said, one short line sits under that row (`TaskEventNotice`:
   "Session has ended", "Couldn't switch to the iTerm2 tab"), with no
-  buttons, until the next click or the popover closes; the row stays in
-  place though it was read, and a banner tap that brought nothing forward
-  opens the popover on it. The session row's click
+  buttons, until the next click (a banner tap that worked included) or the
+  popover closes; the row stays in place though it was read, and a banner
+  tap that brought nothing forward opens the popover on it. A click or a
+  lookup still running when the popover closes writes no line or route into
+  the next one (`AppViewModel.taskEventsPresentationGeneration`, bumped by
+  `resetTaskEventsPresentation`). The session row's click
   (`AgentAppActivator.focus`) is the same: the terminal tab, else the app.
   No URL is ever opened
   (`AgentAppActivatorTests.testNoSourceOpensAnEditorOrSessionURL`), so no
@@ -791,7 +794,10 @@ usage presentation, cached state, or Claude live-session integration.
   registry entry counts only for a live process that started before it was
   written (the rows' PID-reuse guard), and a single pass that misses it
   reuses the reading from up to 3 s before. It hands
-  each outcome on once per run, and the event store's id dedup
+  each outcome on once per run, through `TaskOutcomeQueue` to
+  `TaskOutcomeAnnouncement.announce` one at a time in the order found (naming
+  a session can wait on a transcript read, and a wait submitted after its
+  task's end would replace the "Finished" banner), and the event store's id dedup
   (`task_<kind>|<session>|<task>|<segment>[|…]`) keeps a restart from
   announcing it again. `TaskOutcomeAnnouncement` records without posting
   what happened over 120 s before launch, tasks under 60 s, tasks a report

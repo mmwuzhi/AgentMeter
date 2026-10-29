@@ -63,6 +63,10 @@ final class AppViewModel {
     /// tooltips (`TaskEventFeed.preview`). Not persisted; forgotten when the
     /// popover closes, since sessions come and go.
     var taskEventRoutes: [String: TaskSessionRoute] = [:]
+    /// Bumped each time the popover's task state is reset, so a click or a
+    /// lookup still running when the popover closed does not write its
+    /// result into the next one (`TaskEventFeed`).
+    @ObservationIgnored private(set) var taskEventsPresentationGeneration = 0
 
     /// The app restores the last cached state and the spend ledger; a test
     /// passes what it wants restored (nil and `[]` for a model with nothing
@@ -146,6 +150,7 @@ final class AppViewModel {
     /// The popover that lists the tasks closed: the list collapses, and the
     /// last click's line and the looked-up routes go with it.
     func resetTaskEventsPresentation() {
+        taskEventsPresentationGeneration &+= 1
         taskEventsExpanded = false
         taskEventNotice = nil
         taskEventRoutes = [:]

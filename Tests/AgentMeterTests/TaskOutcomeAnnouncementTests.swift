@@ -7,6 +7,11 @@ import XCTest
 private actor TitleReads {
     var paths: [String] = []
     func add(_ path: String) { paths.append(path) }
+    /// How many reads so far, this one included.
+    func next(_ path: String) -> Int {
+        paths.append(path)
+        return paths.count
+    }
 }
 
 final class TaskOutcomeAnnouncementTests: XCTestCase {
@@ -184,6 +189,41 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
     }
 
     // MARK: Naming the session
+
+    /// A wait found first is submitted first, even when naming its session
+    /// takes longer than naming the end's: otherwise its "Needs input" would
+    /// replace "Finished" under the identifier they share, and stay.
+    @MainActor
+    func testOutcomesAreSubmittedInTheOrderTheMonitorFoundThem() async throws {
+        let suite = "agentmeter.tests.queue.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = EventTestClock(launchedAt)
+        let center = AuthorizationCenterStub(result: .success(true), status: .authorized)
+        let manager = NotificationManager(authorizationCenter: center, bundleIdentifier: { "com.shu.agentmeter.tests" },
+                                          eventStore: .inMemory(clock: clock.function), now: { clock.now })
+        let path = "/Users/u/.claude/projects/-Users-u-work-agentmeter/ffafe0d9-1111-2222-3333-444455556666.jsonl"
+        var wait = outcome(.waiting, ran: 90)
+        wait.transcriptPath = path
+        var end = outcome(.completed, ran: 600)
+        end.transcriptPath = path
+        let reads = TitleReads()
+        let slowFirst: @Sendable (String, String) async -> String? = { path, _ in
+            if await reads.next(path) == 1 { try? await Task.sleep(for: .milliseconds(300)) }
+            return nil
+        }
+        let queue = TaskOutcomeQueue { outcome in
+            await TaskOutcomeAnnouncement.announce(outcome, rows: [], manager: manager, launchedAt: self.launchedAt,
+                                                   defaults: defaults, now: { clock.now }, transcriptTitle: slowFirst)
+        }
+        // Two monitor passes, as the monitor's queue hands them on.
+        queue.enqueue([wait])
+        queue.enqueue([end])
+        for _ in 0..<3_000 where center.posted.count < 2 { try? await Task.sleep(for: .milliseconds(1)) }
+        XCTAssertEqual(center.posted.map(\.content.title), ["Needs input · agentmeter", "Finished · agentmeter"])
+        XCTAssertEqual(center.delivered.count, 1, "one banner per task")
+        XCTAssertEqual(center.delivered.values.first?.content.title, "Finished · agentmeter", "the end stays on screen")
+    }
 
     @MainActor
     func testTheTitleComesFromTheLiveRowThenTheTranscriptThenNowhere() async throws {

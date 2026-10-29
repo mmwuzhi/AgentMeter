@@ -36,7 +36,7 @@ struct TaskNotificationSettingsSections: View {
             Text("These switches only turn macOS notification banners on or off. With a banner off, AgentMeter still records the task, lists it in its menu and counts it in the menu-bar badge until you click it or mark it read. A task whose background work was still running at the last check is listed as unconfirmed and never sent as a banner.")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Show session titles in banners", isOn: $showsSessionTitle)
-            Text("Banners name the session as the Sessions list does. Unless you renamed the session, its title is Claude's summary of your first prompt, and banners can appear on the lock screen; off, they show the project and a short session id instead. The menu's list shows titles either way. Applies to banners sent from now on.")
+            Text("Banners name the session as the Sessions list does. Unless you renamed the session, its title is Claude's summary of your first prompt, and banners can appear on the lock screen; off, they show the project and a short session id instead. The menu's list shows titles either way: AgentMeter keeps each task's session title in its history on this Mac. Applies to banners sent from now on.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         Section("Claude Code tasks: AgentMeter menu") {

@@ -39,6 +39,36 @@ extension TaskSessionLabel {
     }
 }
 
+/// Hands the monitor's outcomes to the event path one at a time, in the
+/// order the monitor found them. Naming a session can wait on a transcript
+/// read (`TaskSessionLabel.resolve`); with a task per pass, a wait found
+/// first could be submitted after the same task's end, and its "Needs input"
+/// banner would replace "Finished" under the identifier they share.
+@MainActor
+final class TaskOutcomeQueue {
+    private let continuation: AsyncStream<[TaskOutcome]>.Continuation
+    private let consumer: Task<Void, Never>
+
+    init(handle: @escaping @MainActor (TaskOutcome) async -> Void) {
+        let (stream, continuation) = AsyncStream<[TaskOutcome]>.makeStream()
+        self.continuation = continuation
+        consumer = Task { @MainActor in
+            for await outcomes in stream {
+                for outcome in outcomes { await handle(outcome) }
+            }
+        }
+    }
+
+    deinit {
+        continuation.finish()
+    }
+
+    /// From any thread: the monitor calls it on its own queue.
+    nonisolated func enqueue(_ outcomes: [TaskOutcome]) {
+        continuation.yield(outcomes)
+    }
+}
+
 /// Turns a `TaskOutcome` into the event `NotificationManager.submit` records,
 /// and decides whether it is announced or only recorded. The text names the
 /// project, the session and how long the task ran; never a prompt, an
@@ -175,6 +205,21 @@ enum TaskOutcomeAnnouncement {
                 notificationIdentifier: "agentmeter.task.\(outcome.sessionID).\(outcome.taskKey)",
                 threadIdentifier: "agentmeter.task.\(outcome.cwd ?? outcome.sessionID)"),
             producerVersion: TaskOutcomeDetector.producerVersion)
+    }
+
+    /// What the app does with each outcome, in `TaskOutcomeQueue` order:
+    /// names the session, builds the event with the title switch read now,
+    /// and submits it.
+    @MainActor
+    static func announce(
+        _ outcome: TaskOutcome, rows: [ActiveAgent], manager: NotificationManager, launchedAt: Date,
+        defaults: UserDefaults = .standard, now: () -> Date = Date.init,
+        transcriptTitle: @Sendable (_ path: String, _ sessionID: String) async -> String? = TaskSessionLabel.transcriptTitle
+    ) async {
+        let label = await TaskSessionLabel.resolve(for: outcome, rows: rows, transcriptTitle: transcriptTitle)
+        let showsTitle = AgentMeterNotificationPreferences(defaults: defaults).showsSessionTitle
+        guard let event = event(for: outcome, label: label, discoveredAt: now(), showsSessionTitle: showsTitle) else { return }
+        await manager.submit(event, intent: intent(for: outcome, launchedAt: launchedAt))
     }
 
     /// Claude Code's `StopFailure` error kinds, in words. Unknown kinds read

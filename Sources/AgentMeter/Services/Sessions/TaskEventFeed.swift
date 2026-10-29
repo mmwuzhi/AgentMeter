@@ -64,8 +64,9 @@ final class TaskEventFeed {
     private var reloadTask: Task<Void, Never>?
     private var reloadAgain = false
     private(set) var reloadCount = 0
-    /// Sessions whose route `preview` is looking up.
-    private var previewing: Set<String> = []
+    /// Sessions whose route `preview` is looking up, with the presentation
+    /// generation the lookup is for.
+    private var previewing: [String: Int] = [:]
 
     init(manager: NotificationManager, model: AppViewModel, defaults: UserDefaults = .standard,
          lookup: TaskSessionLookup = .live, log: @escaping @Sendable (String) -> Void = TaskEventFeed.systemLog) {
@@ -146,9 +147,13 @@ final class TaskEventFeed {
     /// line under the row says what could not be done.
     func open(_ item: TaskEventItem) async {
         model.taskEventNotice = nil
-        let failure = await route(sessionID: item.sessionID, origin: "menu")
-        model.taskEventNotice = failure.map {
-            TaskEventNotice(item: item.markedRead, reason: $0.reason, hostName: $0.hostName)
+        let generation = model.taskEventsPresentationGeneration
+        let failure = await route(sessionID: item.sessionID, origin: "menu", generation: generation)
+        // The popover may have closed meanwhile: the line was for that one.
+        if model.taskEventsPresentationGeneration == generation {
+            model.taskEventNotice = failure.map {
+                TaskEventNotice(item: item.markedRead, reason: $0.reason, hostName: $0.hostName)
+            }
         }
         await manager.markEventsRead(ids: item.unreadEventIDs)
     }
@@ -169,16 +174,21 @@ final class TaskEventFeed {
         // keeps its unread state (it is never read on anyone's behalf).
         var ids = siblings.filter { TaskEventItem.key($0) == key && TaskEventAttention.needsAttention($0) }.map(\.id)
         if event.isUnread, !ids.contains(event.id) { ids.append(event.id) }
-        let failure = await route(sessionID: event.subject.sessionID, origin: "notification")
+        let failure = await route(sessionID: event.subject.sessionID, origin: "notification",
+                                  generation: model.taskEventsPresentationGeneration)
         let listed = model.taskEvents.snapshot.flatMap { snapshot in
             (snapshot.unread + snapshot.handled).first { $0.id == key }
         }
-        if let failure, TaskEventListVisibility.isShown(in: defaults),
-           let item = listed ?? TaskEventItem.items(from: [event]).first {
-            model.taskEventNotice = TaskEventNotice(item: item.markedRead, reason: failure.reason,
-                                                    hostName: failure.hostName)
-            model.taskEventsExpanded = true
-            showList?()
+        // Not tied to an open popover: the line goes into the one opened now.
+        if let failure {
+            if TaskEventListVisibility.isShown(in: defaults), let item = listed ?? TaskEventItem.items(from: [event]).first {
+                model.taskEventNotice = TaskEventNotice(item: item.markedRead, reason: failure.reason,
+                                                        hostName: failure.hostName)
+                model.taskEventsExpanded = true
+                showList?()
+            }
+        } else {
+            model.taskEventNotice = nil
         }
         if !ids.isEmpty { await manager.markEventsRead(ids: ids) }
         return true
@@ -188,20 +198,26 @@ final class TaskEventFeed {
     /// when the pointer first reaches a row of the session, once per session
     /// while the popover is open. It only looks; the click looks again.
     func preview(_ item: TaskEventItem) async {
+        let generation = model.taskEventsPresentationGeneration
         guard let sessionID = item.sessionID, model.taskEventRoutes[sessionID] == nil,
-              previewing.insert(sessionID).inserted else { return }
-        defer { previewing.remove(sessionID) }
+              previewing[sessionID] != generation else { return }
+        previewing[sessionID] = generation
+        defer { if previewing[sessionID] == generation { previewing[sessionID] = nil } }
         let found = await lookup.processes(sessionID: sessionID, rows: model.activeAgents)
+        guard model.taskEventsPresentationGeneration == generation else { return }
         model.taskEventRoutes[sessionID] = TaskSessionRouting.route(for: found)
     }
 
     /// Brings forward what runs the session: nil when it came forward, else
-    /// why not. The app is activated only here, on the user's click.
-    private func route(sessionID: String?, origin: String) async -> (reason: TaskEventNotice.Reason, hostName: String?)? {
+    /// why not. The app is activated only here, on the user's click. The
+    /// route is kept for the tooltips only while the popover the click came
+    /// from (`generation`) is still the current one.
+    private func route(sessionID: String?, origin: String,
+                       generation: Int) async -> (reason: TaskEventNotice.Reason, hostName: String?)? {
         var found: [TaskSessionProcess] = []
         if let sessionID { found = await lookup.processes(sessionID: sessionID, rows: model.activeAgents) }
         let route = TaskSessionRouting.route(for: found)
-        if let sessionID { model.taskEventRoutes[sessionID] = route }
+        if let sessionID, model.taskEventsPresentationGeneration == generation { model.taskEventRoutes[sessionID] = route }
         let failure: (reason: TaskEventNotice.Reason, hostName: String?)?
         switch route {
         case let .terminalTab(process):
