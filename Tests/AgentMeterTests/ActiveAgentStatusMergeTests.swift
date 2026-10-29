@@ -67,6 +67,19 @@ final class ActiveAgentStatusMergeTests: XCTestCase {
         XCTAssertEqual(row.activityText, "working now")
     }
 
+    func testARegistryStateWithoutAStampInventsNoTime() {
+        // The reader treats the stamp as optional. Without it the row's age is
+        // the transcript's, not a fresh "now" that would also list the row and
+        // sort it first.
+        let row = attach(agent(transcriptAge: 300), registry: [entry(.idle, at: nil)])
+
+        XCTAssertEqual(row.status, .idle)
+        XCTAssertEqual(row.statusSource, .registry)
+        XCTAssertNil(row.statusUpdatedAt)
+        XCTAssertEqual(row.lastActivityAt, now.addingTimeInterval(-300))
+        XCTAssertEqual(row.activityText, "idle · 5m ago")
+    }
+
     func testWaitingWordingComesFromKnownRegistryValuesOnly() {
         func row(_ waitingFor: String?) -> ActiveAgent {
             attach(agent(), registry: [entry(.waiting, at: now, waitingFor: waitingFor)])
@@ -85,9 +98,9 @@ final class ActiveAgentStatusMergeTests: XCTestCase {
         XCTAssertEqual(row(nil).activityText, "waiting")
         XCTAssertEqual(row("").activityText, "waiting")
         XCTAssertTrue(ActiveAgentTooltip.text(for: row("permission prompt"))
-            .hasPrefix("Waiting for permission, click to jump to this session"))
+            .contains("\nWaiting for permission · Last activity"))
         XCTAssertTrue(ActiveAgentTooltip.text(for: unknown)
-            .hasPrefix("Waiting, click to jump to this session"))
+            .contains("\nWaiting · Last activity"))
         // The reason belongs to the waiting state alone.
         XCTAssertNil(attach(agent(), registry: [entry(.busy, at: now, waitingFor: "permission prompt")]).waitingReason)
     }
@@ -105,7 +118,9 @@ final class ActiveAgentStatusMergeTests: XCTestCase {
 
         XCTAssertEqual(row.status, .idle)
         XCTAssertEqual(row.statusSource, .registry)
-        XCTAssertEqual(row.activityText, "idle · 30s ago")
+        // The interrupt is the last sign of life, newer than the transcript's
+        // 30 s: the age the row shows is the one the listing and the order use.
+        XCTAssertEqual(row.activityText, "idle · 0s ago")
     }
 
     func testAnApprovedPromptReadsWorkingWhileTheToolRuns() {

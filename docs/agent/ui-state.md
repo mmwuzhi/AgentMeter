@@ -331,14 +331,17 @@ usage presentation, cached state, or Claude live-session integration.
   `ActiveAgent.idleListingWindow` (24 h): `ActiveAgent.isListed`, applied by
   `ActiveAgentListing` where `ProviderSection` draws the list, for every
   provider. Rows come from live processes only (`ps`; a dead PID drops out on
-  the next tick and the registry holds only live ones), and a Claude Code panel
+  the next tick, and a registry file only ever attaches to a process alive now,
+  guarded against PID reuse), and a Claude Code panel
   keeps its process until the panel is closed. Age
   alone never hides a row and `idle` alone never counts as ended: the registry
   vouches for `busy`/`waiting` whatever the date (a long run with background
   agents keeps its old stamp), a hook-only `working`/`waiting` is trusted only
   while it is itself within the window (an interrupt fires no `Stop`), and the
   clock is the newer of the state's last change and the transcript's last
-  write, never the process's start. A row with no dated evidence stays, a
+  write (or a subagent's), never the process's start. Where a process has done
+  nothing yet, the registry's stamp is its registration, so a freshly respawned
+  panel is listed for the first 24 h. A row with no dated evidence stays, a
   running descendant keeps its ancestors' rows, and the section says "N idle
   sessions hidden". Only the drawn list is filtered: `AppViewModel.activeAgents`
   keeps every live process, which task-notification routing, session titles and
@@ -346,6 +349,43 @@ usage presentation, cached state, or Claude live-session integration.
   transcript moves. Nothing is deleted, killed or unregistered, spend and
   history do not read these rows, and `--resume` starts a new process whose
   fresh registry stamp lists it.
+- One time stands behind a session's age: `ActiveAgent.lastActivityAt`, the
+  newest of the state's last change, the transcript's last write and its
+  subagents' (they work while the main transcript is quiet). The row's
+  "idle · 8d ago", the listing (`isListed`), the order and the tooltip all read
+  it, and none invents one: a registry state without a stamp stays undated
+  (`resolveStatus` does not fill in "now"), an undated session shows no age,
+  sorts last among the idle and the tooltip leaves "Last activity" out. A
+  failed turn's own row text ("last turn failed · 12h ago") keeps the failure's
+  time, which is what it says. A count of background tasks from the last `Stop`
+  is not a sign of life.
+- Order (`ActiveAgentGrouping.OrderKey`, one comparator for processes, nodes
+  and groups): error, then waiting, then working, then idle (and undated)
+  sessions newest activity first, then provider, process age (older first), PID.
+  The activity time orders only the idle ones: a working session's transcript is
+  written to constantly, and ordering by it swapped running sessions on every
+  refresh; they keep the stable process-age order. A node is as recent and as
+  urgent as its newest, most urgent process, a group as its newest node, so a
+  tree is ordered as one and never taken apart. Before this the order was the
+  process age alone, which interleaved sessions opened days ago and idle since
+  with ones that had just finished. Clicking a row acts on that row's own
+  process, so the order cannot change where a click goes.
+- Counts are listed sessions (processes, child processes included), at every
+  level: the header's `Sessions N` is `ActiveAgentGrouping.sessionCount`, equal
+  to the sum of the groups' `N` plus the flat rows; a group's `N` is its listed
+  parents and children. Hidden sessions are in none of them; "N idle sessions
+  hidden" is the other half, so shown plus hidden is every live session once.
+- A session row's tooltip (`ActiveAgentTooltip.text`) is plain `.help` text in
+  three blocks separated by a blank line: the full name (the title, else the
+  project) with "Idle · Last activity: 8d ago (Oct 21, 11:55 AM)" and the
+  pending-background-work line; then project and branch, model and effort in
+  full, the subagent share; then "PID #… · Session <full id>" and what a click
+  does. The exact moment joins once the relative age is an hour or more, in
+  the user's own locale and clock style, with the date only for earlier days
+  and the year only across a year boundary. It is provider text throughout:
+  the title is stripped and capped at 240 characters (the row's 80 lifted), the
+  model is stripped and capped, and the session id is printed only when it is
+  fit to be a file name (`ActiveAgentService.isSafeSessionFilename`).
 - Session groups start collapsed behind a summary (count · top status ·
   aggregated usage). Groups and subagent disclosures are automatic until the
   user toggles them: expanded exactly while waiting/error — surfacing sessions
@@ -365,8 +405,8 @@ usage presentation, cached state, or Claude live-session integration.
   keeps the parent `working` while background tasks run) and never counts in
   `agentCount`, which stays a process count; the "N subagents" label counts
   both kinds. Title, agent type, model and effort are provider text and go
-  through `SessionLabel` / `ModelLabel`. The parent's tooltip ends with
-  "incl. N subagents (tokens · $cost of the total)" over every subagent the
+  through `SessionLabel` / `ModelLabel`. The parent's tooltip has a line
+  "Includes N subagents (tokens · $cost of the total)" over every subagent the
   session ran, listed or not.
 
 ## Task notifications in the menu
@@ -757,7 +797,7 @@ usage presentation, cached state, or Claude live-session integration.
   an expanded group header and for a flat group (one session, no child
   processes). The flat path once drew a bare `ActiveAgentRow`, so a project
   with a single session never showed its subagents at all and the tooltip's
-  "incl. N subagents" was the only trace. The disclosure label counts the rows
+  "Includes N subagents" was the only trace. The disclosure label counts the rows
   and how many are still running ("3 subagents · 2 working"); the rows behind
   it stay collapsed unless a child process needs the user, as before. The
   tooltip brackets the subagent share to clarify that it is already included in the session total.

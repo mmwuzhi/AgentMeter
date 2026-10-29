@@ -238,7 +238,7 @@ struct ActiveAgentsSection: View {
     var hiddenNote: String? = nil
 
     private var groups: [ActiveAgentGroup] { ActiveAgentGrouping.group(agents) }
-    private var totalCount: Int { groups.reduce(0) { $0 + $1.agentCount } }
+    private var totalCount: Int { ActiveAgentGrouping.sessionCount(groups) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -477,48 +477,95 @@ private struct ActiveAgentRow: View {
 }
 
 enum ActiveAgentTooltip {
-    static func text(for agent: ActiveAgent) -> String {
-        let action = switch agent.displayStatus {
-        case .waiting: "\(agent.waitingReason?.tooltipLead ?? (agent.statusSource == .registry ? "Waiting" : "Waiting for your input")), click to jump to this session"
-        case .error: "This session needs attention, click to jump to it"
-        case .working: "Active, click to jump to this session"
-        case .idle where agent.hasStaleError: "Last turn failed, click to jump to this session"
-        case .idle: "Idle, click to jump to this session"
-        case nil: "Open, click to jump to this session"
-        }
-        var lines = [action]
+    /// Hover text of a session row, in three blocks separated by a blank line:
+    /// what it is and what it is doing, its details, and the technical
+    /// identity with the click's effect. What the row truncates is here — the
+    /// name (to a larger cap) and the last activity (`ActiveAgent.lastActivityAt`,
+    /// the same moment the listing and the order use; left out when unknown).
+    static func text(
+        for agent: ActiveAgent,
+        locale: Locale = .autoupdatingCurrent,
+        timeZone: TimeZone = .autoupdatingCurrent
+    ) -> String {
+        let session = agent.session
+        let title = SessionLabel.fullTitle(session?.title)
+
+        var head = [title ?? agent.displayTitle]
+        head.append(stateLine(for: agent, locale: locale, timeZone: timeZone))
         // The gray row's "idle · 2 subagents" is the count the last `Stop`
         // reported; the tooltip says what the count is a count of.
         if agent.displayStatus == .idle, let pending = agent.backgroundTaskText {
-            lines.append("The last turn ended with \(pending) still in flight")
+            head.append("The last turn ended with \(pending) still in flight")
         }
+
+        var details: [String] = []
+        // The row names the project and shows the title (or the branch) beside
+        // it; with a title above, the project and the branch are still here.
+        var place: [String] = []
+        if title != nil, let session { place.append("Project \(session.displayProject)") }
+        // The row shows the title in the branch's place when it has one
+        // (`ActiveAgent.titleDetail`), so the branch has to stay reachable here.
+        if let branch = session?.displayBranch { place.append("Branch \(branch)") }
+        if !place.isEmpty { details.append(place.joined(separator: " · ")) }
+        // The row shortens the model; here it is whole, which is how a snapshot
+        // date is checked.
+        var how: [String] = []
+        if let model = ModelLabel.full(session?.model) { how.append("Model \(model)") }
+        if let effort = SessionLabel.effort(session?.effort) { how.append("Effort \(effort)") }
+        if !how.isEmpty { details.append(how.joined(separator: " · ")) }
+        // The row's total already includes the subagents; this says how much of
+        // it they are, over every subagent the session ever ran.
+        if let subagents = session?.subagentUsageText { details.append(subagents) }
+
         var identity = ["PID #\(agent.pid)"]
-        if let session = agent.session {
-            // The row truncates a long title in the middle; the tooltip is
-            // where the whole of it can be read.
-            if let title = SessionLabel.title(session.title) { lines.append(title) }
-            identity.append("Session \(session.shortID)")
-            // The row shows the title in the branch's place when it has one
-            // (`ActiveAgent.titleDetail`), so the branch has to stay reachable here.
-            if let branch = session.displayBranch {
-                identity.append(branch)
-            }
-            // Full id here: the row shows the shortened form, and a snapshot
-            // date is exactly what someone hovering a session wants to confirm.
-            if let model = session.model, ModelLabel.short(model) != nil {
-                identity.append(model)
-            }
-            if let effort = SessionLabel.effort(session.effort) {
-                identity.append(effort)
-            }
-            // The row's total already includes the subagents; this says how
-            // much of it they are, over every subagent the session ever ran.
-            if let subagents = session.subagentUsageText {
-                identity.append(subagents)
-            }
+        // Whole, for `--resume`; provider text, so only an id fit to be a file name.
+        if let session, ActiveAgentService.isSafeSessionFilename(session.id) { identity.append("Session \(session.id)") }
+        let tail = [identity.joined(separator: " · "), "Click to jump to this session"]
+
+        return [head, details, tail]
+            .filter { !$0.isEmpty }
+            .map { $0.joined(separator: "\n") }
+            .joined(separator: "\n\n")
+    }
+
+    /// "Idle · Last activity: 8d ago (Oct 21, 2:05 PM)". The exact moment joins
+    /// once the relative age is an hour or more, where "8d" stops saying when.
+    static func stateLine(for agent: ActiveAgent, locale: Locale, timeZone: TimeZone) -> String {
+        let state = switch agent.displayStatus {
+        case .waiting: agent.waitingReason?.tooltipLead ?? (agent.statusSource == .registry ? "Waiting" : "Waiting for your input")
+        case .error: "Needs attention"
+        case .working: "Working"
+        case .idle where agent.hasStaleError: "Last turn failed"
+        case .idle: "Idle"
+        case nil: "Open"
         }
-        lines.append(identity.joined(separator: " · "))
-        return lines.joined(separator: "\n")
+        guard let last = agent.lastActivityAt else { return state }
+        var text = "\(state) · Last activity: \(ActiveAgent.relativeAge(from: last, to: agent.observedAt))"
+        if agent.observedAt.timeIntervalSince(last) >= 3_600 {
+            text += " (\(exactTime(last, relativeTo: agent.observedAt, locale: locale, timeZone: timeZone)))"
+        }
+        return text
+    }
+
+    /// Time of day for today, plus the date for earlier days, plus the year
+    /// across a year boundary; in the user's own order and clock style.
+    static func exactTime(_ date: Date, relativeTo now: Date, locale: Locale, timeZone: TimeZone) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let template: String
+        if calendar.isDate(date, inSameDayAs: now) {
+            template = "jm"
+        } else if calendar.component(.year, from: date) == calendar.component(.year, from: now) {
+            template = "MMMd jm"
+        } else {
+            template = "yMMMd jm"
+        }
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.calendar = calendar
+        formatter.timeZone = timeZone
+        formatter.setLocalizedDateFormatFromTemplate(template)
+        return formatter.string(from: date)
     }
 
     /// Hover text of a subagent row: the whole description (the row truncates

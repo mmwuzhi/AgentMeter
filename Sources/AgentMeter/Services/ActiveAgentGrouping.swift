@@ -30,8 +30,11 @@ struct ActiveAgentListing: Equatable, Sendable {
         return "\(hiddenCount) idle \(hiddenCount == 1 ? "session" : "sessions") hidden"
     }
 
-    static let hiddenHelp = "Sessions with nothing running and no activity for over 24 hours are not listed. "
-        + "They are still open, and show up again as soon as they do something."
+    static var hiddenHelp: String {
+        let hours = Int(ActiveAgent.idleListingWindow / 3_600)
+        return "Sessions with nothing running and no activity for over \(hours) hours are not listed. "
+            + "They are still open, and show up again as soon as they do something."
+    }
 }
 
 struct ActiveAgentNode: Identifiable, Sendable, Equatable {
@@ -50,6 +53,11 @@ struct ActiveAgentNode: Identifiable, Sendable, Equatable {
     }
 
     var statusRank: Int { topStatus?.priority ?? -1 }
+
+    /// The newest sign of life anywhere in the node's process tree.
+    var lastActivityAt: Date? {
+        ([agent] + children).compactMap(\.lastActivityAt).max()
+    }
 }
 
 struct ActiveAgentGroup: Identifiable, Sendable, Equatable {
@@ -65,6 +73,9 @@ struct ActiveAgentGroup: Identifiable, Sendable, Equatable {
         nodes.compactMap(\.topStatus).max { $0.priority < $1.priority }
     }
     var statusRank: Int { topStatus?.priority ?? -1 }
+
+    /// The newest sign of life of any session in the group.
+    var lastActivityAt: Date? { nodes.compactMap(\.lastActivityAt).max() }
 
     var allAgents: [ActiveAgent] { nodes.flatMap { [$0.agent] + $0.children } }
 
@@ -204,28 +215,71 @@ enum ActiveAgentGrouping {
             .map { group in
                 var group = group
                 group.nodes.sort { lhs, rhs in
-                    if lhs.statusRank != rhs.statusRank { return lhs.statusRank > rhs.statusRank }
-                    return agentOrdersBefore(lhs.agent, rhs.agent)
+                    OrderKey(node: lhs).ordersBefore(OrderKey(node: rhs))
                 }
                 return group
             }
-            .sorted { lhs, rhs in
-                if lhs.statusRank != rhs.statusRank { return lhs.statusRank > rhs.statusRank }
-                if lhs.provider.rawValue != rhs.provider.rawValue {
-                    return lhs.provider.rawValue < rhs.provider.rawValue
-                }
-                let lhsElapsed = lhs.nodes.first?.agent.elapsedSeconds ?? 0
-                let rhsElapsed = rhs.nodes.first?.agent.elapsedSeconds ?? 0
-                if lhsElapsed != rhsElapsed { return lhsElapsed > rhsElapsed }
-                return lhs.id < rhs.id
-            }
+            .sorted { OrderKey(group: $0).ordersBefore(OrderKey(group: $1)) }
     }
 
+    /// The number of sessions (processes) the groups list, children included:
+    /// the header's figure, equal to the sum of the groups' own counts and the
+    /// flat rows, and never more than what was handed in.
+    static func sessionCount(_ groups: [ActiveAgentGroup]) -> Int {
+        groups.reduce(0) { $0 + $1.agentCount }
+    }
+
+    /// How rows, nodes and groups are ordered, in one place so the three levels
+    /// cannot disagree. Needs the user first (error, waiting), then working, then
+    /// idle ones newest activity first. The activity time only orders idle
+    /// (and unknown) ones: a working session's transcript is written to all the
+    /// time, and ordering by it would shuffle running sessions on every
+    /// refresh. Equal keys fall through to the process age (older first, as it
+    /// always was), then to the id, so the order never depends on the order the
+    /// rows arrived in.
+    private struct OrderKey {
+        let rank: Int
+        let activity: Date?
+        let provider: String
+        let elapsed: TimeInterval
+        let tiebreak: String
+
+        init(agent: ActiveAgent) {
+            rank = agent.displayStatus?.priority ?? -1
+            activity = agent.lastActivityAt
+            provider = agent.provider.rawValue
+            elapsed = agent.elapsedSeconds
+            tiebreak = String(format: "%010d", agent.pid)
+        }
+
+        init(node: ActiveAgentNode) {
+            rank = node.statusRank
+            activity = node.lastActivityAt
+            provider = node.agent.provider.rawValue
+            elapsed = node.agent.elapsedSeconds
+            tiebreak = String(format: "%010d", node.agent.pid)
+        }
+
+        init(group: ActiveAgentGroup) {
+            rank = group.statusRank
+            activity = group.lastActivityAt
+            provider = group.provider.rawValue
+            elapsed = group.nodes.first?.agent.elapsedSeconds ?? 0
+            tiebreak = group.id
+        }
+
+        func ordersBefore(_ other: OrderKey) -> Bool {
+            if rank != other.rank { return rank > other.rank }
+            if rank <= AgentStatusState.idle.priority {
+                let mine = activity ?? .distantPast, theirs = other.activity ?? .distantPast
+                if mine != theirs { return mine > theirs }
+            }
+            if provider != other.provider { return provider < other.provider }
+            if elapsed != other.elapsed { return elapsed > other.elapsed }
+            return tiebreak < other.tiebreak
+        }
+    }
     private static func agentOrdersBefore(_ lhs: ActiveAgent, _ rhs: ActiveAgent) -> Bool {
-        let lhsRank = lhs.displayStatus?.priority ?? -1
-        let rhsRank = rhs.displayStatus?.priority ?? -1
-        if lhsRank != rhsRank { return lhsRank > rhsRank }
-        if lhs.elapsedSeconds != rhs.elapsedSeconds { return lhs.elapsedSeconds > rhs.elapsedSeconds }
-        return lhs.pid < rhs.pid
+        OrderKey(agent: lhs).ordersBefore(OrderKey(agent: rhs))
     }
 }

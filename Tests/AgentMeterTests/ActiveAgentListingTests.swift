@@ -20,7 +20,9 @@ final class ActiveAgentListingTests: XCTestCase {
         stateAge: TimeInterval? = nil,
         transcriptAge: TimeInterval? = nil,
         parent: Int? = nil,
-        sessionID: String? = nil
+        sessionID: String? = nil,
+        pending: Int? = nil,
+        subagentAge: TimeInterval? = nil
     ) -> ActiveAgent {
         let session = transcriptAge.map {
             ActiveAgentSession(
@@ -29,7 +31,11 @@ final class ActiveAgentListingTests: XCTestCase {
                 projectName: nil,
                 branch: nil,
                 lastUpdatedAt: observedAt.addingTimeInterval(-$0),
-                source: "test"
+                source: "test",
+                subagents: subagentAge.map { age in
+                    [ActiveSubagent(id: "sub", logPath: "/t/agent-sub.jsonl",
+                                    lastUpdatedAt: observedAt.addingTimeInterval(-age), observedAt: observedAt)]
+                } ?? []
             )
         }
         return ActiveAgent(
@@ -42,6 +48,7 @@ final class ActiveAgentListingTests: XCTestCase {
             session: session,
             parentAgentPID: parent,
             status: status,
+            pendingBackgroundTasks: pending,
             statusUpdatedAt: stateAge.map { observedAt.addingTimeInterval(-$0) },
             statusSource: status == nil ? nil : source
         )
@@ -78,6 +85,29 @@ final class ActiveAgentListingTests: XCTestCase {
     func testTheProcessAgeIsNotWhatDecides() {
         // Every fixture process is 30 days old; only activity counts.
         XCTAssertTrue(agent(1, status: .idle, stateAge: 60, transcriptAge: 60).isListed)
+    }
+
+    func testARegistryStateWithoutAStampLeavesTheTranscriptToDecide() {
+        XCTAssertTrue(agent(1, status: .idle, stateAge: nil, transcriptAge: hour).isListed)
+        XCTAssertFalse(agent(1, status: .idle, stateAge: nil, transcriptAge: 3 * 86_400).isListed)
+    }
+
+    func testASubagentStillWritingKeepsTheSession() {
+        // The main transcript and the state are days old; a subagent wrote a
+        // minute ago, which is the session doing something.
+        let row = agent(1, status: .idle, stateAge: 5 * 86_400, transcriptAge: 5 * 86_400, subagentAge: 60)
+
+        XCTAssertEqual(row.lastActivityAt, observedAt.addingTimeInterval(-60))
+        XCTAssertTrue(row.isListed)
+        XCTAssertFalse(agent(1, status: .idle, stateAge: 5 * 86_400, transcriptAge: 5 * 86_400,
+                             subagentAge: 4 * 86_400).isListed)
+    }
+
+    func testAnOldCountOfBackgroundTasksDoesNotKeepASession() {
+        // "idle · 2 subagents" is the count the last `Stop` reported, not a
+        // reading of what runs now; a day later it says nothing.
+        XCTAssertFalse(agent(1, status: .idle, stateAge: 5 * 86_400, transcriptAge: 5 * 86_400, pending: 2).isListed)
+        XCTAssertTrue(agent(1, status: .idle, stateAge: 600, transcriptAge: 600, pending: 2).isListed)
     }
 
     func testWithoutADateTheRowStays() {
@@ -237,9 +267,9 @@ final class ActiveAgentListingTests: XCTestCase {
     // MARK: Hiding is only about the list
 
     func testHiddenRowsStayInTheModelForRoutingAndTitles() {
-        // The list is filtered where it is drawn. What `fetch()` hands the model
-        // still holds every live process: a task notification's click and the
-        // titles of live sessions read those rows.
+        // The list is filtered where it is drawn, not in `presentable`: a task
+        // notification's click and the titles of live sessions read the rows
+        // `fetch()` hands the model, hidden ones included.
         let old = 5 * 86_400.0
         let rows = [agent(1, status: .idle, stateAge: old, transcriptAge: old)]
 
@@ -249,20 +279,37 @@ final class ActiveAgentListingTests: XCTestCase {
         XCTAssertEqual(ActiveAgentListing(model).agents, [])
     }
 
-    func testAHiddenSessionComesBackTheMomentItDoesSomething() {
+    func testAHiddenSessionComesBackThroughTheStatusTick() {
+        // The popover's 2 s tick re-reads the registry and re-attaches it to the
+        // rows already built (`refreshStatuses`), hidden ones included.
         let old = 5 * 86_400.0
-        var row = agent(1, status: .idle, stateAge: old, transcriptAge: old)
+        let row = agent(1, status: .idle, stateAge: old, transcriptAge: old)
         XCTAssertFalse(row.isListed)
 
-        // What the popover's status tick attaches when the registry reports it busy.
-        row.status = .working
-        row.statusSource = .registry
-        row.statusUpdatedAt = observedAt
-        XCTAssertTrue(row.isListed)
+        func registry(_ status: ClaudeSessionRegistryEntry.Status) -> [Int: ClaudeSessionRegistryEntry] {
+            [1: ClaudeSessionRegistryEntry(
+                pid: 1, sessionID: "session-1", cwd: "/work/1",
+                startedAt: observedAt.addingTimeInterval(-row.elapsedSeconds + 4),
+                status: status, waitingFor: nil, statusUpdatedAt: observedAt)]
+        }
 
-        // Or a turn that ended: idle again, but with a fresh stamp.
-        row.status = .idle
-        XCTAssertTrue(row.isListed)
+        // It starts a turn: busy, vouched for by the registry.
+        let busy = ActiveAgentService.refreshStatuses([row], payloads: [], registry: registry(.busy), isAlive: { _ in true })
+        XCTAssertEqual(busy.first?.status, .working)
+        XCTAssertEqual(busy.first?.isListed, true)
+
+        // The turn ends: idle again, but stamped just now.
+        let idle = ActiveAgentService.refreshStatuses([row], payloads: [], registry: registry(.idle), isAlive: { _ in true })
+        XCTAssertEqual(idle.first?.status, .idle)
+        XCTAssertEqual(idle.first?.isListed, true)
+
+        // The process is gone: the row goes with it.
+        XCTAssertEqual(ActiveAgentService.refreshStatuses([row], payloads: [], registry: registry(.busy),
+                                                          isAlive: { _ in false }).count, 0)
+    }
+
+    func testTheHiddenNoteStatesTheWindowItUses() {
+        XCTAssertTrue(ActiveAgentListing.hiddenHelp.contains("\(Int(ActiveAgent.idleListingWindow / 3_600)) hours"))
     }
 
     func testAResumedSessionIsANewProcessAndIsListedWhileTheOldOneIsNot() {

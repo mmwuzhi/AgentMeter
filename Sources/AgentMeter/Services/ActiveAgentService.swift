@@ -138,7 +138,7 @@ enum ActiveAgentService {
                 ? ClaudeSessionRegistry.entry(
                     for: agent.pid, processStartedAt: startedAt, observedAt: agent.observedAt, in: registry)
                 : nil
-            guard let resolved = resolveStatus(payload: payload, registry: entry, now: agent.observedAt) else {
+            guard let resolved = resolveStatus(payload: payload, registry: entry) else {
                 return agent
             }
             var agent = agent
@@ -179,8 +179,7 @@ enum ActiveAgentService {
     /// payload is the state, as before the registry was read.
     static func resolveStatus(
         payload: AgentStatusPayload?,
-        registry entry: ClaudeSessionRegistryEntry?,
-        now: Date
+        registry entry: ClaudeSessionRegistryEntry?
     ) -> ResolvedStatus? {
         if let entry, let state = entry.agentState {
             if let payload, payload.state == .error, state == .idle,
@@ -190,7 +189,7 @@ enum ActiveAgentService {
             }
             return ResolvedStatus(
                 state: state,
-                updatedAt: entry.statusUpdatedAt ?? now,
+                updatedAt: entry.statusUpdatedAt,
                 source: .registry,
                 waitingReason: state == .waiting ? ActiveAgentWaitingReason(registryValue: entry.waitingFor) : nil
             )
@@ -865,7 +864,7 @@ enum ActiveAgentService {
         )
     }
 
-    private static func isSafeSessionFilename(_ id: String) -> Bool {
+    static func isSafeSessionFilename(_ id: String) -> Bool {
         !id.isEmpty && id.count <= 128 && id.unicodeScalars.allSatisfy {
             CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_"
         }

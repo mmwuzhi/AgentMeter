@@ -242,7 +242,7 @@ final class ActiveAgentGroupingTests: XCTestCase {
         let group = ActiveAgentGrouping.group([parent, agent(pid: 2, cwd: "/Users/me/alpha", status: .idle)])[0]
 
         XCTAssertEqual(group.collapsedSummary, "2 · 1 working · 2.5M · $1.20")
-        XCTAssertEqual(parent.session?.subagentUsageText, "incl. 2 subagents (1M · $0.50 of the total)")
+        XCTAssertEqual(parent.session?.subagentUsageText, "Includes 2 subagents (1M · $0.50 of the total)")
     }
 
     func testChildRowLabelCountsTheRowsAndHowManyStillRun() {

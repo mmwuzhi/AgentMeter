@@ -208,12 +208,18 @@ enum ModelLabel {
     private static let placeholders: Set<String> = ["default", "<synthetic>", "unknown"]
     private static let maxLength = 40
 
-    static func short(_ raw: String?) -> String? {
+    /// The id as the provider wrote it, for the tooltip: stripped of control
+    /// characters, capped, nil for a placeholder.
+    static func full(_ raw: String?) -> String? {
         guard let raw else { return nil }
-        var id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        id = String(id.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+        let id = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars
+            .filter { !CharacterSet.controlCharacters.contains($0) })
         guard !id.isEmpty, !placeholders.contains(id.lowercased()) else { return nil }
-        if id.count > maxLength { id = String(id.prefix(maxLength)) }
+        return String(id.prefix(maxLength))
+    }
+
+    static func short(_ raw: String?) -> String? {
+        guard var id = full(raw) else { return nil }
         // Release dates distinguish snapshots, not models; the row has no space.
         if let date = id.range(of: "-[0-9]{8}$", options: .regularExpression) {
             id.removeSubrange(date)
@@ -243,6 +249,9 @@ enum ModelLabel {
 enum SessionLabel {
     private static let maxTitleLength = 80
     private static let maxEffortLength = 16
+    /// The tooltip's cap for a title: the row's 80 characters lifted, so what
+    /// the row cuts in the middle can be read, but still bounded.
+    private static let maxFullTitleLength = 240
     /// Scalars allowed per character before the scalar cap bites. A ZWJ emoji
     /// sequence (family, profession) runs to seven; nothing legitimate needs
     /// more than a handful of combining marks per base.
@@ -250,6 +259,10 @@ enum SessionLabel {
 
     static func title(_ raw: String?) -> String? {
         singleLine(raw, maxLength: maxTitleLength)
+    }
+
+    static func fullTitle(_ raw: String?) -> String? {
+        singleLine(raw, maxLength: maxFullTitleLength)
     }
 
     static func effort(_ raw: String?) -> String? {
@@ -675,19 +688,15 @@ struct ActiveAgentSession: Codable, Sendable, Equatable {
     /// at grouping time (`ActiveSubagent.isListed`). Claude only.
     var subagents: [ActiveSubagent] = []
 
-    var shortID: String {
-        String(id.prefix(8))
-    }
-
-    /// "incl. 2 subagents (1.2M · $3.45 of the total)" for the tooltip: how
+    /// "Includes 2 subagents (1.2M · $3.45 of the total)" for the tooltip: how
     /// much of the session's total the subagents account for. The share is
-    /// bracketed and says so, because "incl. 7 subagents · 5.5M" beside the session total
+    /// bracketed and says so, because "Includes 2 subagents · 1.2M" beside the session total
     /// can otherwise look like additional usage.
     /// Nil without any.
     var subagentUsageText: String? {
         guard !subagents.isEmpty else { return nil }
         let count = subagents.count
-        var text = "incl. \(count) \(count == 1 ? "subagent" : "subagents")"
+        var text = "Includes \(count) \(count == 1 ? "subagent" : "subagents")"
         let tokens = subagents.compactMap(\.tokenCount).reduce(0, +)
         if tokens > 0 {
             let cost = subagents.compactMap(\.estimatedCostUSD).reduce(0, +)
@@ -934,8 +943,8 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
             // place, which would otherwise read as the session having been
             // quiet all that time.
             if let pending = backgroundTaskText { return "idle · \(pending)" }
-            guard let lastUpdatedAt = session?.lastUpdatedAt else { return "idle" }
-            return "idle · \(relativeAge(since: lastUpdatedAt))"
+            guard let lastActivityAt else { return "idle" }
+            return "idle · \(relativeAge(since: lastActivityAt))"
         case nil:
             guard let lastUpdatedAt = session?.lastUpdatedAt else { return "open now" }
             if hasRecentSessionActivity { return "active now" }
@@ -957,10 +966,12 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     static let idleListingWindow: TimeInterval = 24 * 3_600
 
     /// The newest sign of life the row carries: the last change of its state
-    /// (the registry's or the hook's) or the last write to its transcript.
-    /// Nil when nothing it carries is dated.
+    /// (the registry's or the hook's), the last write to its transcript, or to
+    /// a subagent's (they work while the main transcript is quiet). Nil when
+    /// nothing it carries is dated.
     var lastActivityAt: Date? {
-        [statusUpdatedAt, session?.lastUpdatedAt].compactMap { $0 }.max()
+        let subagents = session?.subagents.map(\.lastUpdatedAt).max()
+        return [statusUpdatedAt, session?.lastUpdatedAt, subagents].compactMap { $0 }.max()
     }
 
     /// Whether the popover lists the row: it is running, or it did something
