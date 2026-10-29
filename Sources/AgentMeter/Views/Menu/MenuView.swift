@@ -524,13 +524,17 @@ enum ActiveAgentTooltip {
         var identity = ["PID #\(agent.pid)"]
         // Whole, for `--resume`; provider text, so only an id fit to be a file name.
         if let session, ActiveAgentService.isSafeSessionFilename(session.id) { identity.append("Session \(session.id)") }
-        let tail = [identity.joined(separator: " · "), "Click to jump to this session"]
+        // What `AgentAppActivator.focus` really does: a terminal's own tab where
+        // it can pick one, otherwise only the app; it never picks an editor window.
+        let tail = [identity.joined(separator: " · "), ActiveAgentTooltip.clickHint]
 
         return [head, details, tail]
             .filter { !$0.isEmpty }
             .map { $0.joined(separator: "\n") }
             .joined(separator: "\n\n")
     }
+
+    static let clickHint = "Click to bring its app forward (in iTerm2, Terminal or Ghostty, its tab)"
 
     /// "Idle · Last activity: 8d ago (Oct 21, 2:05 PM)". The exact moment joins
     /// once the relative age is an hour or more, where "8d" stops saying when.
