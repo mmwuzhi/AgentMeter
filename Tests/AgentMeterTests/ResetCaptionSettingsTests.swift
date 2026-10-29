@@ -40,6 +40,22 @@ final class ResetCaptionSettingsTests: XCTestCase {
         XCTAssertNil(MenuBarLayout.nextCountdownChange(in: elements, after: now))
     }
 
+    func testSettingsCallsTheModesPeriodCountdownAndBothOverTheStoredValues() {
+        XCTAssertEqual(ResetCaptionMode.allCases.map(\.title), ["Period", "Countdown", "Both"])
+        XCTAssertEqual(ResetCaptionMode.allCases.map(\.rawValue), ["window", "countdown", "both"])
+    }
+
+    func testTheExamplesAreWhatTheMenuBarDrawsForThatMode() {
+        XCTAssertEqual(ResetCaptionMode.allCases.map(\.example), ["5h", "1h21m", "5h 1h21m"])
+        // The same composition the columns use, so an example cannot drift
+        // from the menu bar.
+        UserDefaults.standard.set("both", forKey: ResetCaptionMode.defaultsKey)
+        let model = claudeModel([window("five_hour", "5-hour", resetsIn: 81 * 60)])
+        MenuBarLayout.save([MenuBarItem(key: "q:claude:five_hour", enabled: true)], for: .claude)
+        XCTAssertEqual(MenuBarLayout.activeSegments(model, slot: .claude, now: now).first?.label,
+                       ResetCaptionMode.both.example)
+    }
+
     func testAnUnrecognisedStoredModeReadsAsWindow() {
         UserDefaults.standard.set("seconds", forKey: ResetCaptionMode.defaultsKey)
 
@@ -101,6 +117,19 @@ final class ResetCaptionSettingsTests: XCTestCase {
         let stored = ResetCaptionColors.encode(["claude:five_hour": "0A0B0C"])
         XCTAssertEqual(ResetCaptionColors.tint(forKey: "claude:five_hour", in: stored),
                        ResetCaptionColors.tint(hex: "0A0B0C"))
+    }
+
+    func testSettingAColorTouchesOnlyItsWindowAndAutomaticRemovesTheEntry() {
+        let one = ResetCaptionColors.setting("FF0000", forKey: "claude:seven_day", in: "")
+        let two = ResetCaptionColors.setting("0000FF", forKey: "claude:seven_day_fable", in: one)
+
+        XCTAssertEqual(ResetCaptionColors.decode(two),
+                       ["claude:seven_day": "FF0000", "claude:seven_day_fable": "0000FF"])
+        let back = ResetCaptionColors.setting(nil, forKey: "claude:seven_day", in: two)
+        XCTAssertEqual(back, #"{"claude:seven_day_fable":"0000FF"}"#, "the stored format is unchanged")
+        XCTAssertNil(ResetCaptionColors.tint(forKey: "claude:seven_day", in: back), "Automatic again")
+        XCTAssertEqual(ResetCaptionColors.setting(nil, forKey: "claude:seven_day_fable", in: back), "",
+                       "nothing chosen is stored as empty, as before")
     }
 
     func testEachWeeklyTakesItsOwnColor() {

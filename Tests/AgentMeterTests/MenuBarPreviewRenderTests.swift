@@ -1,15 +1,18 @@
 @testable import AgentMeter
 import AppKit
+import SwiftUI
 import XCTest
 
-/// Renders menu-bar columns to PNG files for a visual check of their
-/// alignment, since this environment cannot capture the menu bar. Skipped
-/// unless `AGENTMETER_RENDER_DIR` names an output directory:
+/// Renders menu-bar columns, the Settings field strips and the Claude Quota
+/// Labels section to PNG files for a visual check, since this environment
+/// cannot capture the menu bar or the Settings window. Skipped unless
+/// `AGENTMETER_RENDER_DIR` names an output directory:
 ///
 ///     AGENTMETER_RENDER_DIR=/path/to/dir swift test --filter MenuBarPreviewRenderTests
 ///
-/// Off-screen only; nothing is shown. Thin red lines mark where each column
-/// starts, so a caption, value or gauge that does not start there stands out.
+/// Off-screen only; nothing is shown and no default is written. In the column
+/// renders thin red lines mark where each column starts, so a caption, value
+/// or gauge that does not start there stands out.
 @MainActor
 final class MenuBarPreviewRenderTests: XCTestCase {
     private var outputDirectory: URL!
@@ -109,7 +112,65 @@ final class MenuBarPreviewRenderTests: XCTestCase {
         }
     }
 
+    func testRenderTheClaudeQuotaLabelsSection() throws {
+        let windows = [
+            QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 37, resetsAt: nil),
+            QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 12, resetsAt: nil),
+            QuotaWindow(id: "seven_day_fable", label: "Weekly (Fable)", usedPercent: 40, resetsAt: nil),
+        ]
+        let custom = ResetCaptionColors.encode(["claude:seven_day_fable": "FF8C00"])
+        let cases: [(String, ResetCaptionMode, String)] = [
+            ("period-custom", .window, custom),
+            ("countdown-automatic", .countdown, ""),
+            ("both-custom", .both, custom),
+        ]
+        for (name, mode, colors) in cases {
+            for dark in [false, true] {
+                try render(Form {
+                    ClaudeQuotaLabelSettings(windows: windows, mode: .constant(mode), colors: .constant(colors))
+                }.formStyle(.grouped).frame(width: 460), name: "labels-\(name)", dark: dark)
+            }
+        }
+    }
+
+    /// The whole Menu Bar tab as it opens, to see where the section sits.
+    func testRenderTheMenuBarTab() throws {
+        let model = AppViewModel(snapshot: nil, storedLifetimeSpend: [])
+        model.claude = ProviderState(
+            provider: .claude,
+            quota: QuotaSnapshot(provider: .claude, windows: [
+                QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 37, resetsAt: nil),
+                QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 12, resetsAt: nil),
+            ], source: .oauth, planType: "max", fetchedAt: Date(), note: nil),
+            usage: .empty(.claude))
+        // `SettingsView` itself cannot be hosted here: its Alerts tab reaches
+        // the notification center, which needs an app bundle.
+        for dark in [false, true] {
+            try render(MenuBarSettings(model: model).frame(width: 460, height: 640), name: "settings-menubar-tab",
+                       dark: dark, settle: 0.5)
+        }
+    }
+
     // MARK: - Rendering
+
+    private func render<V: View>(_ view: V, name: String, dark: Bool, settle: TimeInterval = 0.2) throws {
+        let host = NSHostingView(rootView: view.environment(\.colorScheme, dark ? .dark : .light))
+        host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 460, height: 600),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = host.appearance
+        window.backgroundColor = dark ? NSColor(white: 0.16, alpha: 1) : NSColor(white: 0.97, alpha: 1)
+        window.contentView = host
+        RunLoop.main.run(until: Date().addingTimeInterval(settle))
+        let size = host.fittingSize
+        window.setContentSize(size)
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        try write(host, name: "\(name)-\(dark ? "dark" : "light")", scale: 2)
+        window.close()
+    }
 
     /// The content view on a menu-bar-like backdrop, with a guide at the left
     /// edge of every column.

@@ -24,7 +24,7 @@ struct SettingsView: View {
 
 /// iStat-style menu-bar customizer: drag chips between the Visible and Hidden zones
 /// (native AppKit drag with animated reordering, like Ice), plus the captions toggle.
-private struct MenuBarSettings: View {
+struct MenuBarSettings: View {
     let model: AppViewModel
 
     @AppStorage("menuBarShowCaptions") private var showCaptions = true
@@ -32,8 +32,8 @@ private struct MenuBarSettings: View {
     // reach the preview zones' rebuild signature or the chips keep the old fill
     // direction until some other display state changes.
     @AppStorage(QuotaDisplay.defaultsKey) private var quotaShowsUsed = false
-    // Same for the caption mode and the countdown colours: the chips are drawn
-    // from them, so they go into the signature as well.
+    // Edited in the Claude Quota Labels section, and the chips are drawn from
+    // them, so they go into the signature as well.
     @AppStorage(ResetCaptionMode.defaultsKey) private var resetCaptionMode = ResetCaptionMode.window
     @AppStorage(ResetCaptionColors.defaultsKey) private var resetColors = ""
     @State private var selectedSlot: MenuBarSlot = .codex
@@ -46,17 +46,11 @@ private struct MenuBarSettings: View {
         Form {
             Section("Display") {
                 Toggle("Show captions", isOn: $showCaptions)
-                Picker("Claude quota caption", selection: $resetCaptionMode) {
-                    ForEach(ResetCaptionMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Text("Window shows 5h or 7d. Countdown shows the time left until that quota resets. Both shows the two together.")
-                    .font(.caption).foregroundStyle(.secondary)
                 Text("Each visible provider becomes its own menu-bar icon with its own popover and fields.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            ClaudeQuotaLabelSettings(windows: model.claude.quota.windows,
+                                     mode: $resetCaptionMode, colors: $resetColors)
             Section("Provider Fields") {
                 Picker("Provider", selection: $selectedSlot) {
                     ForEach(MenuBarSlot.alphabetical) { slot in
@@ -87,6 +81,209 @@ enum MenuBarPreviewSignature {
     }
 }
 
+/// What a Claude quota column's caption says, and the colour of each quota's
+/// countdown, together: the colours mean nothing without a countdown, so they
+/// sit right under the mode and are hidden in Period mode, the default, where
+/// they would only be clutter. Hiding them stores nothing: a colour chosen
+/// earlier is kept and applies again with Countdown or Both.
+struct ClaudeQuotaLabelSettings: View {
+    /// Claude's quota windows; one colour row each.
+    let windows: [QuotaWindow]
+    @Binding var mode: ResetCaptionMode
+    /// `ResetCaptionColors` JSON, as stored.
+    @Binding var colors: String
+    var panel: CountdownColorPanel = .shared
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Section("Claude Quota Labels") {
+            Picker("Show", selection: $mode) {
+                ForEach(ResetCaptionMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text("Period shows \(ResetCaptionMode.window.example), Countdown the time left until that quota resets (\(ResetCaptionMode.countdown.example)), Both the two together (\(ResetCaptionMode.both.example)).")
+                .font(.caption).foregroundStyle(.secondary)
+            countdownColors
+        }
+        // The panel stops writing when the mode stops showing countdowns or
+        // the Settings window closes (`CountdownColorPanel.edit`), not on
+        // `onDisappear`, which a grouped Form also sends for rows scrolled away.
+        .onChange(of: mode) { _, mode in
+            if mode == .window { panel.stop() }
+        }
+    }
+
+    /// One colour per quota window, so two weeklies can differ. The window's
+    /// identity keys it, so reordering the fields never moves a colour.
+    @ViewBuilder
+    private var countdownColors: some View {
+        let windows = windows.filter { $0.isOneTimeCredit != true }
+        if mode != .window, !windows.isEmpty {
+            ForEach(windows) { window in
+                let key = ResetCaptionColors.key(provider: .claude, windowID: window.id)
+                LabeledContent("\(window.label) countdown color") {
+                    colorControl(key: key, name: window.label)
+                }
+            }
+            Text("Automatic follows the menu bar's own text color, light or dark. A custom color tints only that quota's countdown, never its percentage.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Automatic until a colour is stored: no swatch then, since a swatch of
+    /// the text colour read as black having been chosen. A stored colour shows
+    /// as a swatch that reopens the panel, with a way back to Automatic.
+    @ViewBuilder
+    private func colorControl(key: String, name: String) -> some View {
+        HStack(spacing: 8) {
+            if let tint = ResetCaptionColors.tint(forKey: key, in: colors) {
+                Button {
+                    open(key: key, name: name, from: NSColor(srgbRed: tint.red, green: tint.green,
+                                                            blue: tint.blue, alpha: 1))
+                } label: {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color(.sRGB, red: tint.red, green: tint.green, blue: tint.blue))
+                        .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(.separator))
+                        .frame(width: 34, height: 18)
+                }
+                .buttonStyle(.plain)
+                .help("Change the color of the \(name) countdown")
+                Button("Use Automatic") {
+                    panel.stop(editing: key)
+                    colors = ResetCaptionColors.setting(nil, forKey: key, in: colors)
+                }
+            } else {
+                Text("Automatic").foregroundStyle(.secondary)
+                Button("Custom…") {
+                    // Starts from what Automatic draws in the preview below;
+                    // nothing is stored until a colour is picked in the panel.
+                    open(key: key, name: name, from: colorScheme == .dark ? .white : .textColor)
+                }
+            }
+        }
+    }
+
+    private func open(key: String, name: String, from color: NSColor) {
+        panel.edit(key: key, title: "\(name) Countdown", startingAt: color,
+                   until: SettingsOpener.settingsWindow(in: NSApp.windows))
+    }
+}
+
+/// The shared colour panel, pointed at one quota window's countdown at a time.
+/// Only a colour picked in the panel is stored. The panel reports every change
+/// of its colour, its own included, so it is attached only once its starting
+/// colour is set and it is on screen, and a report of the starting colour
+/// itself is not taken as a pick until the user has moved off it: opening the
+/// panel for a window that is Automatic leaves it Automatic. (Picking exactly
+/// the starting colour therefore stores nothing, which from Automatic looks
+/// the same anyway.)
+@MainActor
+final class CountdownColorPanel: NSObject {
+    static let shared = CountdownColorPanel()
+
+    /// The colour key (`claude:seven_day`) the panel writes to, nil when detached.
+    private(set) var editingKey: String?
+    private let defaults: UserDefaults
+    private let colorPanel: () -> NSColorPanel
+    private let show: (NSColorPanel) -> Void
+    private var originalTitle: String?
+    /// What the panel was opened at, until the user picks something else.
+    private var startingTint: ResetTint?
+    private weak var owner: NSWindow?
+
+    init(defaults: UserDefaults = .standard,
+         panel: @escaping () -> NSColorPanel = { NSColorPanel.shared },
+         show: @escaping (NSColorPanel) -> Void = { $0.orderFront(nil) }) {
+        self.defaults = defaults
+        self.colorPanel = panel
+        self.show = show
+    }
+
+    /// Opens the panel for `key`, writing to it until the mode no longer
+    /// shows countdowns or `owner` (the Settings window) closes. Not on a view
+    /// disappearing: a Form drops rows that scroll out of sight, and the
+    /// quota windows can be briefly empty during a refresh.
+    func edit(key: String, title: String, startingAt color: NSColor, until owner: NSWindow?) {
+        let panel = colorPanel()
+        detach(panel)
+        panel.showsAlpha = false
+        panel.color = color
+        if originalTitle == nil { originalTitle = panel.title }
+        // One panel serves every row, so it says which countdown it is for.
+        panel.title = title
+        show(panel)
+        startingTint = Self.tint(of: color)
+        editingKey = key
+        panel.setTarget(self)
+        panel.setAction(#selector(colorChanged(_:)))
+        if let owner {
+            self.owner = owner
+            NotificationCenter.default.addObserver(self, selector: #selector(ownerWillClose(_:)),
+                                                   name: NSWindow.willCloseNotification, object: owner)
+        }
+    }
+
+    /// Stops writing, for any window or only for `key`; the panel stays where
+    /// it is.
+    func stop(editing key: String? = nil) {
+        guard let editingKey, key == nil || key == editingKey else { return }
+        detach(colorPanel())
+    }
+
+    @objc private func colorChanged(_ sender: Any?) {
+        guard let color = (sender as? NSColorPanel)?.color else { return }
+        choose(color)
+    }
+
+    /// The Settings window is going away; so does the panel it opened.
+    @objc private func ownerWillClose(_ note: Notification) {
+        guard editingKey != nil else { return }
+        let panel = colorPanel()
+        detach(panel)
+        panel.orderOut(nil)
+    }
+
+    /// Stores `color` for the window being edited, as the panel does when the
+    /// user picks one.
+    func choose(_ color: NSColor) {
+        guard let editingKey, let tint = Self.tint(of: color) else { return }
+        if let startingTint {
+            // The panel settling on, or converting, the colour it was given.
+            if Self.isSame(tint, startingTint) { return }
+            self.startingTint = nil
+        }
+        ResetCaptionColors.store(ResetCaptionColors.hex(red: tint.red, green: tint.green, blue: tint.blue),
+                                 forKey: editingKey, in: defaults)
+    }
+
+    private func detach(_ panel: NSColorPanel) {
+        panel.setTarget(nil)
+        panel.setAction(nil)
+        if let originalTitle { panel.title = originalTitle }
+        if let owner {
+            NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: owner)
+        }
+        owner = nil
+        startingTint = nil
+        editingKey = nil
+    }
+
+    private static func tint(of color: NSColor) -> ResetTint? {
+        color.usingColorSpace(.sRGB).map {
+            ResetTint(red: $0.redComponent, green: $0.greenComponent, blue: $0.blueComponent)
+        }
+    }
+
+    /// Equal once stored: within the rounding of one step in 255, which a
+    /// colour-space round trip can introduce.
+    private static func isSame(_ a: ResetTint, _ b: ResetTint) -> Bool {
+        let step = 1.5 / 255
+        return abs(a.red - b.red) <= step && abs(a.green - b.green) <= step && abs(a.blue - b.blue) <= step
+    }
+}
+
 private struct SlotItemSettings: View {
     let model: AppViewModel
     let slot: MenuBarSlot
@@ -94,8 +291,6 @@ private struct SlotItemSettings: View {
     /// rebuilt only when this changes, so a preference missing from it renders
     /// stale previews.
     let displaySignature: String
-    @AppStorage(ResetCaptionMode.defaultsKey) private var resetCaptionMode = ResetCaptionMode.window
-    @AppStorage(ResetCaptionColors.defaultsKey) private var resetColors = ""
     @StateObject private var coordinator: LayoutEditorCoordinator
 
     init(model: AppViewModel, slot: MenuBarSlot, displaySignature: String) {
@@ -116,58 +311,7 @@ private struct SlotItemSettings: View {
                 .font(.caption).foregroundStyle(.secondary)
             LayoutZoneView(zone: .hidden, backing: coordinator, signature: displaySignature)
                 .frame(height: 46)
-            if slot == .claude, resetCaptionMode != .window {
-                countdownColors
-            }
         }
-    }
-
-    /// One colour per quota window, so two weeklies can differ. The window's
-    /// identity keys it, so reordering the fields above never moves a colour.
-    @ViewBuilder
-    private var countdownColors: some View {
-        let windows = model.claude.quota.windows.filter { $0.isOneTimeCredit != true }
-        if !windows.isEmpty {
-            Divider()
-            Text("Countdown colors")
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.secondary)
-            ForEach(windows) { window in
-                let key = ResetCaptionColors.key(provider: .claude, windowID: window.id)
-                LabeledContent(window.label) {
-                    HStack(spacing: 8) {
-                        ColorPicker("", selection: colorBinding(for: key), supportsOpacity: false)
-                            .labelsHidden()
-                        Button("Default") { setColor(nil, for: key) }
-                            .disabled(ResetCaptionColors.tint(forKey: key, in: resetColors) == nil)
-                    }
-                }
-            }
-            Text("Default follows the system text color.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private func colorBinding(for key: String) -> Binding<Color> {
-        Binding(
-            get: {
-                guard let tint = ResetCaptionColors.tint(forKey: key, in: resetColors) else {
-                    return Color(nsColor: .labelColor)
-                }
-                return Color(.sRGB, red: tint.red, green: tint.green, blue: tint.blue)
-            },
-            set: { color in
-                guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return }
-                setColor(ResetCaptionColors.hex(red: rgb.redComponent, green: rgb.greenComponent,
-                                                blue: rgb.blueComponent), for: key)
-            }
-        )
-    }
-
-    private func setColor(_ hex: String?, for key: String) {
-        var colors = ResetCaptionColors.decode(resetColors)
-        colors[key] = hex
-        resetColors = colors.isEmpty ? "" : ResetCaptionColors.encode(colors)
     }
 }
 

@@ -354,7 +354,7 @@ enum MenuBarLayout {
               let countdown = ResetCountdown.text(until: at, now: now) else { return nil }
         let tint = ResetCaptionColors.tint(forKey: ResetCaptionColors.key(provider: provider, windowID: window.id))
         let caption = ResetCaption(windowName: window.label, at: at, countdown: countdown, tint: tint)
-        return (mode == .both ? "\(window.shortLabel) \(countdown)" : countdown, caption)
+        return (mode.caption(code: window.shortLabel, countdown: countdown), caption)
     }
 
     /// `now` is the clock reading the reset countdowns are computed against.

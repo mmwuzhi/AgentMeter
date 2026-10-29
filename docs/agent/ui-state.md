@@ -93,10 +93,12 @@ usage presentation, cached state, or Claude live-session integration.
 - `QuotaWindow.shortLabel` is menu-bar-only; `QuotaRow` shows the full label.
   Format all token counts with `TokenFormat.short`.
 - What a Claude quota column's caption says is a preference,
-  `ResetCaptionMode` (`menuBarResetCaptionMode`, Settings > Menu Bar > Display):
-  `window` (default; the `shortLabel` `5h` / `7d`, exactly what the app always
-  showed, no countdown computed and no timer), `countdown` (the time left until
-  that window's own `resetsAt`) or `both` (`5h 3h23m`). The countdown
+  `ResetCaptionMode` (`menuBarResetCaptionMode`, Settings > Menu Bar > Claude
+  Quota Labels, where `window` is titled Period): `window` (default; the
+  `shortLabel` `5h` / `7d`, exactly what the app always showed, no countdown
+  computed and no timer), `countdown` (the time left until that window's own
+  `resetsAt`) or `both` (`5h 3h23m`). `ResetCaptionMode.caption` composes the
+  caption for the menu bar and for the Settings examples alike. The countdown
   (`ResetCountdown.text`: `45m`, `3h05m`, `6d12h`; minutes round up, so 14:00
   seen at 10:37 reads `3h23m`) comes from the window's own `resetsAt`, never
   from the 5-hour or 7-day cycle. A window with no `resetsAt`, one already
@@ -106,13 +108,22 @@ usage presentation, cached state, or Claude live-session integration.
   (`MenuBarLayout.preview`) follow the mode and the colours as of when they are
   built; the mode and the colours are part of `MenuBarPreviewSignature`.
 - A countdown's colour is chosen per quota window (Settings > Menu Bar >
-  Provider Fields > Countdown colors, Claude, while the mode is not `window`)
-  and keyed by the window's identity, `claude:seven_day_fable`
+  Claude Quota Labels, right under the mode, hidden while it is `window`; hiding
+  stores nothing) and keyed by the window's identity, `claude:seven_day_fable`
   (`ResetCaptionColors`, JSON under `menuBarResetColors`), never by a position
   in the layout and not inside `MenuBarItem`, which `commit()` rebuilds from
   bare keys on every drop. Two weeklies are two entries, a text field and a bar
-  field of one window share one, and no entry means the system text colour.
-  Only the countdown part of the caption is coloured
+  field of one window share one, and no entry means Automatic: the status
+  item's own adaptive text colour. Settings shows Automatic as words with a
+  Custom… button, never as a swatch (a swatch of the label colour read as black
+  having been chosen); a swatch appears only for a stored colour, beside Use
+  Automatic. Colours are picked in the shared `NSColorPanel` through
+  `CountdownColorPanel`. The panel reports colours set in code like picks, so
+  it is shown with its starting colour before it is attached, and a report of
+  that starting colour is not a pick until the user has moved off it: opening
+  stores nothing. It stops writing when the mode returns to `window` or the
+  Settings window closes, never on `onDisappear`, which a grouped Form sends
+  for rows scrolled out of sight. Only the countdown part of the caption is coloured
   (`MenuBarContentView.captionString`); a stale quota dims it like the rest.
 - The countdown caption no longer names its window, so the segment carries
   `reset` (window name, instant, countdown, tint) and the tooltip and VoiceOver

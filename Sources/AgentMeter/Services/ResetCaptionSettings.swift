@@ -1,7 +1,8 @@
 import Foundation
 
 /// What a Claude quota column's caption says. `window` is what the app always
-/// showed and stays the default, so an upgrade changes nothing on screen.
+/// showed and stays the default, so an upgrade changes nothing on screen. The
+/// raw values are stored; Settings calls `window` "Period".
 enum ResetCaptionMode: String, CaseIterable, Identifiable {
     case window
     case countdown
@@ -18,10 +19,28 @@ enum ResetCaptionMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .window: return "Window"
+        case .window: return "Period"
         case .countdown: return "Countdown"
         case .both: return "Both"
         }
+    }
+
+    /// The caption of a window coded `code` (`5h`) with `countdown` left.
+    func caption(code: String, countdown: String) -> String {
+        switch self {
+        case .window: return code
+        case .countdown: return countdown
+        case .both: return "\(code) \(countdown)"
+        }
+    }
+
+    /// What this mode shows for a 5-hour window with 1 h 21 min left, built
+    /// by the formatter and `caption` the menu bar uses, so Settings cannot
+    /// describe a format the menu bar no longer draws.
+    var example: String {
+        let now = Date(timeIntervalSinceReferenceDate: 0)
+        let countdown = ResetCountdown.text(until: now.addingTimeInterval(81 * 60), now: now) ?? ""
+        return caption(code: "5h", countdown: countdown)
     }
 }
 
@@ -67,6 +86,19 @@ enum ResetCaptionColors {
 
     static func tint(forKey key: String, in json: String = storedJSON) -> ResetTint? {
         decode(json)[key].flatMap(tint(hex:))
+    }
+
+    /// `json` with `key` set to `hex`, or without it when `hex` is nil (back to
+    /// the system text colour); "" once no window has a colour.
+    static func setting(_ hex: String?, forKey key: String, in json: String) -> String {
+        var colors = decode(json)
+        colors[key] = hex
+        return colors.isEmpty ? "" : encode(colors)
+    }
+
+    static func store(_ hex: String?, forKey key: String, in defaults: UserDefaults = .standard) {
+        let json = setting(hex, forKey: key, in: defaults.string(forKey: defaultsKey) ?? "")
+        defaults.set(json, forKey: defaultsKey)
     }
 
     static func tint(hex: String) -> ResetTint? {
