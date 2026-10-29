@@ -12,22 +12,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var taskEvents: TaskEventFeed?
     private var quit: QuitSequence?
 
+    /// AppKit's own per-app keys, in the registration domain, so a value set
+    /// with `defaults write` still wins. Called from `AgentMeterApp.init`,
+    /// before any view exists: AppKit's tooltip manager reads
+    /// `NSInitialToolTipDelay` once, when the first tooltip creates it, and
+    /// SwiftUI builds the Settings scene, whose layout-editor chips carry
+    /// tooltips, before `applicationDidFinishLaunching` runs. Registered there,
+    /// the delay never applied and every hover took AppKit's 1.5 s.
+    static func registerAppKitDefaults() {
+        UserDefaults.standard.register(defaults: [
+            // Keep status-item gaps tight through AppKit's own per-app spacing keys.
+            // Drawing outside the declared length is clipped on non-active displays.
+            "NSStatusItemSpacing": 6,
+            "NSStatusItemSelectionPadding": 6,
+            // Sparkline/heatmap cells and session rows rely on hover tooltips
+            // for their numbers; the 1.5 s system default feels broken there.
+            // Milliseconds.
+            "NSInitialToolTipDelay": 250,
+        ])
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Task outcomes that happened before this (while AgentMeter was not
         // running) are recorded, not announced.
         let launchedAt = Date()
         // Menubar-only app: no Dock icon.
         NSApp.setActivationPolicy(.accessory)
-
-        // Keep status-item gaps tight through AppKit's own per-app spacing keys.
-        // Drawing outside the declared length is clipped on non-active displays.
-        UserDefaults.standard.register(defaults: [
-            "NSStatusItemSpacing": 6,
-            "NSStatusItemSelectionPadding": 6,
-            // Sparkline/heatmap cells rely on hover tooltips for their numbers;
-            // the ~1s system default feels broken there. Milliseconds.
-            "NSInitialToolTipDelay": 250,
-        ])
 
         // Repair launch-at-login if an update (ad-hoc signature change) silently dropped it.
         LoginItem.reconcile()
