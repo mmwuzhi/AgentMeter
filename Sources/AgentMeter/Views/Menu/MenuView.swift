@@ -708,8 +708,11 @@ struct ProviderSection: View {
                 SpendSummary(usage: state.usage)
                 activitySection
             }
-            if !activeAgents.isEmpty {
-                ActiveAgentsSection(agents: ActiveAgentListing(activeAgents).agents)
+            // No box at all when every live session is hidden: without the
+            // old "N hidden" note, an empty "Sessions 0" would look broken.
+            let listed = ActiveAgentListing(activeAgents).agents
+            if !listed.isEmpty {
+                ActiveAgentsSection(agents: listed)
             }
         }
         .padding(12)

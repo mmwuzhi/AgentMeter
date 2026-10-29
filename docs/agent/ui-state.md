@@ -397,7 +397,8 @@ usage presentation, cached state, or Claude live-session integration.
   panel is listed for the first 24 h. A row with no dated evidence stays, a
   running descendant keeps its ancestors' rows. The popover does not say how
   many it left out (`ActiveAgentListing.hiddenCount` is internal; the "N
-  inactive sessions hidden" note was removed as noise). Only the drawn list is filtered: `AppViewModel.activeAgents`
+  inactive sessions hidden" note was removed as noise), and with nothing
+  listed it draws no Sessions box rather than an empty "Sessions 0". Only the drawn list is filtered: `AppViewModel.activeAgents`
   keeps every live process, which task-notification routing, session titles and
   the 2 s status tick read, so a hidden session returns the moment its state or
   transcript moves. Nothing is deleted, killed or unregistered, spend and

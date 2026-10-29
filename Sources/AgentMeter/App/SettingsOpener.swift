@@ -20,12 +20,16 @@ enum SettingsOpener {
     }
 
     static func open() {
+        let window = settingsWindow(in: NSApp.windows)
+        let plan = plan(for: window)
+        // Before the activation: activating first can already switch to the
+        // Space the window was left on ("switch to a Space with open windows").
+        if plan == .bringForward { window?.collectionBehavior.insert(.moveToActiveSpace) }
         // An accessory app's windows open inactive, behind the active app and
         // with desaturated control accents; the click that got here is ours,
         // so the activation is granted.
         NSApp.activate()
-        let window = settingsWindow(in: NSApp.windows)
-        switch plan(for: window) {
+        switch plan {
         case .bringForward:
             if let window { bringForward(window) }
         case .open:
