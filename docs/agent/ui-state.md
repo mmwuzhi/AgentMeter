@@ -133,6 +133,27 @@ usage presentation, cached state, or Claude live-session integration.
   value font: a tick must not resize the item.
 - The Settings provider picker lists `MenuBarSlot.alphabetical`; `allCases`
   stays the menu bar's slot order.
+- The Settings field zones scroll sideways (`LayoutZoneView` → `ChipZoneView`):
+  the zone's `ChipContainerView` is the document of a horizontal scroll view
+  with no scroller (an overlay one covers the strip's bottom 17 pt while it
+  shows and took the mouse-down on the chips' lower part; a legacy one takes
+  height), so the strip keeps its 46 pt, and the document is never narrower
+  than the strip, so the empty space after the last chip is still the drop
+  target. A trackpad swipes sideways natively and its vertical swipes go on to
+  the Form, the way the gesture began deciding for all of it and its momentum
+  (`ChipStrip.GestureLock`). A vertical mouse wheel over a strip that
+  overflows scrolls the strip sideways first (down goes right), by design: it
+  is how a mouse without horizontal scrolling reaches the far fields. Only at
+  the strip's end, or over a strip that fits, does the wheel scroll the Form
+  (`ChipStrip.wheelRoute`). A drag held near an edge autoscrolls. A chip goes
+  where the pointer's half of a chip says, before it on the left half and
+  after it on the right, both on arriving and in the updates AppKit keeps
+  sending while the pointer rests, so a drop after the last chip appends it
+  (`ChipStrip.dropMove`). The edge fades
+  and chevrons are layers (`EdgeHintLayer`), never views, so they take no click
+  and no drop; `zPosition` and their place last among the sublayers keep them
+  in front. Off screen, AppKit attaches the scroll view's layers only on
+  display, so a render needs a layout pass after it (`MenuBarPreviewRenderTests`).
 - Which end a quota figure counts from is a preference, `QuotaDisplay`
   (`quotaShowsUsed`, default **remaining** — an upgrade must not turn every row
   over). One switch covers the popover headline, its bar, the menu bar's quota

@@ -61,6 +61,54 @@ final class MenuBarPreviewRenderTests: XCTestCase {
         }
     }
 
+    /// The Settings field strips: scrolled to the start, the middle and the
+    /// end, one that fits, and an empty one.
+    func testRenderTheFieldStrips() throws {
+        let many = (0..<9).map { $0 % 3 == 0 ? "5h \($0)h21m" : ($0 % 3 == 1 ? "7d 6d1\($0)h" : "1h\($0)1m") }
+        let cases: [(String, [String], CGFloat, CGFloat?)] = [
+            ("many-start", many, 380, 0),
+            ("many-middle", many, 380, 0.5),
+            ("many-end", many, 380, 1),
+            ("narrow-end", ["7d 6d12h", "5h"], 90, 1),
+            ("fits", ["5h", "7d"], 380, nil),
+            ("empty", [], 380, nil),
+        ]
+        for (name, labels, width, position) in cases {
+            for dark in [false, true] {
+                let backing = ChipStripTests.BackingDouble(visible: labels, hidden: [])
+                let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                let window = NSWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: width + 24, height: 62),
+                                      styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.appearance = appearance
+                let content = NSView(frame: NSRect(x: 0, y: 0, width: width + 24, height: 62))
+                content.wantsLayer = true
+                content.layer?.backgroundColor = (dark ? NSColor(white: 0.2, alpha: 1) : NSColor(white: 0.96, alpha: 1)).cgColor
+                window.contentView = content
+                let zone = ChipZoneView(zone: .visible, backing: backing)
+                backing.register(zone.container, zone: .visible)
+                zone.container.configure(signature: "")
+                zone.frame = NSRect(x: 12, y: 8, width: width, height: 46)
+                content.addSubview(zone)
+                content.layoutSubtreeIfNeeded()
+                if let position {
+                    let clip = zone.scrollView.contentView
+                    let maxOffset = zone.container.frame.width - clip.bounds.width
+                    clip.scroll(to: NSPoint(x: (maxOffset * position).rounded(), y: 0))
+                    zone.scrollView.reflectScrolledClipView(clip)
+                }
+                CATransaction.flush()
+                RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+                // AppKit attaches the scroll view's layers on display; the
+                // next layout pass puts the edge hints back in front of them.
+                zone.needsLayout = true
+                content.layoutSubtreeIfNeeded()
+                try writeLayers(content, name: "strip-\(name)-\(dark ? "dark" : "light")", scale: 2)
+                window.close()
+            }
+        }
+    }
+
     // MARK: - Rendering
 
     /// The content view on a menu-bar-like backdrop, with a guide at the left
@@ -87,6 +135,23 @@ final class MenuBarPreviewRenderTests: XCTestCase {
         view.frame = NSRect(x: pad, y: 0, width: width, height: 24)
         backdrop.addSubview(view)
         return backdrop
+    }
+
+    /// Through Core Animation rather than `cacheDisplay`, which leaves out
+    /// layers that are not a view's own drawing (the strips' edge fades).
+    private func writeLayers(_ view: NSView, name: String, scale: CGFloat) throws {
+        view.displayIfNeeded()
+        let layer = try XCTUnwrap(view.layer)
+        let size = view.bounds.size
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: Int(size.width * scale), height: Int(size.height * scale), bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.scaleBy(x: scale, y: scale)
+        layer.render(in: context)
+        let image = try XCTUnwrap(context.makeImage())
+        let data = try XCTUnwrap(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+        try data.write(to: outputDirectory.appendingPathComponent("\(name).png"))
     }
 
     /// At three times the point size, so a half-point offset is visible.
