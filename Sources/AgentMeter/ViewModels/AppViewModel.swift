@@ -51,9 +51,13 @@ final class AppViewModel {
     /// (`TaskEventFeed`). `.loading` until the log has been read once, so
     /// "not read yet" never shows as "nothing happened".
     var taskEvents: TaskEventsState = .loading
-    /// Why the last click on a task did not bring its session forward. Not
-    /// persisted; cleared when the popover closes or the task is handled.
+    /// What the last click on a task could not do, as a line under its row.
+    /// Not persisted; cleared by the next click and when the popover closes.
     var taskEventNotice: TaskEventNotice?
+    /// Where a click on a task would go, by session id, for the rows'
+    /// tooltips (`TaskEventFeed.preview`). Not persisted; forgotten when the
+    /// popover closes, since sessions come and go.
+    var taskEventRoutes: [String: TaskSessionRoute] = [:]
 
     /// The app restores the last cached state and the spend ledger; a test
     /// passes what it wants restored (nil and `[]` for a model with nothing
@@ -132,6 +136,13 @@ final class AppViewModel {
 
     func pruneSessionDisclosure(keeping valid: Set<String>) {
         sessionDisclosure = sessionDisclosure.filter { valid.contains($0.key) }
+    }
+
+    /// The popover that lists the tasks closed: the last click's line and the
+    /// looked-up routes go with it.
+    func resetTaskEventsPresentation() {
+        taskEventNotice = nil
+        taskEventRoutes = [:]
     }
 
 }

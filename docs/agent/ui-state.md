@@ -32,8 +32,8 @@ usage presentation, cached state, or Claude live-session integration.
   with the quota path, and records instead of posting when the kind is
   switched off, the event is older than `maximumDeliveryDelay`, or
   permission is denied. Read state changes only on an explicit read (a tap
-  on the notification that reached what it is about, `markEventsRead`),
-  never with time, and unread events
+  on the notification when its handler says the tap reads it,
+  `markEventsRead`), never with time, and unread events
   never age out: the 180-day retention applies to read events, and at the
   10,000-event cap read events go first. Only when unread events alone
   exceed the cap do the oldest unread go, counted in `unreadOverflow()` (a
@@ -475,21 +475,29 @@ usage presentation, cached state, or Claude live-session integration.
   written), and at launch. Never on a timer. `.loading` until the first
   read, so "not read yet" never reads as "nothing happened"; the popover
   header always says which of Loading / None yet (Off without the hooks) /
-  All handled / N unread holds.
+  All read / N unread holds.
 - One item per task (`<session>|<task>`, `TaskEventItem`): a wait and the
   end replace each other on screen as their banners do, and the item shows
-  the latest status. The menu bar counts tasks, not events. Marking an item
-  seen marks every event of the task read; Mark all seen covers the items
-  the user was shown, not what arrived since.
+  the latest status. The menu bar counts tasks, not events. A row reads
+  "Finished · 12m run" (status and the producer's detail: run time, error,
+  what a wait waits for) with its age, then "project · session title" (the
+  live row's title, else "Session abcd1234"); never prompt text. Reading an
+  item reads every event of the task; Mark all read covers the items the
+  user was shown, not what arrived since.
 - Status, unread and "for the user" are kept apart. The status is the event
-  kind and never changes. "Seen" is the read state and says only that the
-  user looked: the wording never suggests a wait is over or an unconfirmed
-  task finished (an unconfirmed task marked seen stays "Task status
-  unconfirmed"). Unread clears only when a click reaches the session (a tap
-  on the banner, then the feed reads the task's other events too; a click on
-  the item) or on Mark seen. A click that cannot reach it reads nothing and
-  the menu says why; closing a banner, opening the popover and time read
-  nothing either. An event its producer recorded for the history only
+  kind and never changes. The UI says only read and unread (no "seen",
+  "handled", "resolved", "dismiss"; `TaskEventListTests` scans the view
+  files): read says only that the user looked, never that a wait is over or
+  an unconfirmed task finished (an unconfirmed task read stays "Task status
+  unconfirmed"). Unread clears on a deliberate act about that task: a tap
+  on its banner (the feed reads the task's other listed events too), a
+  click on its row, the row's check mark, Mark all read. A click reads the
+  task whether or not anything came forward. That reverses the 2026-10-20
+  rule "a click that cannot reach the session reads nothing" (2026-10-29):
+  editor sessions are never reached, so every VS Code task needed a second,
+  manual mark, which the user found pointless, and the click already shows
+  the user looked. Closing a banner, opening the popover and time read
+  nothing. An event its producer recorded for the history only
   (`TaskOutcomeAnnouncement.historyOnlyReasons`: before launch, under a
   minute, a report's turn, crons, interruptions) asks nobody to read it: it
   is never listed or counted, stays unread in the log, and the log keeps and
@@ -514,16 +522,27 @@ usage presentation, cached state, or Claude live-session integration.
   defaults); a later drop shows only what was dropped since, and a total
   below the acknowledged one (the log started over) shows all of it.
 - Clicks (`TaskSessionRouting`) bring forward only what already runs the
-  session, and only a click that does so reads the task. Live processes come from the rows (with the row's start time
+  session. Live processes come from the rows (with the row's start time
   checked against the kernel's) and from the registry read at click time
   (`ClaudeSessionRegistry.entry` guard); helpers registered under the
   session's id descend from it and do not count; unrelated processes make it
-  ambiguous. A terminal tab is selected by tty (it only selects a tab that
-  exists). Everything else, editors included, gets nothing on its own: the
-  popover says why (`TaskEventNotice`, opened for a banner click), the task
-  stays unread, and it offers Mark seen and to activate the app, which never
-  creates a window. The session row's click (`AgentAppActivator.focus`) is
-  the same: the terminal tab, else the app. No URL is ever opened
+  ambiguous. A terminal tab (iTerm2, Terminal, Ghostty) is selected by tty
+  (it only selects a tab that exists). Any other app, editors included, is
+  activated by the click and nothing more, which never creates a window.
+  Ended, unhosted and ambiguous sessions open nothing. A banner tap does
+  what a row click does. The row's tooltip names the outcome ("Brings Code
+  forward — AgentMeter can't pick the session's window there") from a route
+  looked up when the pointer first reaches a row of that session
+  (`TaskEventFeed.preview`, kept per session in
+  `AppViewModel.taskEventRoutes` until the popover closes; generic until
+  then); looking never activates or reads anything. When a click could not
+  do what it said, one short line sits under that row (`TaskEventNotice`:
+  "Session has ended", "Couldn't switch to the iTerm2 tab"), with no
+  buttons, until the next click or the popover closes; the row stays in
+  place though it was read, and a banner tap that brought nothing forward
+  opens the popover on it. The session row's click
+  (`AgentAppActivator.focus`) is the same: the terminal tab, else the app.
+  No URL is ever opened
   (`AgentAppActivatorTests.testNoSourceOpensAnEditorOrSessionURL`), so no
   click can open or resume a session.
 - Why no editor window is switched, kept for a future safe way to name the

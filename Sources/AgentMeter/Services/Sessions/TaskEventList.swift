@@ -7,12 +7,11 @@ import Foundation
 //
 // Three things stay apart:
 //  * the status, which is what the event says happened and never changes
-//    (an unconfirmed task stays unconfirmed when the user marks it handled);
-//  * unread ("seen" in the menu), which only reaching the session or an
-//    explicit act clears: a tap on the notification or a click on the item
-//    that brings the session forward, Mark seen (`markEventsRead`). Closing a
-//    banner, opening the popover, a click that cannot reach the session and
-//    time passing never do;
+//    (an unconfirmed task stays unconfirmed when the user marks it read);
+//  * unread, which only an explicit act clears: a tap on the notification,
+//    a click on the item (whether or not anything could be brought forward:
+//    the click is the user looking), Mark as read (`markEventsRead`).
+//    Closing a banner, opening the popover and time passing never do;
 //  * whether the event is for the user at all. An event its producer only
 //    recorded for the history (before launch, under a minute, a report's
 //    own turn, crons, interruptions) asks nobody to read it: it stays unread
@@ -25,7 +24,7 @@ enum TaskEventStatus: String, CaseIterable, Sendable, Equatable {
     /// `task_unknown`: the main agent stopped while background work the task
     /// started was still running, and nothing has said since whether it
     /// finished. Never shown as finished, and never turned into finished by
-    /// marking it seen.
+    /// marking it read.
     case unconfirmed
 
     init?(kind: AgentMeterEventKind) {
@@ -95,8 +94,8 @@ enum TaskEventAttention {
 }
 
 /// Every event of one task (`<session>|<task>`): a wait, the end, a
-/// follow-up's end. The menu shows the latest status; marking the item seen
-/// marks all of them read, as reaching the session from any banner does.
+/// follow-up's end. The menu shows the latest status; reading the item
+/// (a click, its banner, the check mark) marks all of them read.
 struct TaskEventItem: Identifiable, Sendable, Equatable {
     let id: String
     let status: TaskEventStatus
@@ -127,6 +126,12 @@ struct TaskEventItem: Identifiable, Sendable, Equatable {
     }
 
     var shortSessionID: String? { sessionID.map { "Session \($0.prefix(8))" } }
+
+    /// The same task with its events read, for a row the menu keeps in place
+    /// after the click that read it.
+    var markedRead: TaskEventItem {
+        TaskEventItem(id: id, status: status, latest: latest, eventIDs: eventIDs, unreadEventIDs: [])
+    }
 
     /// What became of the banner, for the tooltip.
     var deliveryText: String {
@@ -227,8 +232,8 @@ struct TaskEventOverflowAcknowledgement: Sendable, Equatable {
     }
 }
 
-/// What the menu lists. `unread` is every task the user has not seen,
-/// `handled` the latest few that were seen.
+/// What the menu lists. `unread` is every task the user has not read,
+/// `handled` the latest few that were read ("Read" in the menu).
 struct TaskEventsSnapshot: Sendable, Equatable {
     static let handledLimit = 10
 

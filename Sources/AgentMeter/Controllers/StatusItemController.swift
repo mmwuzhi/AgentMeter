@@ -333,6 +333,6 @@ private final class StatusItemSlotController: NSObject {
 extension StatusItemSlotController: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
         coordinator.setActiveAgentsVisible(false)
-        if taskEvents != nil { model.taskEventNotice = nil }
+        if taskEvents != nil { model.resetTaskEventsPresentation() }
     }
 }

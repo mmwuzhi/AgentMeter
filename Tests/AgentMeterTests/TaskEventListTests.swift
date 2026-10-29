@@ -144,31 +144,98 @@ final class TaskEventListTests: XCTestCase {
         XCTAssertTrue(tooltip.contains("never sent as a notification"))
     }
 
-    func testSeenNeverReadsAsResolved() throws {
-        // "Seen" is the read state: the user looked. A wait may still be
+    func testReadNeverReadsAsResolved() throws {
+        // "Read" is the read state: the user looked. A wait may still be
         // waiting, an unconfirmed task stays unconfirmed.
         let waiting = try XCTUnwrap(TaskEventItem.items(from: [listEvent("w", .taskWaiting, readAt: decided,
                                                                          body: "Session ffafe0d9\nWaiting for permission · 1m")]).first)
         let unconfirmed = try XCTUnwrap(TaskEventItem.items(from: [listEvent(
             "u", .taskUnknown, delivery: .suppressed(Reason.backgroundShellRunning, at: decided), readAt: decided)]).first)
-        XCTAssertEqual(TaskEventRow.markSeenHelp(for: waiting), "Mark seen. It doesn't mean the wait is over.")
-        XCTAssertEqual(TaskEventRow.markSeenHelp(for: unconfirmed), "Mark seen. The task stays unconfirmed.")
-        XCTAssertEqual(TaskEventRow.statusLine(for: unconfirmed), "Task status unconfirmed", "seen keeps the status")
+        XCTAssertEqual(TaskEventRow.markReadHelp(for: waiting), "Mark as read. It doesn't mean the wait is over.")
+        XCTAssertEqual(TaskEventRow.markReadHelp(for: unconfirmed), "Mark as read. The task stays unconfirmed.")
+        XCTAssertEqual(TaskEventRow.statusLine(for: unconfirmed), "Task status unconfirmed", "read keeps the status")
         XCTAssertEqual(TaskEventRow.statusLine(for: waiting), "Waiting for permission · 1m")
         XCTAssertTrue(TaskEventRow.tooltip(for: waiting, sessionTitle: nil).contains("the session may have moved on since"))
-        XCTAssertTrue(TaskEventRow.tooltip(for: unconfirmed, sessionTitle: nil).contains("Marking it seen keeps it unconfirmed"))
-        // No "handled", "resolved" or "done" anywhere the user reads.
+        XCTAssertTrue(TaskEventRow.tooltip(for: unconfirmed, sessionTitle: nil).contains("Marking it read keeps it unconfirmed"))
+    }
+
+    /// One read vocabulary: read and unread. No "handled" or "resolved"
+    /// (read never means the task is dealt with), and none of the old
+    /// "seen" or the notice's "Dismiss", anywhere the user reads.
+    func testTheViewsSayReadAndUnreadOnly() throws {
         let sources = ["Sources/AgentMeter/Views/Menu/TaskEventsSection.swift",
                        "Sources/AgentMeter/Views/TaskNotificationSettings.swift"]
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         for path in sources {
             let text = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
             for literal in text.components(separatedBy: "\"").enumerated().filter({ $0.offset % 2 == 1 }).map(\.element) {
-                for word in ["handled", "Handled", "resolved", "Resolved"] {
+                for word in ["handled", "Handled", "resolved", "Resolved", "seen", "Seen", "dismiss", "Dismiss"] {
                     XCTAssertFalse(literal.contains(word), "\(path): \"\(literal)\"")
                 }
             }
         }
+    }
+
+    // MARK: - Rows
+
+    func testARowSaysWhatHappenedWhenAndWhere() throws {
+        let item = try XCTUnwrap(TaskEventItem.items(from: [listEvent("c")]).first)
+        XCTAssertEqual(TaskEventRow.statusLine(for: item), "Finished · 12m run", "the run time when the event has it")
+        XCTAssertEqual(TaskEventRow.identityLine(for: item, sessionTitle: nil), "agentmeter · Session ffafe0d9")
+        XCTAssertEqual(TaskEventRow.identityLine(for: item, sessionTitle: "Fix the quota pacing tooltip"),
+                       "agentmeter · Fix the quota pacing tooltip")
+        let failed = try XCTUnwrap(TaskEventItem.items(from: [listEvent("f", .taskFailed, body: "Session ffafe0d9\nRate limit · after 2m")]).first)
+        XCTAssertEqual(TaskEventRow.statusLine(for: failed), "Failed · Rate limit · after 2m")
+    }
+
+    func testTheTooltipSaysWhatAClickDoesForEachKindOfHost() throws {
+        let terminal = TaskSessionProcess(pid: 77, tty: "ttys002", host: itermHost)
+        let editor = TaskSessionProcess(pid: 2114, host: TaskSessionHost(pid: 6986, bundleID: "com.microsoft.VSCode", name: "Code"))
+        XCTAssertEqual(TaskEventRow.clickHelp(route: .terminalTab(terminal), isUnread: false),
+                       "Click switches to its iTerm2 tab.")
+        XCTAssertEqual(TaskEventRow.clickHelp(route: .appOnly(editor), isUnread: false),
+                       "Click brings Code forward — AgentMeter can't pick the session's window there.")
+        XCTAssertEqual(TaskEventRow.clickHelp(route: .ended, isUnread: false), "Click opens nothing: the session has ended.")
+        XCTAssertTrue(TaskEventRow.clickHelp(route: .unhosted, isUnread: false).hasPrefix("Click opens nothing"))
+        XCTAssertTrue(TaskEventRow.clickHelp(route: .ambiguous(2), isUnread: false).hasPrefix("Click opens nothing"))
+        XCTAssertEqual(TaskEventRow.clickHelp(route: nil, isUnread: false),
+                       "Click switches to the session's terminal tab, or brings its app forward.",
+                       "before the pointer has looked it up")
+        // Every click reads: the unread row says so, whatever it opens.
+        for route in [TaskSessionRoute.terminalTab(terminal), .appOnly(editor), .ended, .unhosted, .ambiguous(2)] {
+            XCTAssertTrue(TaskEventRow.clickHelp(route: route, isUnread: true).hasSuffix("It also marks the task read."))
+        }
+        let item = try XCTUnwrap(TaskEventItem.items(from: [listEvent("c")]).first)
+        let tooltip = TaskEventRow.tooltip(for: item, sessionTitle: nil, route: .appOnly(editor))
+        XCTAssertTrue(tooltip.hasSuffix("Click brings Code forward — AgentMeter can't pick the session's window there. It also marks the task read."))
+        XCTAssertFalse(tooltip.contains("open the session"), "no promise of a jump into the session")
+    }
+
+    func testTheClickedTaskKeepsItsPlaceWhileItsLineShows() throws {
+        let events = [listEvent("a", task: "a", at: 300), listEvent("b", task: "b", at: 200), listEvent("c", task: "c", at: 100)]
+        let before = TaskEventsSnapshot.make(unreadEvents: events, recentEvents: [], overflow: nil)
+        let clicked = before.unread[1]
+        let notice = TaskEventNotice(item: clicked.markedRead, reason: .ended)
+        // Before the reload the task is still unread: nothing moves.
+        XCTAssertEqual(TaskEventsSection.rows(before, notice: notice).top.map(\.id), before.unread.map(\.id))
+
+        // Read since: kept between its neighbours, out of the read list.
+        let read = events.map { event -> AgentMeterEvent in
+            var event = event
+            if event.id == "b" { event.readAt = decided }
+            return event
+        }
+        let after = TaskEventsSnapshot.make(unreadEvents: read.filter(\.isUnread), recentEvents: read, overflow: nil)
+        XCTAssertEqual(after.handled.map(\.id), [clicked.id])
+        let rows = TaskEventsSection.rows(after, notice: notice)
+        XCTAssertEqual(rows.top.map(\.id), before.unread.map(\.id))
+        XCTAssertFalse(rows.top[1].isUnread)
+        XCTAssertTrue(rows.read.isEmpty)
+        // Out of the latest read ones too: the clicked task as it was.
+        let gone = TaskEventsSnapshot(unread: after.unread, handled: [], overflow: nil)
+        XCTAssertEqual(TaskEventsSection.rows(gone, notice: notice).top.map(\.id), before.unread.map(\.id))
+        // Without a line, the read task goes to the read list.
+        XCTAssertEqual(TaskEventsSection.rows(after, notice: nil).top.map(\.id), ["ffafe0d9-aaaa|a", "ffafe0d9-aaaa|c"])
     }
 
     func testStatusesForEveryShownKind() {
@@ -212,7 +279,7 @@ final class TaskEventListTests: XCTestCase {
     }
 
     @MainActor
-    func testTheHeaderTellsLoadingNothingAllHandledAndUnreadApart() {
+    func testTheHeaderTellsLoadingNothingAllReadAndUnreadApart() {
         func text(_ state: TaskEventsState, hooks: Bool = true) -> String {
             TaskEventsSection(state: state, hooksEnabled: hooks).stateText
         }
@@ -220,7 +287,7 @@ final class TaskEventListTests: XCTestCase {
         XCTAssertEqual(text(.loaded(.empty)), "None yet")
         XCTAssertEqual(text(.loaded(.empty), hooks: false), "Off")
         let handled = TaskEventsSnapshot.make(unreadEvents: [], recentEvents: [listEvent("a", readAt: decided)], overflow: nil)
-        XCTAssertEqual(text(.loaded(handled)), "All seen")
+        XCTAssertEqual(text(.loaded(handled)), "All read")
         let unread = TaskEventsSnapshot.make(unreadEvents: [listEvent("a")], recentEvents: [], overflow: nil)
         XCTAssertEqual(text(.loaded(unread)), "1 unread")
     }

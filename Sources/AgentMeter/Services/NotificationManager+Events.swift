@@ -76,18 +76,17 @@ extension NotificationManager {
     }
 
     /// A tap on an event's notification, or one of its actions: hands it on,
-    /// and marks it read when the handler says the tap reached what the event
-    /// is about (a task's session came forward), or when there is no handler.
-    /// A tap that could not get there leaves it unread for the menu to
-    /// explain. Apart from the delegate callback, whose response object a
-    /// test cannot build.
+    /// and marks it read when the handler says the tap reads it (a task's
+    /// tap always does: it is the user looking, whether or not its session
+    /// could be brought forward), or when there is no handler. Apart from
+    /// the delegate callback, whose response object a test cannot build.
     func handleEventResponse(eventID: String, actionIdentifier: String) async {
         // Only with `.customDismissAction`, which no category sets: closing a
         // banner is not reading it.
         guard actionIdentifier != UNNotificationDismissActionIdentifier else { return }
         guard let event = await eventStore.event(id: eventID) else { return }
-        let reached = await onEventResponse?(event, actionIdentifier) ?? true
-        if reached { await markEventsRead(ids: [eventID]) }
+        let reads = await onEventResponse?(event, actionIdentifier) ?? true
+        if reads { await markEventsRead(ids: [eventID]) }
     }
 
     private func decideAndPost(_ event: AgentMeterEvent, intent: AgentMeterDeliveryIntent) async -> AgentMeterEventDelivery {

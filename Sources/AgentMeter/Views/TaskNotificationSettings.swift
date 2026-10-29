@@ -31,7 +31,7 @@ struct TaskNotificationSettingsSections: View {
             Toggle("Show a banner when a task finishes", isOn: $completed)
             Toggle("Show a banner when a task fails", isOn: $failed)
             Toggle("Show a banner when a session needs input", isOn: $waiting)
-            Text("These switches only turn macOS notification banners on or off. With a banner off, AgentMeter still records the task, lists it in its menu and counts it in the menu-bar badge until you open it or mark it seen. A task whose background work was still running at the last check is listed as unconfirmed and never sent as a banner.")
+            Text("These switches only turn macOS notification banners on or off. With a banner off, AgentMeter still records the task, lists it in its menu and counts it in the menu-bar badge until you click it or mark it read. A task whose background work was still running at the last check is listed as unconfirmed and never sent as a banner.")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Show session titles in banners", isOn: $showsSessionTitle)
             Text("Off by default: unless you renamed the session, its title is Claude's summary of your first prompt, and banners can appear on the lock screen. Applies to banners sent from now on.")

@@ -90,7 +90,7 @@ final class TaskEventFeedTests: XCTestCase {
         XCTAssertEqual(item.status, .completed)
         XCTAssertEqual(rig.center.posted.count, 1)
 
-        await rig.feed.markSeen(item)
+        await rig.feed.markRead(item)
         await settle { rig.model.taskEvents.unreadCount == 0 }
         XCTAssertEqual(try snapshot(rig).handled.map(\.id), [item.id])
         XCTAssertEqual(try snapshot(rig).handled.first?.status, .completed)
@@ -117,9 +117,9 @@ final class TaskEventFeedTests: XCTestCase {
         let item = try XCTUnwrap(try snapshot(rig).unread.first)
         XCTAssertEqual(item.status, .unconfirmed)
 
-        await rig.feed.markSeen(item)
+        await rig.feed.markRead(item)
         await settle { rig.model.taskEvents.unreadCount == 0 }
-        XCTAssertEqual(try snapshot(rig).handled.first?.status, .unconfirmed, "handled is not finished")
+        XCTAssertEqual(try snapshot(rig).handled.first?.status, .unconfirmed, "read is not finished")
         let stored = await rig.store.event(id: "u")
         XCTAssertEqual(stored?.kind, .taskUnknown)
         XCTAssertNotNil(stored?.readAt)
@@ -146,12 +146,24 @@ final class TaskEventFeedTests: XCTestCase {
 
     // MARK: - Clicks
 
-    func testATapThatCannotReachTheSessionReadsNothingAndSaysSo() async throws {
+    /// A live session in iTerm2 (pid 77) or in VS Code's extension host
+    /// (pid 2114), as the rows report it.
+    private func liveRow(_ pid: Int, session: String = "ffafe0d9-aaaa", tty: String? = nil,
+                         observed: Date) -> ActiveAgent {
+        ActiveAgent(provider: .claude, pid: pid, parentPID: 500, command: "claude", elapsedSeconds: 60,
+                    observedAt: observed, tty: tty, cwd: "/Users/u/work/agentmeter",
+                    session: ActiveAgentSession(id: session, projectPath: "/Users/u/work/agentmeter", projectName: nil,
+                                                branch: nil, lastUpdatedAt: nil, source: "test"))
+    }
+
+    func testATapThatCannotReachTheSessionReadsTheTaskAndOpensTheListToSayWhy() async throws {
         let rig = rig()
         await rig.manager.submit(event("wait", .taskWaiting, task: "p1", at: rig.clock))
         rig.clock.advance(600)
         await rig.manager.submit(event("done", .taskCompleted, task: "p1", at: rig.clock))
         await rig.manager.submit(event("other", .taskFailed, task: "p2", at: rig.clock))
+        // An earlier segment of the task, too short to announce.
+        await rig.manager.submit(event("short", task: "p1", at: rig.clock), intent: .recordOnly(reason: Reason.belowMinimumDuration))
         await settle { rig.model.taskEvents.unreadCount == 2 }
 
         await rig.manager.handleEventResponse(eventID: "done", actionIdentifier: UNNotificationDismissActionIdentifier)
@@ -162,31 +174,25 @@ final class TaskEventFeedTests: XCTestCase {
         var shown = 0
         rig.feed.showList = { shown += 1 }
         await rig.manager.handleEventResponse(eventID: "done", actionIdentifier: UNNotificationDefaultActionIdentifier)
-        await settle({ rig.model.taskEventNotice != nil }, "the click was never routed")
         // No live process in the stub: the session has ended.
-        let notice = try XCTUnwrap(rig.model.taskEventNotice)
+        let notice = try XCTUnwrap(rig.model.taskEventNotice, "the click was never routed")
         XCTAssertEqual(notice.reason, .ended)
+        XCTAssertEqual(notice.message, "Session has ended")
         XCTAssertEqual(notice.itemID, "ffafe0d9-aaaa|p1")
-        XCTAssertEqual(notice.projectName, "agentmeter")
-        XCTAssertEqual(Set(notice.eventIDs), ["done", "wait"])
+        XCTAssertFalse(notice.item.isUnread, "kept in place as read")
         XCTAssertEqual(shown, 1, "the menu opens to say why")
-        try? await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(rig.model.taskEvents.unreadCount, 2, "nothing is read when the session was not reached")
-        for id in ["done", "wait", "other"] {
-            let stored = await rig.store.event(id: id)
-            XCTAssertNil(stored?.readAt, id)
-        }
-        XCTAssertTrue(rig.recorder.focused.isEmpty)
-        XCTAssertTrue(rig.recorder.activated.isEmpty, "nothing is brought forward on a guess")
-
-        // Mark seen on the notice: the whole task, nothing else.
-        await rig.feed.markSeen(notice)
         await settle { rig.model.taskEvents.unreadCount == 1 }
-        XCTAssertNil(rig.model.taskEventNotice)
-        let wait = await rig.store.event(id: "wait")
-        XCTAssertNotNil(wait?.readAt)
+        for id in ["done", "wait"] {
+            let stored = await rig.store.event(id: id)
+            XCTAssertNotNil(stored?.readAt, "the tap reads the whole task: \(id)")
+        }
         let other = await rig.store.event(id: "other")
         XCTAssertNil(other?.readAt, "another task stays unread")
+        let short = await rig.store.event(id: "short")
+        XCTAssertNil(short?.readAt, "a history-only event is never read on anyone's behalf")
+        XCTAssertTrue(rig.recorder.focused.isEmpty)
+        XCTAssertTrue(rig.recorder.activated.isEmpty, "nothing is brought forward on a guess")
+        XCTAssertEqual(try snapshot(rig).handled.first?.status, .completed, "reading keeps the status")
     }
 
     func testATapThatReachesTheSessionReadsTheWholeTask() async throws {
@@ -214,7 +220,7 @@ final class TaskEventFeedTests: XCTestCase {
         }
     }
 
-    func testAVSCodeSessionIsNeverSwitchedToAndStaysUnread() async throws {
+    func testAnEditorSessionGetsItsAppBroughtForwardAndIsRead() async throws {
         let observed = Date(timeIntervalSince1970: 1_792_458_306)
         let rig = rig(lookup: { recorder, now in
             stubLookup(starts: [2114: observed.addingTimeInterval(-600), 42: observed.addingTimeInterval(-60)],
@@ -237,24 +243,118 @@ final class TaskEventFeedTests: XCTestCase {
         await settle { rig.model.taskEvents.unreadCount == 2 }
         for item in try snapshot(rig).unread {
             await rig.feed.open(item)
-            let notice = try XCTUnwrap(rig.model.taskEventNotice)
-            XCTAssertEqual(notice.reason, .appOnly, item.id)
-            XCTAssertEqual(notice.host, vscodeHost)
-            XCTAssertEqual(notice.message,
-                           "AgentMeter doesn't switch windows in Visual Studio Code, so it can't take you to this session's window.")
-            XCTAssertEqual(notice.eventIDs, item.unreadEventIDs)
+            XCTAssertNil(rig.model.taskEventNotice, "the app came forward, as the tooltip said: \(item.id)")
+            guard case .appOnly? = item.sessionID.flatMap({ rig.model.taskEventRoutes[$0] }) else {
+                return XCTFail("the click's route is kept for the tooltip: \(item.id)")
+            }
         }
         XCTAssertTrue(rig.recorder.focused.isEmpty, "no tab to select in an editor")
-        XCTAssertTrue(rig.recorder.activated.isEmpty, "nothing is brought forward unasked")
-        try? await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(rig.model.taskEvents.unreadCount, 2, "not reached, so not read")
+        XCTAssertEqual(rig.recorder.activated, [vscodeHost.pid, vscodeHost.pid], "the app only, on each click")
+        await settle { rig.model.taskEvents.unreadCount == 0 }
 
-        let notice = try XCTUnwrap(rig.model.taskEventNotice)
-        rig.feed.bringForward(notice)
-        XCTAssertEqual(rig.recorder.activated, [vscodeHost.pid])
+        // The banner of a VS Code session does the same, and opens no menu.
+        await rig.manager.submit(event("later", task: "p3", at: rig.clock))
+        await settle { rig.model.taskEvents.unreadCount == 1 }
+        var shown = 0
+        rig.feed.showList = { shown += 1 }
+        await rig.manager.handleEventResponse(eventID: "later", actionIdentifier: UNNotificationDefaultActionIdentifier)
+        XCTAssertEqual(rig.recorder.activated.count, 3)
+        XCTAssertEqual(shown, 0)
         XCTAssertNil(rig.model.taskEventNotice)
-        try? await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(rig.model.taskEvents.unreadCount, 2, "bringing the app forward is not reaching the session")
+        await settle { rig.model.taskEvents.unreadCount == 0 }
+    }
+
+    func testAnAppThatDoesNotComeForwardIsSaidUnderTheRowAndTheTaskIsRead() async throws {
+        let observed = Date(timeIntervalSince1970: 1_792_458_306)
+        let rig = rig(lookup: { recorder, now in
+            recorder.activateSucceeds = false
+            return stubLookup(starts: [2114: observed.addingTimeInterval(-60)], parents: [2114: 6986],
+                              hosts: [2114: vscodeHost], now: now, recorder: recorder)
+        })
+        rig.model.activeAgents = [liveRow(2114, observed: observed)]
+        await rig.manager.submit(event("done", at: rig.clock))
+        await settle { rig.model.taskEvents.unreadCount == 1 }
+        await rig.feed.open(try XCTUnwrap(try snapshot(rig).unread.first))
+        XCTAssertEqual(rig.recorder.activated, [vscodeHost.pid])
+        XCTAssertEqual(rig.model.taskEventNotice?.reason, .activationFailed)
+        XCTAssertEqual(rig.model.taskEventNotice?.message, "Couldn't bring Visual Studio Code forward")
+        await settle { rig.model.taskEvents.unreadCount == 0 }
+    }
+
+    func testNothingToOpenIsSaidUnderTheRowAndTheTaskIsRead() async throws {
+        let observed = Date(timeIntervalSince1970: 1_792_458_306)
+        let rig = rig(lookup: { recorder, now in
+            // 90 runs in no app (ssh, a tmux server); 10 and 11 both claim
+            // the second session from unrelated windows.
+            stubLookup(starts: [90: observed.addingTimeInterval(-60), 10: observed.addingTimeInterval(-60),
+                                11: observed.addingTimeInterval(-60)],
+                       parents: [90: 89, 10: 13395, 11: 12890], hosts: [10: vscodeHost, 11: vscodeHost],
+                       now: now, recorder: recorder)
+        })
+        rig.model.activeAgents = [liveRow(90, session: "noapp-1", observed: observed),
+                                  liveRow(10, session: "twice-2", observed: observed),
+                                  liveRow(11, session: "twice-2", observed: observed)]
+        await rig.manager.submit(event("a", task: "p1", session: "noapp-1", at: rig.clock))
+        await rig.manager.submit(event("b", task: "p2", session: "twice-2", at: rig.clock))
+        await rig.manager.submit(event("c", task: "p3", session: "gone-3", at: rig.clock))
+        await settle { rig.model.taskEvents.unreadCount == 3 }
+        let expected = ["noapp-1|p1": ("Not in an app AgentMeter can bring forward", TaskEventNotice.Reason.unhosted),
+                        "twice-2|p2": ("More than one process has this session", .ambiguous),
+                        "gone-3|p3": ("Session has ended", .ended)]
+        for item in try snapshot(rig).unread {
+            await rig.feed.open(item)
+            let notice = try XCTUnwrap(rig.model.taskEventNotice, item.id)
+            XCTAssertEqual(notice.itemID, item.id)
+            XCTAssertEqual(notice.message, expected[item.id]?.0)
+            XCTAssertEqual(notice.reason, expected[item.id]?.1)
+        }
+        XCTAssertTrue(rig.recorder.focused.isEmpty)
+        XCTAssertTrue(rig.recorder.activated.isEmpty, "nothing is brought forward on a guess")
+        await settle { rig.model.taskEvents.unreadCount == 0 }
+    }
+
+    func testTheLineGoesWithTheNextClickAndWhenThePopoverCloses() async throws {
+        let rig = rig()
+        for id in ["a", "b", "c", "d"] { await rig.manager.submit(event(id, at: rig.clock)) }
+        await settle { rig.model.taskEvents.unreadCount == 4 }
+        let items = try snapshot(rig).unread
+        await rig.feed.open(items[0])
+        XCTAssertEqual(rig.model.taskEventNotice?.itemID, items[0].id)
+        await rig.feed.open(items[1])
+        XCTAssertEqual(rig.model.taskEventNotice?.itemID, items[1].id, "one line, under the last click")
+        await rig.feed.markRead(items[2])
+        XCTAssertNil(rig.model.taskEventNotice, "the check mark is a click too")
+        await rig.feed.open(items[3])
+        XCTAssertNotNil(rig.model.taskEventNotice)
+        await rig.feed.markAllRead([])
+        XCTAssertNil(rig.model.taskEventNotice)
+        await rig.feed.open(items[0])
+        rig.model.taskEventRoutes["x"] = .ended
+        rig.model.resetTaskEventsPresentation()
+        XCTAssertNil(rig.model.taskEventNotice, "closing the popover clears it")
+        XCTAssertTrue(rig.model.taskEventRoutes.isEmpty)
+    }
+
+    func testThePointerOnARowLooksUpWhereItsClickGoesAndActivatesNothing() async throws {
+        let observed = Date(timeIntervalSince1970: 1_792_458_306)
+        let rig = rig(lookup: { recorder, now in
+            stubLookup(starts: [77: observed.addingTimeInterval(-60)], parents: [77: 500],
+                       hosts: [77: itermHost], now: now, recorder: recorder)
+        })
+        rig.model.activeAgents = [liveRow(77, tty: "ttys002", observed: observed)]
+        await rig.manager.submit(event("done", at: rig.clock))
+        await settle { rig.model.taskEvents.unreadCount == 1 }
+        let item = try XCTUnwrap(try snapshot(rig).unread.first)
+        await rig.feed.preview(item)
+        await rig.feed.preview(item)
+        guard case let .terminalTab(process)? = rig.model.taskEventRoutes["ffafe0d9-aaaa"] else {
+            return XCTFail("no route for the tooltip")
+        }
+        XCTAssertEqual(process.host, itermHost)
+        XCTAssertEqual(rig.recorder.hostLookups, 1, "once per session while the popover is open")
+        XCTAssertTrue(rig.recorder.focused.isEmpty, "looking is not clicking")
+        XCTAssertTrue(rig.recorder.activated.isEmpty)
+        XCTAssertEqual(rig.model.taskEvents.unreadCount, 1, "and reads nothing")
     }
 
     func testAReachedTapLeavesTheTasksHistoryOnlyEventsUnread() async throws {
@@ -279,7 +379,7 @@ final class TaskEventFeedTests: XCTestCase {
         XCTAssertNil(short?.readAt, "a history-only event is never read on anyone's behalf")
     }
 
-    func testAFailedFocusIsExplainedNotRetried() async throws {
+    func testAFailedFocusIsSaidUnderTheRowNotRetried() async throws {
         let observed = Date(timeIntervalSince1970: 1_792_458_306)
         let rig = rig(lookup: { recorder, now in
             recorder.focusSucceeds = false
@@ -295,22 +395,22 @@ final class TaskEventFeedTests: XCTestCase {
         await settle { rig.model.taskEvents.unreadCount == 1 }
         await rig.feed.open(try XCTUnwrap(try snapshot(rig).unread.first))
         XCTAssertEqual(rig.recorder.focused, [77])
+        XCTAssertTrue(rig.recorder.activated.isEmpty, "no app instead of the tab")
         XCTAssertEqual(rig.model.taskEventNotice?.reason, .focusFailed)
-        XCTAssertEqual(rig.model.taskEventNotice?.message, "AgentMeter couldn't switch to this session's iTerm2 tab.")
-        try? await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(rig.model.taskEvents.unreadCount, 1, "a failed focus reads nothing")
+        XCTAssertEqual(rig.model.taskEventNotice?.message, "Couldn't switch to the iTerm2 tab")
+        await settle { rig.model.taskEvents.unreadCount == 0 }
     }
 
     // MARK: - Mark all, restart, overflow
 
-    func testMarkAllHandledCoversOnlyWhatWasShown() async throws {
+    func testMarkAllReadCoversOnlyWhatWasShown() async throws {
         let rig = rig()
         await rig.manager.submit(event("a", at: rig.clock))
         await rig.manager.submit(event("b", at: rig.clock))
         await settle { rig.model.taskEvents.unreadCount == 2 }
         let shown = try snapshot(rig).unread
         await rig.manager.submit(event("c", at: rig.clock))
-        await rig.feed.markAllSeen(shown)
+        await rig.feed.markAllRead(shown)
         await settle { rig.model.taskEvents.unreadCount == 1 }
         XCTAssertEqual(try snapshot(rig).unread.map(\.id), ["ffafe0d9-aaaa|c"])
     }
@@ -325,7 +425,7 @@ final class TaskEventFeedTests: XCTestCase {
                                    intent: .recordOnly(reason: Reason.backgroundShellRunning))
         await first.manager.submit(event("b", task: "p2", at: clock))
         await settle { first.model.taskEvents.unreadCount == 3 }
-        await first.feed.markSeen(try XCTUnwrap(try snapshot(first).unread.first { $0.id.hasSuffix("|p2") }))
+        await first.feed.markRead(try XCTUnwrap(try snapshot(first).unread.first { $0.id.hasSuffix("|p2") }))
         await settle { first.model.taskEvents.unreadCount == 2 }
 
         let second = rig(store: AgentMeterEventStore(fileURL: url, clock: clock.function), clock: clock)

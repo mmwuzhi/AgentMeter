@@ -8,6 +8,8 @@ final class RoutingRecorder {
     var focused: [Int] = []
     var activated: [Int] = []
     var focusSucceeds = true
+    var activateSucceeds = true
+    var hostLookups = 0
 }
 
 @MainActor
@@ -20,7 +22,10 @@ func stubLookup(
         processStart: { starts[$0] },
         parentPID: { parents[$0] },
         tty: { ttys[$0] },
-        host: { hosts[$0] },
+        host: { pid in
+            recorder.hostLookups += 1
+            return hosts[pid]
+        },
         now: { now },
         focusTerminal: { process in
             recorder.focused.append(process.pid)
@@ -28,7 +33,7 @@ func stubLookup(
         },
         activate: { host in
             recorder.activated.append(host.pid)
-            return true
+            return recorder.activateSucceeds
         })
 }
 

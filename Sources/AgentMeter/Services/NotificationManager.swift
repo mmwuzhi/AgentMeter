@@ -164,9 +164,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     /// Invoked on the main actor when the user taps a quota notification.
     var onOpenProvider: ((Provider) -> Void)?
     /// Invoked on the main actor when the user taps an event's notification
-    /// (or one of its actions). Returns whether the tap reached what the
-    /// event is about; only then is the event marked read. Without a handler
-    /// a tap reads it.
+    /// (or one of its actions). Returns whether the tap reads the event;
+    /// only then is it marked read. Without a handler a tap reads it.
     var onEventResponse: (@MainActor (AgentMeterEvent, String) async -> Bool)?
     /// Invoked on the main actor after events were recorded, settled or read
     /// through this manager, so a view can re-query the store.

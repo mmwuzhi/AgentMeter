@@ -9,8 +9,8 @@ import Foundation
 //  * A terminal tab is selected by its tty (AppleScript in Terminal and
 //    iTerm2; Ghostty by working directory). That only selects a tab that
 //    exists.
-//  * Anything else, editors included, gets the app activated on request and
-//    nothing more. No URL is opened: Claude Code's session URI
+//  * Anything else, editors included, gets its app activated by the click
+//    and nothing more. No URL is opened: Claude Code's session URI
 //    (`vscode://anthropic.claude-code/open?session=`) can open a second
 //    process resuming the session in the wrong window (design 5.9 E), and
 //    `vscode://file/<folder>` replaces the last active window's workspace
@@ -19,7 +19,8 @@ import Foundation
 //    closing meanwhile). docs/agent/ui-state.md keeps what was found, for a
 //    future safe way to name the window.
 //  * Anything uncertain (no live process, two processes claiming the
-//    session, a failed focus) does nothing on its own: the menu says why.
+//    session, a failed focus) brings nothing forward: a line under the
+//    task's row says why.
 
 /// A live process that reports the session, as found at click time.
 struct TaskSessionProcess: Sendable, Equatable {
@@ -42,7 +43,7 @@ enum TaskSessionRoute: Sendable, Equatable {
     /// The terminal tab by its tty (Ghostty: by working directory).
     case terminalTab(TaskSessionProcess)
     /// Alive in an app whose window AgentMeter does not switch to (editors)
-    /// or cannot name: the app can be brought forward on request.
+    /// or cannot name: a click brings the app forward.
     case appOnly(TaskSessionProcess)
     /// Alive, but in nothing AgentMeter can bring forward (ssh, tmux server).
     case unhosted

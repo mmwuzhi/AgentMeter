@@ -45,10 +45,8 @@ final class TaskEventsRenderTests: XCTestCase {
         let overflow = TaskEventOverflowNotice(dropped: 12, throughDiscoveredAt: decided, total: 12, lastDroppedAt: now)
         var withOverflow = unread
         withOverflow.overflow = overflow
-        let notice = TaskEventNotice(itemID: "77aa88bb-3|p3", projectName: "agentmeter", sessionLabel: "Session 77aa88bb",
-                                     reason: .appOnly,
-                                     host: TaskSessionHost(pid: 1, bundleID: "com.microsoft.VSCode", name: "Visual Studio Code"),
-                                     eventIDs: ["w"])
+        let clicked = try XCTUnwrap(unread.unread.first { $0.id == "77aa88bb-3|p3" })
+        let notice = TaskEventNotice(item: clicked.markedRead, reason: .ended)
         let handledEvents = items().map { event -> AgentMeterEvent in
             var read = event
             read.readAt = decided

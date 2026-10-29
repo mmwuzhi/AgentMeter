@@ -54,6 +54,7 @@ struct MenuView: View {
                     notice: model.taskEventNotice,
                     hooksEnabled: statusHooksEnabled,
                     sessionTitles: sessionTitles,
+                    routes: model.taskEventRoutes,
                     actions: TaskEventActions(feed: taskEvents))
             }
             ForEach(visibleProviders, id: \.self) { p in
