@@ -335,16 +335,16 @@ final class ActiveAgentOrderingTests: XCTestCase {
 
         XCTAssertEqual(group.agentCount, 1)
         XCTAssertTrue(group.isFlat)
-        XCTAssertEqual(listing.hiddenNote, "2 inactive sessions hidden")
+        XCTAssertEqual(listing.hiddenCount, 2)
     }
 
-    func testNothingListedCountsZeroAndTheNoteSaysWhy() {
+    func testNothingListedCountsZero() {
         let rows = [agent(1, age: 5 * day), agent(2, project: "beta", age: 6 * day)]
 
         let listing = ActiveAgentListing(rows)
 
         XCTAssertEqual(ActiveAgentGrouping.sessionCount(ActiveAgentGrouping.group(listing.agents)), 0)
-        XCTAssertEqual(listing.hiddenNote, "2 inactive sessions hidden")
+        XCTAssertEqual(listing.hiddenCount, 2)
     }
 
     // MARK: Fixtures

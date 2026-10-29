@@ -247,16 +247,6 @@ final class ActiveAgentListingTests: XCTestCase {
         let listing = ActiveAgentListing([agent(1, status: .idle, stateAge: 60, transcriptAge: 60)])
 
         XCTAssertEqual(listing.hiddenCount, 0)
-        XCTAssertNil(listing.hiddenNote)
-    }
-
-    func testTheNoteCountsAndSingularises() {
-        let old = 5 * 86_400.0
-        let one = ActiveAgentListing([agent(1, status: .idle, stateAge: old, transcriptAge: old)])
-        let many = ActiveAgentListing((1...3).map { agent($0, status: .idle, stateAge: old, transcriptAge: old) })
-
-        XCTAssertEqual(one.hiddenNote, "1 inactive session hidden")
-        XCTAssertEqual(many.hiddenNote, "3 inactive sessions hidden")
     }
 
     func testAnEmptyListIsAnEmptyListing() {
@@ -306,10 +296,6 @@ final class ActiveAgentListingTests: XCTestCase {
         // The process is gone: the row goes with it.
         XCTAssertEqual(ActiveAgentService.refreshStatuses([row], payloads: [], registry: registry(.busy),
                                                           isAlive: { _ in false }).count, 0)
-    }
-
-    func testTheHiddenNoteStatesTheWindowItUses() {
-        XCTAssertTrue(ActiveAgentListing.hiddenHelp.contains("\(Int(ActiveAgent.idleListingWindow / 3_600)) hours"))
     }
 
     func testAResumedSessionIsANewProcessAndIsListedWhileTheOldOneIsNot() {

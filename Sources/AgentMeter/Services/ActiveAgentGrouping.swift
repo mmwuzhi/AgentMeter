@@ -2,7 +2,7 @@ import AgentStatusCore
 import Foundation
 
 /// The rows the popover lists for one provider, and how many it leaves out
-/// (`ActiveAgent.isListed`). A row stays when something under it is listed: a
+/// (`ActiveAgent.isListed`; the count is not shown). A row stays when something under it is listed: a
 /// child process that is running keeps its parent's row to hang from. Pure
 /// over the rows, so an app restart or a refresh reaches the same answer.
 struct ActiveAgentListing: Equatable, Sendable {
@@ -23,17 +23,6 @@ struct ActiveAgentListing: Equatable, Sendable {
         }
         agents = all.filter { kept.contains($0.pid) }
         hiddenCount = all.count - agents.count
-    }
-
-    var hiddenNote: String? {
-        guard hiddenCount > 0 else { return nil }
-        return "\(hiddenCount) inactive \(hiddenCount == 1 ? "session" : "sessions") hidden"
-    }
-
-    static var hiddenHelp: String {
-        let hours = Int(ActiveAgent.idleListingWindow / 3_600)
-        return "Sessions with nothing running and no activity for over \(hours) hours are not listed. "
-            + "They are still open, and show up again as soon as they do something."
     }
 }
 
