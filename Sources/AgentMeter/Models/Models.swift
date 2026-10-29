@@ -950,6 +950,38 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     /// `ActiveAgentService.fetch()` drops them before anything renders.
     var isBlank: Bool { status == nil && session == nil }
 
+    /// How long a session doing nothing stays in the popover list after its
+    /// last sign of life. A Claude Code panel keeps its process until the panel
+    /// is closed, so without a limit every panel ever opened stays listed as
+    /// "idle · 9d ago" for as long as the editor runs.
+    static let idleListingWindow: TimeInterval = 24 * 3_600
+
+    /// The newest sign of life the row carries: the last change of its state
+    /// (the registry's or the hook's) or the last write to its transcript.
+    /// Nil when nothing it carries is dated.
+    var lastActivityAt: Date? {
+        [statusUpdatedAt, session?.lastUpdatedAt].compactMap { $0 }.max()
+    }
+
+    /// Whether the popover lists the row: it is running, or it did something
+    /// within `idleListingWindow` (a failed turn is one: its error is dated).
+    /// Nothing is deleted, killed
+    /// or forgotten — the process lives on, its transcript and spend still
+    /// count, and the row is back as soon as it does anything.
+    ///
+    /// `idle` alone does not end a session, and neither does its age. Claude
+    /// Code's own registry vouches for a `busy` or `waiting` process whatever
+    /// the date of that state (a long run with background agents keeps `busy`
+    /// untouched while its main transcript stays quiet). A state only a hook
+    /// reported vouches for nothing once it is that old: an interrupt fires no
+    /// `Stop`, so a `working` can be left behind for good. Without a date to
+    /// judge by, the row stays.
+    var isListed: Bool {
+        if statusSource == .registry, status == .working || status == .waiting { return true }
+        guard let lastActivityAt else { return true }
+        return observedAt.timeIntervalSince(lastActivityAt) <= Self.idleListingWindow
+    }
+
     /// nil when no transcript could be attributed to this process — rendering
     /// nothing beats a wall of "Usage unavailable" rows.
     var usageDisplayText: String? {

@@ -327,6 +327,25 @@ usage presentation, cached state, or Claude live-session integration.
   removed: a dozen of them buried the six sessions that carried information,
   and their provider-tinted dot read as more alive than the gray idle rows
   above them.
+- The popover lists a session only while it is running or did something within
+  `ActiveAgent.idleListingWindow` (24 h): `ActiveAgent.isListed`, applied by
+  `ActiveAgentListing` where `ProviderSection` draws the list, for every
+  provider. Rows come from live processes only (`ps`; a dead PID drops out on
+  the next tick and the registry holds only live ones), and a Claude Code panel
+  keeps its process until the panel is closed. Age
+  alone never hides a row and `idle` alone never counts as ended: the registry
+  vouches for `busy`/`waiting` whatever the date (a long run with background
+  agents keeps its old stamp), a hook-only `working`/`waiting` is trusted only
+  while it is itself within the window (an interrupt fires no `Stop`), and the
+  clock is the newer of the state's last change and the transcript's last
+  write, never the process's start. A row with no dated evidence stays, a
+  running descendant keeps its ancestors' rows, and the section says "N idle
+  sessions hidden". Only the drawn list is filtered: `AppViewModel.activeAgents`
+  keeps every live process, which task-notification routing, session titles and
+  the 2 s status tick read, so a hidden session returns the moment its state or
+  transcript moves. Nothing is deleted, killed or unregistered, spend and
+  history do not read these rows, and `--resume` starts a new process whose
+  fresh registry stamp lists it.
 - Session groups start collapsed behind a summary (count · top status ·
   aggregated usage). Groups and subagent disclosures are automatic until the
   user toggles them: expanded exactly while waiting/error — surfacing sessions

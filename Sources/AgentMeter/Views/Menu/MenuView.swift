@@ -233,6 +233,9 @@ private struct SpinningArrow: View {
 struct ActiveAgentsSection: View {
     let agents: [ActiveAgent]
     var title = "Sessions"
+    /// What the listing left out (`ActiveAgentListing.hiddenNote`), so a row that
+    /// is not there is a stated choice rather than a missing session.
+    var hiddenNote: String? = nil
 
     private var groups: [ActiveAgentGroup] { ActiveAgentGrouping.group(agents) }
     private var totalCount: Int { groups.reduce(0) { $0 + $1.agentCount } }
@@ -265,6 +268,13 @@ struct ActiveAgentsSection: View {
                         ActiveAgentGroupRow(group: group)
                     }
                 }
+            }
+
+            if let hiddenNote {
+                Text(hiddenNote)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .help(ActiveAgentListing.hiddenHelp)
             }
         }
         .padding(12)
@@ -651,7 +661,8 @@ struct ProviderSection: View {
                 activitySection
             }
             if !activeAgents.isEmpty {
-                ActiveAgentsSection(agents: activeAgents)
+                let listing = ActiveAgentListing(activeAgents)
+                ActiveAgentsSection(agents: listing.agents, hiddenNote: listing.hiddenNote)
             }
         }
         .padding(12)
