@@ -231,9 +231,23 @@ usage presentation, cached state, or Claude live-session integration.
   whose span it replaced: `nowAnchor` means "how `nowSpan` was chosen", so a
   bound that reports the flat stretch has to say so, and the exhaustive `switch`
   then makes a forgotten case a compile error rather than a wrong sentence.
-- Accessory apps can open Settings inactive, making Toggle/Picker states look
-  identical. Keep `SettingsView.onAppear` activation and
-  `makeKeyAndOrderFront`; gray traffic lights indicate a non-key window.
+- Every way into Settings goes through `SettingsOpener.open()`: it activates
+  the app (an accessory app's windows otherwise open inactive, behind the
+  active app, with Toggle/Picker states looking identical and gray traffic
+  lights), brings an open or minimized window forward into the active Space
+  (`.moveToActiveSpace`) with its frame and tab, and only opens a closed one
+  through `openSettings`. The window is found by SwiftUI's identifier
+  `com_apple_SwiftUI_Settings_window`; its title is the selected tab's. The
+  popover's button is not a `SettingsLink` (no activation, no bring-forward,
+  popover left open), and `SettingsView` has no `onAppear` activation: SwiftUI
+  builds it at launch. It also puts the window on screen at launch, before the
+  delegate runs, because the binary records the macOS 14 SDK (SwiftPM's
+  stamp); `applicationDidFinishLaunching` withdraws it first thing, so it shows
+  for about 0.2–0.3 s instead of staying open behind other windows.
+- A popover shown while AgentMeter is active (Settings in front) does not close
+  on a click in another app by itself: `.transient` covers that only for a
+  popover shown while the app is inactive. The slot closes its popover on
+  `NSApplication.didResignActiveNotification`; no mouse-event monitor.
 - `ProviderSection` shows the red triangle only when
   `quota.source == .unavailable`. A successful source with no windows uses the
   neutral info icon.

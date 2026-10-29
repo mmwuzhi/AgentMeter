@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        SettingsOpener.withdrawLaunchPresentation()
         // Task outcomes that happened before this (while AgentMeter was not
         // running) are recorded, not announced.
         let launchedAt = Date()

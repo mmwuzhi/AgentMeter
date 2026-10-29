@@ -17,6 +17,10 @@ struct MenuView: View {
     /// (`StatusItemController.taskEventsSlot`); that popover lists the tasks.
     var taskEvents: TaskEventFeed? = nil
     var onRefresh: () -> Void
+    /// Closes the popover and shows Settings (`SettingsOpener`). Not a
+    /// `SettingsLink`: that neither activates the app nor brings an open
+    /// Settings window forward, so a click behind other windows did nothing.
+    var onSettings: () -> Void
     var onQuit: () -> Void
     @State private var sectionsHeight: CGFloat = 0
     @AppStorage("statusHooksEnabled") private var statusHooksEnabled = false
@@ -141,7 +145,7 @@ struct MenuView: View {
                 .font(.caption).foregroundStyle(.secondary)
                 .help("Accrued across refreshes since AgentMeter started tracking. Local logs only reach back about 30 days, so earlier spend is not included.")
             Spacer()
-            SettingsLink { Text("Settings").font(.caption) }.buttonStyle(.borderless)
+            Button("Settings", action: onSettings).buttonStyle(.borderless).font(.caption)
             Button("Quit", action: onQuit).buttonStyle(.borderless).font(.caption)
         }
         .padding(.horizontal, 12)

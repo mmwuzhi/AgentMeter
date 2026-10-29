@@ -164,6 +164,8 @@ private final class StatusItemSlotController: NSObject {
 
     func remove() {
         countdownTicker.stop()
+        NotificationCenter.default.removeObserver(
+            self, name: NSApplication.didResignActiveNotification, object: nil)
         closePopover()
         NSStatusBar.system.removeStatusItem(statusItem)
     }
@@ -194,9 +196,24 @@ private final class StatusItemSlotController: NSObject {
             scope: MenuViewScope(slot: slot),
             taskEvents: taskEvents,
             onRefresh: { [weak self] in self?.coordinator.refresh(forceAll: true) },
+            onSettings: { [weak self] in
+                self?.closePopover()
+                SettingsOpener.open()
+            },
             onQuit: { NSApp.terminate(nil) }
         )
         popover.contentViewController = NSHostingController(rootView: root)
+        // A transient popover closes on a click in another app only when it
+        // was shown while AgentMeter was inactive. Shown from an active
+        // AgentMeter (Settings in front), the click deactivates the app and
+        // the popover stays up over the other app, so leaving the app closes it.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appDidResignActive),
+            name: NSApplication.didResignActiveNotification, object: nil)
+    }
+
+    @objc private nonisolated func appDidResignActive() {
+        Task { @MainActor in self.closePopover() }
     }
 
     func updateTitle() {

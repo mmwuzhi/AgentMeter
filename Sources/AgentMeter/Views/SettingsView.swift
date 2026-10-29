@@ -14,14 +14,11 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
         }
         .frame(width: 460, height: 540)
-        .onAppear {
-            // Accessory apps open Settings inactive, which desaturates control
-            // accents so on/off look identical. Activate so the window becomes key.
-            NSApp.activate(ignoringOtherApps: true)
-            DispatchQueue.main.async {
-                NSApp.windows.first { $0.title == "AgentMeter Settings" }?.makeKeyAndOrderFront(nil)
-            }
-        }
+        // Activation and bringing the window forward live in `SettingsOpener`,
+        // which every way in goes through. Not here in `onAppear`: that runs
+        // when SwiftUI builds this view at launch, where it activated the app
+        // and made the unasked launch window key, and never again for a
+        // window that is already open.
     }
 }
 
