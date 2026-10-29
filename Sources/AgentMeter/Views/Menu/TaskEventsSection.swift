@@ -23,13 +23,16 @@ extension TaskEventActions {
     }
 }
 
-/// The popover's list of Claude Code task notifications: one compact header
-/// that always says which of "not read yet", "nothing so far", "all read" or
-/// "N unread" holds, the unread tasks under it, and the read ones behind a
-/// disclosure. Opening the popover marks nothing read. "Read" says the user
-/// looked, never that a wait is over or an unconfirmed task finished.
+/// The popover's list of Claude Code task notifications: one header row that
+/// always says which of "not read yet", "nothing so far", "all read" or
+/// "N unread" holds and opens the list under it (collapsed by default, see
+/// `AppViewModel.taskEventsExpanded`): the unread tasks, then the read ones
+/// behind a disclosure. Opening the popover marks nothing read. "Read" says
+/// the user looked, never that a wait is over or an unconfirmed task
+/// finished.
 struct TaskEventsSection: View {
     let state: TaskEventsState
+    var isExpanded: Binding<Bool> = .constant(false)
     var notice: TaskEventNotice?
     /// Without the hooks no task outcome can be recorded at all.
     var hooksEnabled: Bool
@@ -51,40 +54,67 @@ struct TaskEventsSection: View {
     private var unread: [TaskEventItem] { snapshot?.unread ?? [] }
     private var rows: (top: [TaskEventItem], read: [TaskEventItem]) { Self.rows(snapshot, notice: notice) }
 
+    private var expanded: Bool { isExpanded.wrappedValue }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
+            // Rare, and about notifications lost for good: shown collapsed too.
             if let overflow = snapshot?.overflow {
                 overflowRow(overflow)
             }
-            if !rows.top.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(visibleUnread) { item in
-                        row(item, markRead: item.isUnread ? { actions.markRead(item) } : nil)
-                    }
+            if expanded {
+                if rows.top.isEmpty, rows.read.isEmpty {
+                    Text(stateHelp)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                moreUnreadControl
-            }
-            if !rows.read.isEmpty {
-                readList(rows.read)
+                if !rows.top.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(visibleUnread) { item in
+                            row(item, markRead: item.isUnread ? { actions.markRead(item) } : nil)
+                        }
+                    }
+                    moreUnreadControl
+                }
+                if !rows.read.isEmpty {
+                    readList(rows.read)
+                }
             }
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, expanded ? 12 : 8)
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.04)))
     }
 
+    /// One row, the whole of it a toggle, like the popover's other
+    /// disclosures (Activity, session groups): chevron, bell, name, state.
     private var header: some View {
         HStack(spacing: 6) {
-            Image(systemName: unread.isEmpty ? "bell" : "bell.badge")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("Task notifications").font(.caption.weight(.semibold))
-            Spacer(minLength: 8)
-            Text(stateText)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(unread.isEmpty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Color.blue))
-                .help(stateHelp)
-            if !unread.isEmpty {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { isExpanded.wrappedValue.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                    Image(systemName: unread.isEmpty ? "bell" : "bell.badge")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Task notifications").font(.caption.weight(.semibold))
+                    Spacer(minLength: 8)
+                    Text(stateText)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(unread.isEmpty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Color.blue))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(stateHelp + (expanded ? " Click to hide the list." : " Click to show the list."))
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+            if expanded, !unread.isEmpty {
                 Button("Mark all read") { actions.markAllRead(unread) }
                     .buttonStyle(.borderless)
                     .font(.caption2)
@@ -107,7 +137,7 @@ struct TaskEventsSection: View {
         if snapshot.isEmpty, !hooksEnabled {
             return "Needs live session status: turn it on in Settings › General."
         }
-        return "Claude Code tasks that finished, failed or need input. Each stays unread until you click it here or in its notification, or mark it read."
+        return "Claude Code tasks that finish, fail or need input show up here. Clicking one, here or in its notification, marks it read."
     }
 
     /// The unread tasks, with the last clicked one kept where it was while

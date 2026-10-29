@@ -51,6 +51,7 @@ struct MenuView: View {
             if let taskEvents {
                 TaskEventsSection(
                     state: model.taskEvents,
+                    isExpanded: $model.taskEventsExpanded,
                     notice: model.taskEventNotice,
                     hooksEnabled: statusHooksEnabled,
                     sessionTitles: sessionTitles,

@@ -57,18 +57,31 @@ final class TaskEventsRenderTests: XCTestCase {
         for index in 0..<7 { many.append(listEvent("m\(index)", task: "m\(index)", at: Double(index * 60))) }
         let titles = ["ffafe0d9-1": "Fix the quota pacing tooltip", "77aa88bb-3": "Phase 1c notification list"]
 
-        let cases: [(String, TaskEventsState, TaskEventNotice?, Bool)] = [
-            ("1-loading", .loading, nil, true),
-            ("2-none-yet", .loaded(.empty), nil, true),
-            ("3-hooks-off", .loaded(.empty), nil, false),
-            ("4-unread", .loaded(unread), nil, true),
-            ("5-unread-notice-overflow", .loaded(withOverflow), notice, true),
-            ("6-all-handled", .loaded(handled), nil, true),
-            ("7-more-unread", .loaded(TaskEventsSnapshot.make(unreadEvents: many, recentEvents: [], overflow: nil)), nil, true),
+        // The clicked task, read since, kept in place with its line.
+        let readClicked = handledEvents.filter { $0.id == "w" }
+        let afterClick = TaskEventsSnapshot.make(unreadEvents: items().filter { $0.id != "w" },
+                                                 recentEvents: readClicked, overflow: nil)
+        let routes: [String: TaskSessionRoute] = [
+            "ffafe0d9-1": .appOnly(TaskSessionProcess(pid: 2, host: TaskSessionHost(pid: 1, bundleID: "com.microsoft.VSCode", name: "Code"))),
         ]
-        for (name, state, notice, hooks) in cases {
+
+        let cases: [(String, TaskEventsState, TaskEventNotice?, Bool, Bool)] = [
+            ("1-loading", .loading, nil, true, false),
+            ("2-none-yet", .loaded(.empty), nil, true, false),
+            ("2-none-yet-expanded", .loaded(.empty), nil, true, true),
+            ("3-hooks-off-expanded", .loaded(.empty), nil, false, true),
+            ("4-unread", .loaded(unread), nil, true, false),
+            ("4-unread-expanded", .loaded(unread), nil, true, true),
+            ("5-line-under-clicked-row-overflow", .loaded({ var s = afterClick; s.overflow = overflow; return s }()), notice, true, true),
+            ("5-overflow-collapsed", .loaded(withOverflow), nil, true, false),
+            ("6-all-read", .loaded(handled), nil, true, false),
+            ("6-all-read-expanded", .loaded(handled), nil, true, true),
+            ("7-more-unread-expanded", .loaded(TaskEventsSnapshot.make(unreadEvents: many, recentEvents: [], overflow: nil)), nil, true, true),
+        ]
+        for (name, state, notice, hooks, expanded) in cases {
             for dark in [false, true] {
-                try render(TaskEventsSection(state: state, notice: notice, hooksEnabled: hooks, sessionTitles: titles, now: now)
+                try render(TaskEventsSection(state: state, isExpanded: .constant(expanded), notice: notice, hooksEnabled: hooks,
+                                             sessionTitles: titles, routes: routes, now: now)
                             .padding(12)
                             .frame(width: 340),
                            name: "list-\(name)", dark: dark)

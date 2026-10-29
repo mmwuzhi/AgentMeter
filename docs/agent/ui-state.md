@@ -476,6 +476,16 @@ usage presentation, cached state, or Claude live-session integration.
   read, so "not read yet" never reads as "nothing happened"; the popover
   header always says which of Loading / None yet (Off without the hooks) /
   All read / N unread holds.
+- The section is one header row (chevron, bell, "Task notifications", the
+  state above) and opens the list on a click. `AppViewModel.taskEventsExpanded`
+  holds that for the popover's lifetime only: collapsed at first and again
+  when the popover closes (`resetTaskEventsPresentation`, from
+  `popoverDidClose`), so the list squeezes the quotas and sessions only
+  while the user asked for it; a banner tap that opens the popover on the
+  list (`TaskEventFeed.showList`) expands it first. Expanded: up to 5
+  unread rows ("Show N more"), "Read · latest 10" collapsed, and "Mark all
+  read" in the header while something is unread. The overflow notice shows
+  collapsed too.
 - One item per task (`<session>|<task>`, `TaskEventItem`): a wait and the
   end replace each other on screen as their banners do, and the item shows
   the latest status. The menu bar counts tasks, not events. A row reads

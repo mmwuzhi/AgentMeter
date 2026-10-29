@@ -58,7 +58,7 @@ final class TaskEventFeed {
     private let lookup: TaskSessionLookup
     private let log: @Sendable (String) -> Void
     /// Opens the menu that lists the tasks, for a notification click that
-    /// could not bring anything forward.
+    /// could not bring anything forward. The feed expands the list first.
     var showList: (@MainActor () -> Void)?
 
     private var reloadTask: Task<Void, Never>?
@@ -174,6 +174,7 @@ final class TaskEventFeed {
         if let failure, let item = listed ?? TaskEventItem.items(from: [event]).first {
             model.taskEventNotice = TaskEventNotice(item: item.markedRead, reason: failure.reason,
                                                     hostName: failure.hostName)
+            model.taskEventsExpanded = true
             showList?()
         }
         if !ids.isEmpty { await manager.markEventsRead(ids: ids) }

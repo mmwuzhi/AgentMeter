@@ -181,6 +181,7 @@ final class TaskEventFeedTests: XCTestCase {
         XCTAssertEqual(notice.itemID, "ffafe0d9-aaaa|p1")
         XCTAssertFalse(notice.item.isUnread, "kept in place as read")
         XCTAssertEqual(shown, 1, "the menu opens to say why")
+        XCTAssertTrue(rig.model.taskEventsExpanded, "on the list, not on its collapsed header")
         await settle { rig.model.taskEvents.unreadCount == 1 }
         for id in ["done", "wait"] {
             let stored = await rig.store.event(id: id)
@@ -261,6 +262,7 @@ final class TaskEventFeedTests: XCTestCase {
         XCTAssertEqual(rig.recorder.activated.count, 3)
         XCTAssertEqual(shown, 0)
         XCTAssertNil(rig.model.taskEventNotice)
+        XCTAssertFalse(rig.model.taskEventsExpanded, "a click that worked leaves the list as it was")
         await settle { rig.model.taskEvents.unreadCount == 0 }
     }
 
@@ -311,6 +313,19 @@ final class TaskEventFeedTests: XCTestCase {
         XCTAssertTrue(rig.recorder.focused.isEmpty)
         XCTAssertTrue(rig.recorder.activated.isEmpty, "nothing is brought forward on a guess")
         await settle { rig.model.taskEvents.unreadCount == 0 }
+    }
+
+    func testTheListStartsCollapsedAndCollapsesAgainWhenThePopoverCloses() async throws {
+        let rig = rig()
+        XCTAssertFalse(rig.model.taskEventsExpanded, "collapsed by default")
+        await rig.manager.submit(event("a", at: rig.clock))
+        await settle { rig.model.taskEvents.unreadCount == 1 }
+        XCTAssertFalse(rig.model.taskEventsExpanded, "something unread does not open it")
+        rig.model.taskEventsExpanded = true
+        await rig.feed.open(try XCTUnwrap(try snapshot(rig).unread.first))
+        XCTAssertTrue(rig.model.taskEventsExpanded, "a row click leaves it open")
+        rig.model.resetTaskEventsPresentation()
+        XCTAssertFalse(rig.model.taskEventsExpanded, "closing the popover collapses it")
     }
 
     func testTheLineGoesWithTheNextClickAndWhenThePopoverCloses() async throws {

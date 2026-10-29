@@ -120,7 +120,8 @@ final class StatusItemController {
         controller?.showPopover()
     }
 
-    /// Opens the popover that lists the task notifications.
+    /// Opens the popover that lists the task notifications (`TaskEventFeed`
+    /// expands the list before it asks).
     func showTaskEvents() {
         guard let slot = Self.taskEventsSlot(visible: slotOrder) else { return }
         slotControllers[slot]?.showPopover()

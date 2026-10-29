@@ -51,6 +51,11 @@ final class AppViewModel {
     /// (`TaskEventFeed`). `.loading` until the log has been read once, so
     /// "not read yet" never shows as "nothing happened".
     var taskEvents: TaskEventsState = .loading
+    /// Whether the task list is open under its header. Not persisted:
+    /// collapsed at first and again whenever the popover closes, so the list
+    /// pushes the quotas and sessions down only while the user wants it; a
+    /// banner tap that opens the popover to show the list opens it expanded.
+    var taskEventsExpanded = false
     /// What the last click on a task could not do, as a line under its row.
     /// Not persisted; cleared by the next click and when the popover closes.
     var taskEventNotice: TaskEventNotice?
@@ -138,9 +143,10 @@ final class AppViewModel {
         sessionDisclosure = sessionDisclosure.filter { valid.contains($0.key) }
     }
 
-    /// The popover that lists the tasks closed: the last click's line and the
-    /// looked-up routes go with it.
+    /// The popover that lists the tasks closed: the list collapses, and the
+    /// last click's line and the looked-up routes go with it.
     func resetTaskEventsPresentation() {
+        taskEventsExpanded = false
         taskEventNotice = nil
         taskEventRoutes = [:]
     }
