@@ -15,6 +15,8 @@ struct TaskNotificationSettingsSections: View {
     private var waiting = AgentMeterNotificationPreferences().taskWaiting
     @AppStorage(AgentMeterNotificationPreferences.showsSessionTitleKey)
     private var showsSessionTitle = AgentMeterNotificationPreferences().showsSessionTitle
+    @AppStorage(AgentMeterNotificationPreferences.notifiesHeadlessRunsKey)
+    private var notifiesHeadlessRuns = AgentMeterNotificationPreferences().notifiesHeadlessRuns
     @AppStorage(TaskEventListVisibility.key)
     private var showsList = TaskEventListVisibility.defaultValue
 
@@ -39,6 +41,11 @@ struct TaskNotificationSettingsSections: View {
             Text("Banners name the session as the Sessions list does. Unless you renamed the session, its title is Claude's summary of your first prompt, and banners can appear on the lock screen; off, they show the project and a short session id instead. The menu's list shows titles either way: AgentMeter keeps each task's session title in its history on this Mac. Applies to banners sent from now on.")
                 .font(.caption).foregroundStyle(.secondary)
         }
+        Section("Claude Code tasks: headless runs") {
+            Toggle("Notify about headless runs", isOn: $notifiesHeadlessRuns)
+            Text("Runs Claude Code itself marks as unattended: claude -p, the Agent SDK, and Claude Code started from inside another session, such as a batch job's helpers. Off, what becomes of them is kept in AgentMeter's history only: no banner, not listed in the menu, not counted, and nothing is marked read. On, they are announced like your own sessions. Your sessions in a terminal, VS Code or the desktop app, and background sessions you start (claude --bg), are announced either way. An editor that runs Claude Code through the Agent SDK counts as unattended too: turn this on if you use one. Applies from the next finished, failed or waiting task.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
         Section("Claude Code tasks: AgentMeter menu") {
             Toggle("Show task list in the menu", isOn: $showsList)
             Text("Lists finished, failed and waiting tasks in the popover, with the unread count in the menu bar. Off hides both; banners, the history and which tasks are read stay as they are, so turning it back on shows everything again.")
@@ -54,6 +61,8 @@ struct TaskNotificationSettingsSections: View {
                 LabeledContent("Permission", value: settings.authorizationText)
                 if settings.canPost {
                     LabeledContent("Alert style", value: settings.alertStyleText)
+                    Text(AgentMeterNotificationSettings.styleExplanation)
+                        .font(.caption).foregroundStyle(.secondary)
                     LabeledContent("Lock screen", value: settings.lockScreenText)
                 }
                 if let guidance = settings.guidance {

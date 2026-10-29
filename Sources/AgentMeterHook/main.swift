@@ -229,6 +229,8 @@ func recordTaskLedgerEvent(sessionID: String, at date: Date) {
               backgroundTaskID: input.toolResponse?.backgroundTaskID,
               cwd: input.cwd,
               transcriptPath: input.transcriptPath?.value,
+              attended: TaskLedgerEvent.attended(environmentValue: environmentValue("CLAUDE_CODE_SESSION_ATTENDED"),
+                                                 sessionKind: environmentValue("CLAUDE_CODE_SESSION_KIND")),
               at: date
           ) else { return }
     _ = try? TaskLedgerStore.apply(event, sessionID: sessionID)

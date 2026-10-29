@@ -426,6 +426,33 @@ final class TaskOutcomeMonitorTests: XCTestCase {
         XCTAssertEqual(outcomes.first?.launch, .interactive)
     }
 
+    /// 2026-10-29: a `claude -p` run from an editor session's `Bash`
+    /// registers as `interactive` / `claude-vscode`, like that session, but
+    /// its hooks say unattended. The task's attended flag outranks every
+    /// registry reading; without one the registry still decides.
+    func testTheTasksAttendedFlagOutranksTheRegistry() {
+        func end(attended: Bool?, registry launch: TaskSessionLaunch?) -> TaskOutcome? {
+            var script = LedgerScript()
+            script.apply(.prompt(promptID: "p1", shape: .human), at: 1, attended: attended)
+            script.stop(at: 120)
+            var tracker = TaskOutcomeTracker()
+            let idle = TaskOutcomeRegistryReading(status: .idle, statusUpdatedAt: LedgerScript.at(120.05), launch: launch)
+            var outcomes: [TaskOutcome] = []
+            for second in [120.5, 123.0] {
+                outcomes += tracker.evaluate(ledgers: [script.ledger!], registry: [script.sessionID: idle], payloads: [:],
+                                             now: LedgerScript.at(second), transcript: { _ in .unavailable }).outcomes
+            }
+            return outcomes.first
+        }
+        XCTAssertEqual(end(attended: false, registry: .interactive)?.launch, .headless)
+        XCTAssertEqual(end(attended: false, registry: .interactive)?.attended, false)
+        XCTAssertEqual(end(attended: true, registry: .headless)?.launch, .interactive)
+        XCTAssertEqual(end(attended: nil, registry: .interactive)?.launch, .interactive, "an older helper: the registry")
+        XCTAssertEqual(end(attended: nil, registry: .headless)?.launch, .headless)
+        XCTAssertNil(end(attended: nil, registry: nil)?.launch)
+        XCTAssertEqual(end(attended: false, registry: nil)?.kind, .completed, "detection itself never looks at it")
+    }
+
     /// Review finding 7: one pass that misses a session's registry file (a
     /// read mid-rewrite) does not count as "no registry" and end a held task.
     func testTrackerRidesOverAMissedRegistryRead() {

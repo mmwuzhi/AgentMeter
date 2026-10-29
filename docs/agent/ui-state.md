@@ -517,8 +517,9 @@ usage presentation, cached state, or Claude live-session integration.
   manual mark, which the user found pointless, and the click already shows
   the user looked. Closing a banner, opening the popover and time read
   nothing. An event its producer recorded for the history only
-  (`TaskOutcomeAnnouncement.historyOnlyReasons`: before launch, under a
-  minute, a report's turn, crons, interruptions) asks nobody to read it: it
+  (`TaskOutcomeAnnouncement.historyOnlyReasons`: before launch, a headless
+  run, under a minute, a report's turn, crons, interruptions) asks nobody to
+  read it: it
   is never listed or counted, stays unread in the log, and the log keeps and
   drops it like a read event (`Limits.historyOnlyReasons`). A kind whose
   banner is switched off in Settings is still listed and counted: the
@@ -535,14 +536,18 @@ usage presentation, cached state, or Claude live-session integration.
   subagent's hooks, and the ledger keeps main-agent turns only, so an
   `agent-<id>.jsonl` never names one. The title is stored on the subject
   (`sessionTitle`, events.jsonl format 2; a format 1 line reads with nil),
-  and so is `sessionKind` (`TaskSessionLaunch`, from every live registry
-  entry of the session: interactive when any entry's `kind` is
-  `interactive`, headless only when every entry has a known SDK entrypoint
-  (`sdk-cli`, `sdk-ts`, `sdk-py`), otherwise unknown and no hint, so a
-  `claude -p` helper registered under the user's session id never makes it
-  headless; remembered per session by `TaskOutcomeTracker`, interactive
-  once seen, since a headless process often exits before its end is
-  called). Banner: "Finished ·
+  and so is `sessionKind` (`TaskSessionLaunch`): first the task's attended
+  flag from its hooks (`TaskLedgerTask.attended`, below), headless when
+  Claude Code said unattended; without one, every live registry entry of
+  the session: interactive when any entry's `kind` is `interactive`,
+  headless only when every entry has a known SDK entrypoint (`sdk-cli`,
+  `sdk-ts`, `sdk-py`), otherwise unknown and no hint; remembered per
+  session by `TaskOutcomeTracker`, interactive once seen, since a headless
+  process often exits before its end is called. The registry alone cannot
+  tell a script's run from the user's session (2026-10-29): a `claude -p`
+  started from an editor session's `Bash` inherits `entrypoint`
+  `claude-vscode` and registers as `interactive`, exactly like that
+  session. Banner: "Finished ·
   <title>" over "<project> · Claude Code · <short id>" ("Headless run" in
   place of "Claude Code"), or without a title (or with the switch off)
   "Finished · <project>" over "Session <short id>" (· "Headless run"); then
@@ -555,8 +560,42 @@ usage presentation, cached state, or Claude live-session integration.
   reach the lock screen); with the switch off banners use project and short
   id, and the list still shows titles (the title is kept with the event
   either way). Only `interactive` / `claude-vscode` registry entries were
-  seen locally; the SDK entrypoint names follow Claude Code's, unverified
-  here.
+  seen locally, the `claude -p` children included; the SDK entrypoint names
+  follow Claude Code's, unverified here.
+- Headless runs. A task whose session Claude Code
+  counts unattended is announced only with Settings › Alerts › "Notify about
+  headless runs" on (`taskNotificationsIncludeHeadlessRuns`, default off).
+  Off, every outcome of it (failures and waits included) is recorded with
+  `headlessRun`, a history-only reason: no banner, not listed or counted,
+  kept and aged out like a read event, never marked read. The switch is
+  read at each submit, so it applies from the next outcome. The signal is
+  Claude Code's own: it sets `CLAUDE_CODE_SESSION_ATTENDED` ("1"/"0") in
+  every command it runs, hooks included, and the helper stores it on the
+  task (`TaskLedgerEvent.attended(environmentValue:sessionKind:)`). "0"
+  covers `claude -p` and the SDKs, any Claude Code started from inside
+  another session (`CLAUDE_CODE_CHILD_SESSION` inherited), and its
+  background sessions; "1" an interactive terminal session, and an editor or
+  desktop-app session that is not such a child (2.1.312 binary; a probe
+  `claude -p` from this session's `Bash` saw "0" on 2.1.301, this editor
+  session's own commands "1"). Background sessions
+  (`CLAUDE_CODE_SESSION_KIND` `bg`, `daemon`, `daemon-worker`: `claude
+  --bg`, routines) are runs a person started and waits on, so the helper
+  stores them as attended (read from the binary; no such session seen here).
+  No value leaves the task unknown and the registry decides as before; a
+  build that does not set the variable passes on whatever its environment
+  holds (a parent session's "1" when started from its `Bash`: banners as
+  before, never fewer). Limits: a person's own `claude -p` in a terminal
+  counts as headless; an editor that drives Claude Code through the Agent
+  SDK (not one of Claude Code's own hosts) counts as unattended, and so
+  would the sessions of an editor started from inside a Claude Code session
+  (it would pass the child marker on); none seen here in 60 days of
+  transcripts (726 `claude-vscode`, 3 `cli`, 1 `sdk-cli`), and Settings
+  says to turn the switch on for such an editor. Builds without
+  `headlessRun` in `historyOnlyReasons` (before this one) list such events
+  as unread if they read the same `events.jsonl` (a rollback, a dev build
+  beside the installed one); whichever app launched last also owns the
+  shared helper, and an older helper writes no flag. No grouping of
+  banners: past this rule the bursts left were independent sessions.
 - `task_unknown` reads "Task status unconfirmed" with
   `TaskEventStatus.unconfirmedExplanation` ("Background tasks were still
   running at the last check…"), never the stored detail line: 1b wrote
@@ -622,12 +661,20 @@ usage presentation, cached state, or Claude live-session integration.
 - Settings › Alerts shows the three banner switches (default on; labelled as
   banners, with the note that the menu still records, lists and counts the
   task), the session-title switch (default on), "Show task list in the
-  menu" (default on) and what System Settings says
-  (`AgentMeterNotificationSettings`: permission, alert style, lock screen,
-  previews), read when the pane appears and when AgentMeter becomes active
-  again. AgentMeter never changes them and never imitates a persistent
-  notification; it says to choose Persistent in System Settings and links to
-  AgentMeter's page there. With previews hidden, a task banner reads as the
+  menu" (default on), "Notify about headless runs" (default off) and what
+  System Settings says (`AgentMeterNotificationSettings`: permission, alert
+  style, lock screen, previews), read when the pane appears and when
+  AgentMeter becomes active again. Temporary (banners: shown once, gone by
+  themselves, kept in Notification Center) and Persistent (alerts: on
+  screen until clicked or closed) are the user's choice per app in System
+  Settings; `UNNotificationSettings.alertStyle` is read-only and no request
+  option or interruption level makes a notification stay. The pane explains
+  both, shows the current one and links to AgentMeter's page there
+  (`x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=`,
+  the extension's own URL scheme; undocumented by Apple). Temporary is the
+  default (no `NSUserNotificationAlertStyle` in Info.plist), so only "no
+  notifications on screen" and "not allowed" get guidance. AgentMeter never
+  changes them and never imitates a persistent notification. With previews hidden, a task banner reads as the
   category's placeholder ("Claude Code task update").
 
 ## Spend and usage
@@ -752,8 +799,11 @@ usage presentation, cached state, or Claude live-session integration.
   (`<task-notification`, `<agent-message`, or any `<tag` while subagents or
   workflows run or within 10 min of an uncertain end) and joins the task, as
   a new segment when the task had really ended. Its location (`cwd`,
-  transcript) comes from main-thread events only. No prompt, message or tool
-  text is kept.
+  transcript) comes from main-thread events only, and so does `attended`
+  (the hook environment's `CLAUDE_CODE_SESSION_ATTENDED`): a task keeps the
+  first value one of its main-thread events carried, and a new task starts
+  unknown, so a resumed session gets the new process's value. No prompt,
+  message or tool text is kept.
 - `TaskOutcomeDetector` decides from the ledger, the live registry entry and
   the payload (POC C1–C3 and C1d on 2.1.301). Completed: a main `Stop` with
   no subagent or workflow in flight, and the registry turned idle (or
@@ -800,8 +850,9 @@ usage presentation, cached state, or Claude live-session integration.
   task's end would replace the "Finished" banner), and the event store's id dedup
   (`task_<kind>|<session>|<task>|<segment>[|…]`) keeps a restart from
   announcing it again. `TaskOutcomeAnnouncement` records without posting
-  what happened over 120 s before launch, tasks under 60 s, tasks a report
-  opened, sessions with crons armed, uncertain ends, and every interruption.
+  what happened over 120 s before launch, headless runs (unless switched
+  on), tasks under 60 s, tasks a report opened, sessions with crons armed,
+  uncertain ends, and every interruption.
   All of one
   task's banners share `agentmeter.task.<session>.<task>`, so a wait and the
   end replace each other. The text is the status, the session's title, the

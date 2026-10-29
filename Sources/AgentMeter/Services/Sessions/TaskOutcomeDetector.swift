@@ -54,15 +54,25 @@ import Foundation
 //   record must be Claude Code's interruption marker. Recorded, never
 //   announced. A registry-idle turn without the marker is left alone.
 
-/// How a session's process was started, as Claude Code's registry says
-/// (`kind`, `entrypoint`): a person's session in a terminal or an editor, or
-/// a run a script started (`claude -p`, the Agent SDK). Only what the
-/// registry says; nil without an entry, and nothing is guessed from a
-/// folder or a title. The detector never uses it: a task's notification
-/// names it so a script's run is not taken for one of the user's sessions.
+/// How a session's process was started: a person's session in a terminal
+/// or an editor, or a run a script or another session started (`claude -p`,
+/// the Agent SDK). Only what Claude Code says: first the task's attended
+/// flag from its hooks (`TaskLedgerTask.attended`, `init(attended:)`), else
+/// the registry's `kind` and `entrypoint`; nil when neither says, and nothing
+/// is guessed from a folder or a title. The registry alone cannot tell a
+/// `claude -p` run from another session's `Bash` apart from that session: it
+/// inherits `entrypoint` `claude-vscode` and registers as `interactive`
+/// (2.1.301, 2026-10-29). The detector never uses it; the announcement does
+/// (`TaskOutcomeAnnouncement.intent`), and the text names it.
 enum TaskSessionLaunch: String, Sendable, Equatable {
     case interactive
     case headless
+
+    /// Claude Code's attended flag: attended is a person's session.
+    init?(attended: Bool?) {
+        guard let attended else { return nil }
+        self = attended ? .interactive : .headless
+    }
 
     /// The SDK's entrypoints: `sdk-cli` is `claude -p`, `sdk-ts` and `sdk-py`
     /// the Agent SDKs. Only these count as headless: a kind or entrypoint
@@ -188,9 +198,12 @@ struct TaskOutcome: Sendable, Equatable {
     var waitingReason: ActiveAgentWaitingReason?
     /// Names the occurrence; also the event id (`AgentMeterEvent.id`).
     var id: String
-    /// Set by `TaskOutcomeTracker` for naming the session, never by the
-    /// detector: the session's transcript (the ledger's, from the hooks) and
-    /// how its process was started (the registry's, last seen).
+    /// The task's attended flag, as its ledger has it (`TaskLedgerTask
+    /// .attended`).
+    var attended: Bool? = nil
+    /// Set by `TaskOutcomeTracker`, never by the detector: the session's
+    /// transcript (the ledger's, from the hooks) and how its process was
+    /// started (`attended`, else the registry's, last seen).
     var transcriptPath: String? = nil
     var launch: TaskSessionLaunch? = nil
 
@@ -260,7 +273,7 @@ enum TaskOutcomeDetector {
             kind: .completed, confidence: .high, sessionID: ledger.sessionID, taskKey: task.key,
             segment: task.segment, origin: task.origin, occurredAt: now,
             startedAt: task.segment == 0 ? task.startedAt : task.segmentStartedAt,
-            endedAt: now, cwd: ledger.cwd, id: "")
+            endedAt: now, cwd: ledger.cwd, id: "", attended: task.attended)
 
         if !task.hasEnded {
             waiting(task, base: base, registry: registry, payload: payload, now: now, timing: timing, into: &evaluation)

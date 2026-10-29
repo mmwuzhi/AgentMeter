@@ -72,7 +72,7 @@ struct TaskOutcomeTracker {
             for var outcome in evaluation.outcomes where settled.insert(outcome.id).inserted {
                 guard outcome.kind != .unresolved else { continue }
                 outcome.transcriptPath = ledger.transcriptPath
-                outcome.launch = launches[ledger.sessionID]
+                outcome.launch = TaskSessionLaunch(attended: outcome.attended) ?? launches[ledger.sessionID]
                 outcomes.append(outcome)
             }
         }

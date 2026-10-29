@@ -71,7 +71,7 @@ final class TaskEventListTests: XCTestCase {
     func testTheHistoryOnlyReasonsAreTheProducersRecordOnlyReasonsButUnconfirmed() {
         XCTAssertEqual(TaskOutcomeAnnouncement.historyOnlyReasons,
                        [Reason.beforeLaunch, Reason.reportOrigin, Reason.cronsArmed, Reason.belowMinimumDuration,
-                        Reason.notAnnounced])
+                        Reason.notAnnounced, Reason.headlessRun])
     }
 
     // MARK: - One item per task

@@ -21,24 +21,35 @@ import Foundation
 /// first prompt, and banners can show on the lock screen); a stored false
 /// still wins. It is read when the event is built, so it applies from the
 /// next one; events already recorded keep their text.
+///
+/// `notifiesHeadlessRuns` decides whether a headless run's outcomes are
+/// announced like a person's session's (banner by the switches above, listed
+/// and counted in the menu) or kept for the history only
+/// (`TaskOutcomeAnnouncement.Reason.headlessRun`). Off by default
+/// (2026-10-29): one session's batch script ran a `claude -p` per case and
+/// each one's end posted a banner. Read when an outcome is submitted, so it
+/// applies from the next one; recorded events keep their delivery.
 struct AgentMeterNotificationPreferences: Equatable, Sendable {
     static let taskCompletedKey = "taskCompletedNotificationsEnabled"
     static let taskFailedKey = "taskFailedNotificationsEnabled"
     static let taskWaitingKey = "taskWaitingNotificationsEnabled"
     static let showsSessionTitleKey = "taskNotificationsShowSessionTitle"
+    static let notifiesHeadlessRunsKey = "taskNotificationsIncludeHeadlessRuns"
 
     var taskCompleted: Bool
     var taskFailed: Bool
     var taskWaiting: Bool
     var showsSessionTitle: Bool
+    var notifiesHeadlessRuns: Bool
 
     /// The defaults live here and nowhere else.
     init(taskCompleted: Bool = true, taskFailed: Bool = true, taskWaiting: Bool = true,
-         showsSessionTitle: Bool = true) {
+         showsSessionTitle: Bool = true, notifiesHeadlessRuns: Bool = false) {
         self.taskCompleted = taskCompleted
         self.taskFailed = taskFailed
         self.taskWaiting = taskWaiting
         self.showsSessionTitle = showsSessionTitle
+        self.notifiesHeadlessRuns = notifiesHeadlessRuns
     }
 
     init(defaults: UserDefaults) {
@@ -52,6 +63,7 @@ struct AgentMeterNotificationPreferences: Equatable, Sendable {
         taskFailed = value(Self.taskFailedKey) as? Bool ?? taskFailed
         taskWaiting = value(Self.taskWaitingKey) as? Bool ?? taskWaiting
         showsSessionTitle = value(Self.showsSessionTitleKey) as? Bool ?? showsSessionTitle
+        notifiesHeadlessRuns = value(Self.notifiesHeadlessRunsKey) as? Bool ?? notifiesHeadlessRuns
     }
 
     func notifies(_ kind: AgentMeterEventKind) -> Bool {

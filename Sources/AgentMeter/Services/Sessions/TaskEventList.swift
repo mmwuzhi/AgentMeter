@@ -13,8 +13,9 @@ import Foundation
 //    the click is the user looking), Mark as read (`markEventsRead`).
 //    Closing a banner, opening the popover and time passing never do;
 //  * whether the event is for the user at all. An event its producer only
-//    recorded for the history (before launch, under a minute, a report's
-//    own turn, crons, interruptions) asks nobody to read it: it stays unread
+//    recorded for the history (before launch, a headless run, under a
+//    minute, a report's own turn, crons, interruptions) asks nobody to read
+//    it: it stays unread
 //    in the log, is never listed or counted, and the log keeps and drops it
 //    like a read event (`AgentMeterEventStore.Limits.historyOnlyReasons`).
 
@@ -110,7 +111,8 @@ struct TaskEventItem: Identifiable, Sendable, Equatable {
     var storedSessionTitle: String? = nil
 
     var isUnread: Bool { !unreadEventIDs.isEmpty }
-    /// A run a script started, as the registry said when it was recorded.
+    /// A run a script or another session started (`TaskSessionLaunch`), as
+    /// known when it was recorded.
     var isHeadless: Bool { latest.subject.sessionKind == TaskSessionLaunch.headless.rawValue }
     var sessionID: String? { latest.subject.sessionID }
     var occurredAt: Date { latest.occurredAt }

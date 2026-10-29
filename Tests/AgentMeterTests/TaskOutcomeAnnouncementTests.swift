@@ -67,6 +67,97 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
         }
     }
 
+    /// 2026-10-29: one session's replay harness ran a `claude -p` per step,
+    /// and each step's end posted a banner. A headless
+    /// run's outcomes are history only unless the user turns them on; then
+    /// they follow a person's rules. Before-launch still comes first.
+    func testHeadlessRunsAreHistoryOnlyUnlessSwitchedOn() {
+        typealias Reason = TaskOutcomeAnnouncement.Reason
+        let kinds: [TaskOutcome.Kind] = [.completed, .failed, .waiting, .uncertain, .interrupted]
+        for kind in kinds {
+            var person = outcome(kind, shells: kind == .uncertain ? 1 : 0)
+            var run = person
+            run.launch = .headless
+            XCTAssertEqual(TaskOutcomeAnnouncement.intent(for: run, launchedAt: launchedAt),
+                           .recordOnly(reason: Reason.headlessRun), "\(kind)")
+            let asPerson = TaskOutcomeAnnouncement.intent(for: person, launchedAt: launchedAt)
+            XCTAssertEqual(TaskOutcomeAnnouncement.intent(for: run, launchedAt: launchedAt, notifiesHeadlessRuns: true),
+                           asPerson, "\(kind): switched on, the usual rules")
+            person.launch = .interactive
+            XCTAssertEqual(TaskOutcomeAnnouncement.intent(for: person, launchedAt: launchedAt), asPerson,
+                           "\(kind): a person's session, whatever the switch")
+            XCTAssertEqual(TaskOutcomeAnnouncement.intent(for: person, launchedAt: launchedAt, notifiesHeadlessRuns: true),
+                           asPerson)
+        }
+        var early = outcome(.completed, endingAt: -121)
+        early.launch = .headless
+        XCTAssertEqual(TaskOutcomeAnnouncement.intent(for: early, launchedAt: launchedAt),
+                       .recordOnly(reason: Reason.beforeLaunch))
+        XCTAssertTrue(TaskOutcomeAnnouncement.historyOnlyReasons.contains(Reason.headlessRun))
+        XCTAssertFalse(TaskOutcomeAnnouncement.historyOnlyReasons.contains(Reason.backgroundShellRunning))
+        XCTAssertEqual(TaskSessionLaunch(attended: false), .headless)
+        XCTAssertEqual(TaskSessionLaunch(attended: true), .interactive)
+        XCTAssertNil(TaskSessionLaunch(attended: nil))
+    }
+
+    /// Through the real event path: no banner, kept unread in the history
+    /// (nothing marks it read), left out of the menu and its count; the
+    /// switch, read on each submit, brings the next one back.
+    @MainActor
+    func testAHeadlessRunIsKeptButNeitherPostedNorListed() async throws {
+        let suite = "agentmeter.tests.headless.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let clock = EventTestClock(launchedAt)
+        let center = AuthorizationCenterStub(result: .success(true), status: .authorized)
+        let store = AgentMeterEventStore.inMemory(clock: clock.function)
+        let manager = NotificationManager(authorizationCenter: center, bundleIdentifier: { "com.shu.agentmeter.tests" },
+                                          eventStore: store, now: { clock.now })
+        func announce(_ outcome: TaskOutcome) async {
+            await TaskOutcomeAnnouncement.announce(outcome, rows: [], manager: manager, launchedAt: launchedAt,
+                                                   defaults: defaults, now: { clock.now }, transcriptTitle: { _, _ in nil })
+        }
+        // Three sessions, as the replay harness's runs are: each its own
+        // session and task, so the menu would list each as its own item.
+        func separate(_ outcome: TaskOutcome, session: String, task: String) -> TaskOutcome {
+            var outcome = outcome
+            outcome.sessionID = session
+            outcome.taskKey = task
+            outcome.id = "task_\(outcome.kind.rawValue)|\(session)|\(task)|0"
+            return outcome
+        }
+        var run = separate(outcome(.completed, ran: 180), session: "1fd55d3e-0000-0000-0000-000000000001", task: "t1")
+        run.launch = .headless
+        var failure = separate(outcome(.failed, ran: 30), session: "043fca3e-0000-0000-0000-000000000002", task: "t2")
+        failure.launch = .headless
+        var person = separate(outcome(.completed, ran: 180), session: "ffafe0d9-1111-2222-3333-444455556666", task: "t3")
+        person.launch = .interactive
+        await announce(run)
+        await announce(failure)
+        await announce(person)
+        XCTAssertEqual(center.posted.count, 1, "only the person's session")
+        XCTAssertEqual(center.posted.first?.content.userInfo[NotificationManager.eventIDUserInfoKey] as? String, person.id)
+
+        let stored = await store.event(id: run.id)
+        let kept = try XCTUnwrap(stored)
+        XCTAssertNil(kept.readAt, "not marked read")
+        XCTAssertEqual(kept.delivery, .suppressed(TaskOutcomeAnnouncement.Reason.headlessRun, at: clock.now))
+        XCTAssertEqual(kept.subject.sessionKind, "headless")
+        XCTAssertFalse(TaskEventAttention.needsAttention(kept))
+        let failed = await store.event(id: failure.id)
+        XCTAssertEqual(failed?.delivery.reason, TaskOutcomeAnnouncement.Reason.headlessRun)
+        let unread = await store.events(matching: AgentMeterEventFilter(kinds: TaskEventStatus.kinds, unreadOnly: true))
+        let snapshot = TaskEventsSnapshot.make(unreadEvents: unread, recentEvents: unread, overflow: nil)
+        XCTAssertEqual(snapshot.unreadCount, 1, "the menu counts the person's task only")
+
+        defaults.set(true, forKey: AgentMeterNotificationPreferences.notifiesHeadlessRunsKey)
+        let next = separate(run, session: "1f868e99-0000-0000-0000-000000000004", task: "t4")
+        await announce(next)
+        XCTAssertEqual(center.posted.count, 2, "switched on: the next headless end is posted")
+        await announce(run)
+        XCTAssertEqual(center.posted.count, 2, "an id already recorded is never announced again")
+    }
+
     // MARK: Event
 
     func testCompletedEventLeadsWithTheStatusAndNamesTheSessionByItsTitle() throws {

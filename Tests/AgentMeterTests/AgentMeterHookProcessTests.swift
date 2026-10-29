@@ -31,11 +31,12 @@ final class AgentMeterHookProcessTests: XCTestCase {
     }
 
     @discardableResult
-    private func run(_ command: String, _ json: String) throws -> Int32 {
+    private func run(_ command: String, _ json: String, environment extra: [String: String] = [:]) throws -> Int32 {
         let process = Process()
         process.executableURL = helper
         process.arguments = [command]
         process.environment = ["CFFIXED_USER_HOME": home.path, "HOME": home.path, "PATH": "/usr/bin:/bin"]
+            .merging(extra) { _, new in new }
         let input = Pipe()
         process.standardInput = input
         process.standardOutput = FileHandle.nullDevice
@@ -92,6 +93,41 @@ final class AgentMeterHookProcessTests: XCTestCase {
         for fragment in ["Fix it", "hand-back", "sleep 40", "Launched."] {
             XCTAssertFalse(raw.contains(fragment), fragment)
         }
+    }
+
+    /// Claude Code's own say in the hook's environment, 2026-10-29: a
+    /// `claude -p` run from another session's `Bash` saw "0", the editor
+    /// session that ran it "1".
+    func testTheTaskKeepsWhetherClaudeCodeCountedTheSessionAttended() throws {
+        let prompt = input(#""hook_event_name":"UserPromptSubmit","prompt_id":"5c0a77e1","prompt":"Replay step 3""#)
+        let stop = input(#""hook_event_name":"Stop","background_tasks":[]"#)
+        XCTAssertEqual(try run("working", prompt, environment: ["CLAUDE_CODE_SESSION_ATTENDED": "0"]), 0)
+        XCTAssertEqual(ledger()?.task?.attended, false)
+        XCTAssertEqual(try run("idle", stop, environment: ["CLAUDE_CODE_SESSION_ATTENDED": "0"]), 0)
+        XCTAssertEqual(ledger()?.task?.attended, false)
+        XCTAssertEqual(try payload()?["state"] as? String, "idle", "the payload is written as before")
+
+        // A person resumes the session: a new task, with its own value.
+        XCTAssertEqual(try run("working", input(#""hook_event_name":"UserPromptSubmit","prompt_id":"81d2e0f4","prompt":"Go on""#),
+                               environment: ["CLAUDE_CODE_SESSION_ATTENDED": "1"]), 0)
+        XCTAssertEqual(ledger()?.task?.key, "81d2e0f4")
+        XCTAssertEqual(ledger()?.task?.attended, true)
+    }
+
+    func testABackgroundSessionCountsAsAPersonsRun() throws {
+        let environment = ["CLAUDE_CODE_SESSION_ATTENDED": "0", "CLAUDE_CODE_SESSION_KIND": "bg"]
+        XCTAssertEqual(try run("working", input(#""hook_event_name":"UserPromptSubmit","prompt_id":"5c0a77e1","prompt":"Fix the tests""#),
+                               environment: environment), 0)
+        XCTAssertEqual(ledger()?.task?.attended, true)
+    }
+
+    func testABuildThatDoesNotSayLeavesItUnknown() throws {
+        XCTAssertEqual(try run("working", input(#""hook_event_name":"UserPromptSubmit","prompt_id":"5c0a77e1","prompt":"Hi""#)), 0)
+        XCTAssertNil(ledger()?.task?.attended)
+        XCTAssertEqual(try run("idle", input(#""hook_event_name":"Stop","background_tasks":[]"#),
+                               environment: ["CLAUDE_CODE_SESSION_ATTENDED": "yes"]), 0)
+        XCTAssertNil(ledger()?.task?.attended, "only 1 and 0 are values")
+        XCTAssertNotNil(ledger()?.task?.stop)
     }
 
     func testMalformedNewFieldsNeverCostThePayloadWrite() throws {

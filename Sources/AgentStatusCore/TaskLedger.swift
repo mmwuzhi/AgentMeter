@@ -80,16 +80,48 @@ public struct TaskLedgerEvent: Sendable, Equatable {
     public var at: Date
     public var cwd: String?
     public var transcriptPath: String?
+    /// Whether a person asked for the session, from Claude Code's
+    /// `CLAUDE_CODE_SESSION_ATTENDED` in the hook's environment (`attended
+    /// (environmentValue:sessionKind:)`); nil when it does not say.
+    public var attended: Bool?
 
-    public init(kind: Kind, at: Date, cwd: String? = nil, transcriptPath: String? = nil) {
+    public init(kind: Kind, at: Date, cwd: String? = nil, transcriptPath: String? = nil, attended: Bool? = nil) {
         self.kind = kind
         self.at = at
         self.cwd = cwd
         self.transcriptPath = transcriptPath
+        self.attended = attended
     }
 
     /// Notification types that mean the session waits on the user.
     public static let waitingNotificationTypes: Set<String> = ["permission_prompt", "elicitation_dialog"]
+
+    /// Claude Code's background sessions (`CLAUDE_CODE_SESSION_KIND`): runs a
+    /// person started on purpose (`claude --bg`, routines) and may attach to.
+    public static let backgroundSessionKinds: Set<String> = ["bg", "daemon", "daemon-worker"]
+
+    /// Whether a person asked for the session, from the hook environment.
+    /// `CLAUDE_CODE_SESSION_ATTENDED` is set by Claude Code for every command
+    /// it runs, hooks included: "1" when a person is at the session (an
+    /// interactive terminal, or a session an editor or the desktop app runs
+    /// for them), "0" otherwise (`claude -p` and the Agent SDKs, a Claude
+    /// Code started from inside another session, its background sessions).
+    /// A background session (`backgroundSessionKinds`) counts as attended
+    /// here although Claude Code says "0": the person started it and waits
+    /// for its result. Measured on 2.1.301 and 2.1.312: a `claude -p` run
+    /// from another session's `Bash` saw "0" in its hooks while its registry
+    /// entry said `interactive` / `claude-vscode`, like the editor session
+    /// that ran it; the background kinds are read from the 2.1.312 binary,
+    /// not seen here. Any other value, or none, is nil. A build that does not
+    /// set the variable passes on whatever its environment holds: a parent
+    /// session's "1" when started from its `Bash`.
+    public static func attended(environmentValue value: String?, sessionKind: String? = nil) -> Bool? {
+        switch value {
+        case "1": return true
+        case "0": return sessionKind.map(backgroundSessionKinds.contains) == true ? true : false
+        default: return nil
+        }
+    }
 
     /// The ledger event a hook input stands for, or nil when the ledger has
     /// no use for it: anything a subagent fires except a background launch,
@@ -108,6 +140,7 @@ public struct TaskLedgerEvent: Sendable, Equatable {
         backgroundTaskID: String?,
         cwd: String?,
         transcriptPath: String?,
+        attended: Bool? = nil,
         at: Date
     ) -> TaskLedgerEvent? {
         let agentID = agentID.flatMap { $0.isEmpty ? nil : $0 }
@@ -134,7 +167,7 @@ public struct TaskLedgerEvent: Sendable, Equatable {
         default:
             return nil
         }
-        return TaskLedgerEvent(kind: kind, at: at, cwd: cwd, transcriptPath: transcriptPath)
+        return TaskLedgerEvent(kind: kind, at: at, cwd: cwd, transcriptPath: transcriptPath, attended: attended)
     }
 
     /// Ids and enum-like values only: `[A-Za-z0-9_.:-]`, bounded. Anything
@@ -231,6 +264,11 @@ public struct TaskLedgerTask: Codable, Sendable, Equatable {
     public var failure: TaskLedgerFailure?
     /// The latest permission or elicitation notice in the current turn.
     public var waitingNoticeAt: Date?
+    /// Whether a person asked for the session when the task's main-thread
+    /// events were written (`TaskLedgerEvent.attended`): the first value any
+    /// of them carried. Nil when the hook environment did not say, and in
+    /// ledgers an older helper wrote.
+    public var attended: Bool?
 
     public init(key: String, origin: Origin, startedAt: Date) {
         self.key = key
@@ -405,6 +443,11 @@ public enum TaskLedgerReducer {
             if let cwd = event.cwd, !cwd.isEmpty { ledger.cwd = String(cwd.prefix(maximumPathLength)) }
             if let path = event.transcriptPath, !path.isEmpty {
                 ledger.transcriptPath = String(path.prefix(maximumPathLength))
+            }
+            // A new task starts unknown and takes this prompt's value; a task
+            // an older helper opened takes the first value a later event has.
+            if ledger.task?.attended == nil, let attended = event.attended {
+                ledger.task?.attended = attended
             }
         case .waitingNotice, .backgroundLaunch:
             break

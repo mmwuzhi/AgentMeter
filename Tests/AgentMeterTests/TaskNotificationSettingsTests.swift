@@ -64,7 +64,7 @@ final class TaskNotificationSettingsTests: XCTestCase {
 
         let banners = Settings(authorization: .authorized, alertStyle: .banner, lockScreen: .enabled, previews: .whenAuthenticated)
         XCTAssertEqual(banners.alertStyleText, "Temporary (banners)")
-        XCTAssertTrue(banners.guidance?.contains("choose Persistent") == true, banners.guidance ?? "")
+        XCTAssertNil(banners.guidance, "Temporary is the default and a fine choice: nothing to fix")
         XCTAssertEqual(banners.lockScreenText, "Shown, text hidden until unlocked")
         XCTAssertNil(banners.privacyNote)
 
@@ -75,7 +75,33 @@ final class TaskNotificationSettingsTests: XCTestCase {
 
         let quiet = Settings(authorization: .authorized, alertStyle: .none)
         XCTAssertTrue(quiet.guidance?.contains("without appearing on screen") == true)
+        XCTAssertTrue(quiet.guidance?.contains("Temporary or Persistent") == true)
         XCTAssertEqual(Settings(authorization: .authorized, lockScreen: .disabled).lockScreenText, "Not shown")
+    }
+
+    /// Both styles explained, and that only System Settings chooses: no
+    /// AgentMeter switch could change it (`alertStyle` is read-only).
+    func testTheStyleExplanationNamesBothAndWhereToChoose() {
+        let text = Settings.styleExplanation
+        for fragment in ["Temporary:", "Persistent:", "until you click it or close it",
+                         "System Settings › Notifications › AgentMeter › Alert style", "Temporary is the default",
+                         "never changes it"] {
+            XCTAssertTrue(text.contains(fragment), fragment)
+        }
+    }
+
+    func testHeadlessRunsAreOffByDefaultAndTheSwitchIsRead() throws {
+        XCTAssertFalse(AgentMeterNotificationPreferences().notifiesHeadlessRuns)
+        XCTAssertEqual(AgentMeterNotificationPreferences.notifiesHeadlessRunsKey, "taskNotificationsIncludeHeadlessRuns")
+        XCTAssertFalse(AgentMeterNotificationPreferences(stored: { _ in "yes" }).notifiesHeadlessRuns, "wrong type keeps the default")
+        let suite = "agentmeter.tests.headless.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: AgentMeterNotificationPreferences.notifiesHeadlessRunsKey)
+        let read = AgentMeterNotificationPreferences(defaults: defaults)
+        XCTAssertTrue(read.notifiesHeadlessRuns)
+        XCTAssertTrue(read.taskCompleted && read.taskFailed && read.taskWaiting && read.showsSessionTitle,
+                      "the other switches keep their defaults")
     }
 
     func testTheSystemValuesMapOneToOne() {

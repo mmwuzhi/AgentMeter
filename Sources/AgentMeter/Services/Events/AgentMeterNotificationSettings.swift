@@ -12,7 +12,8 @@ struct AgentMeterNotificationSettings: Sendable, Equatable {
     }
 
     /// How a notification appears. `alert` is the style System Settings
-    /// calls Persistent (Alerts before macOS 15): it stays until acted on.
+    /// calls Persistent (Alerts on older macOS): it stays until acted on;
+    /// `banner` is Temporary.
     enum AlertStyle: Sendable, Equatable {
         case none, banner, alert, unknown
     }
@@ -127,8 +128,16 @@ struct AgentMeterNotificationSettings: Sendable, Equatable {
         }
     }
 
-    /// What to do in System Settings to reach a notification that stays on
-    /// screen until acted on. Nil when it already does.
+    /// The two styles, and that only System Settings chooses between them:
+    /// `UNNotificationSettings.alertStyle` is read-only, and no request
+    /// option or interruption level makes a notification stay. macOS 26
+    /// calls them Temporary and Persistent (Banners and Alerts on older
+    /// macOS); a new app starts with Temporary, which AgentMeter keeps (no
+    /// `NSUserNotificationAlertStyle` in its Info.plist).
+    static let styleExplanation = "Temporary: a notification appears once, leaves the screen by itself after a few seconds and stays in Notification Center. Persistent: it stays on screen until you click it or close it. macOS lets only you choose, per app, in System Settings › Notifications › AgentMeter › Alert style (Banners and Alerts on older macOS). Temporary is the default; AgentMeter follows your choice and never changes it."
+
+    /// What stands between AgentMeter's notifications and the screen. Nil
+    /// when they appear in whichever style the user chose.
     var guidance: String? {
         switch authorization {
         case .notDetermined:
@@ -141,14 +150,10 @@ struct AgentMeterNotificationSettings: Sendable, Equatable {
             break
         }
         switch alertStyle {
-        case .alert:
+        case .alert, .banner, .unknown:
             return nil
-        case .banner:
-            return "Temporary banners leave the screen after a few seconds. To keep them until you act, choose Persistent as AgentMeter's alert style in System Settings › Notifications."
         case .none:
-            return "Notifications go to Notification Center without appearing on screen. Choose Persistent as AgentMeter's alert style in System Settings › Notifications to see them as they arrive."
-        case .unknown:
-            return nil
+            return "Notifications go to Notification Center without appearing on screen. To see them as they arrive, let AgentMeter show notifications on the desktop and choose Temporary or Persistent in System Settings › Notifications › AgentMeter."
         }
     }
 

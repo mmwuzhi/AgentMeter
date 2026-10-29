@@ -93,20 +93,37 @@ enum TaskOutcomeAnnouncement {
         /// Stopped with a background shell of its own still running: not
         /// known to be finished, so not announced as such.
         static let backgroundShellRunning = "backgroundShellRunning"
+        /// A headless run (`TaskSessionLaunch.headless`: `claude -p`, the
+        /// Agent SDK, a Claude Code another session or a script started),
+        /// with headless runs switched off: whoever started it reads its
+        /// result, nobody waits on a banner (2026-10-29: a batch of such runs
+        /// from one session's script posted a banner each).
+        static let headlessRun = "headlessRun"
     }
 
     /// The reasons an outcome is recorded for the history only: nothing asks
-    /// the user to look at it, so the menu neither lists nor counts it and it
-    /// is recorded read (`TaskEventAttention`). `backgroundShellRunning` is
-    /// not one of them: an unconfirmed task is listed, just never posted.
+    /// the user to look at it, so the menu neither lists nor counts it, and
+    /// the log keeps and drops it like a read event without marking it read
+    /// (`TaskEventAttention`). `backgroundShellRunning` is not one of them:
+    /// an unconfirmed task is listed, just never posted.
     static let historyOnlyReasons: Set<String> = [
         Reason.beforeLaunch, Reason.reportOrigin, Reason.cronsArmed,
-        Reason.belowMinimumDuration, Reason.notAnnounced,
+        Reason.belowMinimumDuration, Reason.notAnnounced, Reason.headlessRun,
     ]
 
-    static func intent(for outcome: TaskOutcome, launchedAt: Date) -> AgentMeterDeliveryIntent {
+    /// - Parameter notifiesHeadlessRuns: the user's switch
+    ///   (`AgentMeterNotificationPreferences.notifiesHeadlessRuns`). Off, a
+    ///   headless run's every outcome, a failure or a wait included, is
+    ///   history only; on, it follows the same rules as a person's session.
+    ///   A session Claude Code does not describe (an older build, no hook
+    ///   value and no registry entry) is taken for a person's.
+    static func intent(for outcome: TaskOutcome, launchedAt: Date,
+                       notifiesHeadlessRuns: Bool = false) -> AgentMeterDeliveryIntent {
         if outcome.occurredAt < launchedAt.addingTimeInterval(-beforeLaunchSlack) {
             return .recordOnly(reason: Reason.beforeLaunch)
+        }
+        if outcome.launch == .headless, !notifiesHeadlessRuns, outcome.kind != .unresolved {
+            return .recordOnly(reason: Reason.headlessRun)
         }
         switch outcome.kind {
         case .completed:
@@ -217,9 +234,11 @@ enum TaskOutcomeAnnouncement {
         transcriptTitle: @Sendable (_ path: String, _ sessionID: String) async -> String? = TaskSessionLabel.transcriptTitle
     ) async {
         let label = await TaskSessionLabel.resolve(for: outcome, rows: rows, transcriptTitle: transcriptTitle)
-        let showsTitle = AgentMeterNotificationPreferences(defaults: defaults).showsSessionTitle
-        guard let event = event(for: outcome, label: label, discoveredAt: now(), showsSessionTitle: showsTitle) else { return }
-        await manager.submit(event, intent: intent(for: outcome, launchedAt: launchedAt))
+        let preferences = AgentMeterNotificationPreferences(defaults: defaults)
+        guard let event = event(for: outcome, label: label, discoveredAt: now(),
+                                showsSessionTitle: preferences.showsSessionTitle) else { return }
+        await manager.submit(event, intent: intent(for: outcome, launchedAt: launchedAt,
+                                                   notifiesHeadlessRuns: preferences.notifiesHeadlessRuns))
     }
 
     /// Claude Code's `StopFailure` error kinds, in words. Unknown kinds read

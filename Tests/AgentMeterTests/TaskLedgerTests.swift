@@ -15,8 +15,10 @@ struct LedgerScript {
 
     static func at(_ seconds: TimeInterval) -> Date { origin.addingTimeInterval(seconds) }
 
-    mutating func apply(_ kind: TaskLedgerEvent.Kind, at seconds: TimeInterval, cwd: String? = "/tmp/project") {
-        let event = TaskLedgerEvent(kind: kind, at: Self.at(seconds), cwd: cwd, transcriptPath: "/tmp/t.jsonl")
+    mutating func apply(_ kind: TaskLedgerEvent.Kind, at seconds: TimeInterval, cwd: String? = "/tmp/project",
+                        attended: Bool? = nil) {
+        let event = TaskLedgerEvent(kind: kind, at: Self.at(seconds), cwd: cwd, transcriptPath: "/tmp/t.jsonl",
+                                    attended: attended)
         if let next = TaskLedgerReducer.apply(event, to: ledger, sessionID: sessionID) { ledger = next }
     }
 
@@ -229,6 +231,71 @@ final class TaskLedgerTests: XCTestCase {
         XCTAssertTrue(script.task?.hasEnded == true)
         script.report("r2", at: 420)
         XCTAssertEqual(script.task?.segment, 2, "a failure is an end too")
+    }
+
+    /// `CLAUDE_CODE_SESSION_ATTENDED`, as the helper reads it: Claude Code's
+    /// "1" and "0", nothing else.
+    func testAttendedComesOnlyFromClaudeCodesOwnValues() {
+        XCTAssertEqual(TaskLedgerEvent.attended(environmentValue: "1"), true)
+        XCTAssertEqual(TaskLedgerEvent.attended(environmentValue: "0"), false)
+        for other in [nil, "", "true", "false", "yes", "2", "01"] {
+            XCTAssertNil(TaskLedgerEvent.attended(environmentValue: other), other ?? "nil")
+        }
+        // Claude Code's background sessions say "0", but a person started them.
+        for kind in ["bg", "daemon", "daemon-worker"] {
+            XCTAssertEqual(TaskLedgerEvent.attended(environmentValue: "0", sessionKind: kind), true, kind)
+        }
+        XCTAssertEqual(TaskLedgerEvent.attended(environmentValue: "0", sessionKind: "interactive"), false)
+        XCTAssertEqual(TaskLedgerEvent.attended(environmentValue: "0", sessionKind: "BG"), false, "exact names only")
+        XCTAssertEqual(TaskLedgerEvent.attended(environmentValue: "1", sessionKind: "bg"), true)
+        XCTAssertNil(TaskLedgerEvent.attended(environmentValue: nil, sessionKind: "bg"), "no value, no say")
+    }
+
+    /// The task keeps the first value its main-thread events carry: a new
+    /// task starts unknown, so a session resumed by a person (or by a
+    /// script) gets the new process's value with its new prompt.
+    func testEachTaskKeepsWhetherItsSessionWasAttended() {
+        var script = LedgerScript()
+        script.apply(.prompt(promptID: "p1", shape: .human), at: 0, attended: false)
+        XCTAssertEqual(script.task?.attended, false)
+        script.apply(.stop(backgroundTasks: [HookBackgroundTaskList.Entry(type: "subagent", id: "a1")],
+                           cronsArmed: false, stopHookActive: false), at: 10, attended: nil)
+        script.apply(.prompt(promptID: "r1", shape: .report), at: 20, attended: true)
+        XCTAssertEqual(script.task?.key, "p1")
+        XCTAssertEqual(script.task?.attended, false, "a report joins the task and keeps its value")
+        script.apply(.stop(backgroundTasks: [], cronsArmed: false, stopHookActive: false), at: 30, attended: true)
+        XCTAssertEqual(script.task?.attended, false)
+
+        script.apply(.prompt(promptID: "p2", shape: .human), at: 40, attended: true)
+        XCTAssertEqual(script.task?.key, "p2")
+        XCTAssertEqual(script.task?.attended, true, "a new task, the new process's value")
+
+        // A subagent's notice or launch never sets it.
+        script.apply(.prompt(promptID: "p3", shape: .human), at: 50)
+        XCTAssertNil(script.task?.attended)
+        script.apply(.waitingNotice, at: 51, attended: false)
+        script.apply(.backgroundLaunch(taskID: "b1", agentID: "a2"), at: 52, attended: false)
+        XCTAssertNil(script.task?.attended)
+        // A task an older helper opened takes the first value a later event has.
+        script.apply(.stop(backgroundTasks: [], cronsArmed: false, stopHookActive: false), at: 60, attended: false)
+        XCTAssertEqual(script.task?.attended, false)
+    }
+
+    /// Ledgers the installed helper wrote before carry no value, and an older
+    /// app reading a new ledger ignores the key: same format version.
+    func testLedgersWithoutTheFlagStillReadAndTheFlagRoundTrips() throws {
+        let old = #"{"version":1,"sessionID":"s","sequence":2,"updatedAt":1792476010,"backgroundLaunches":[],"task":{"key":"p","origin":"human","startedAt":1792476000,"segment":0,"segmentStartedAt":1792476000,"lastPromptAt":1792476000,"reports":0,"hadBackgroundAgents":false,"stop":{"at":1792476010,"blocking":0,"settledShells":0,"uncertainShells":0,"otherTasks":0,"cronsArmed":false,"stopHookActive":false}}}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let read = try decoder.decode(TaskLedger.self, from: Data(old.utf8))
+        XCTAssertNil(read.task?.attended)
+        XCTAssertNotNil(read.task?.stop)
+        var marked = read
+        marked.task?.attended = false
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        XCTAssertEqual(try decoder.decode(TaskLedger.self, from: encoder.encode(marked)).task?.attended, false)
+        XCTAssertEqual(TaskLedger.formatVersion, 1)
     }
 
     /// A report with no task to join opens one that no person asked for.
