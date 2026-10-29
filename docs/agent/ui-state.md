@@ -342,7 +342,7 @@ usage presentation, cached state, or Claude live-session integration.
   write (or a subagent's), never the process's start. Where a process has done
   nothing yet, the registry's stamp is its registration, so a freshly respawned
   panel is listed for the first 24 h. A row with no dated evidence stays, a
-  running descendant keeps its ancestors' rows, and the section says "N idle
+  running descendant keeps its ancestors' rows, and the section says "N inactive
   sessions hidden". Only the drawn list is filtered: `AppViewModel.activeAgents`
   keeps every live process, which task-notification routing, session titles and
   the 2 s status tick read, so a hidden session returns the moment its state or
@@ -373,13 +373,17 @@ usage presentation, cached state, or Claude live-session integration.
 - Counts are listed sessions (processes, child processes included), at every
   level: the header's `Sessions N` is `ActiveAgentGrouping.sessionCount`, equal
   to the sum of the groups' `N` plus the flat rows; a group's `N` is its listed
-  parents and children. Hidden sessions are in none of them; "N idle sessions
-  hidden" is the other half, so shown plus hidden is every live session once.
+  parents and children. Hidden sessions are in none of them; "N inactive
+  sessions hidden" is the other half, so shown plus hidden is every live
+  session once. "Inactive", not "idle": it also covers a hook-only `working`
+  or `waiting` nobody has touched for over a day.
 - A session row's tooltip (`ActiveAgentTooltip.text`) is plain `.help` text in
   three blocks separated by a blank line: the full name (the title, else the
   project) with "Idle · Last activity: 8d ago (Oct 21, 11:55 AM)" and the
-  pending-background-work line; then project and branch, model and effort in
-  full, the subagent share; then "PID #… · Session <full id>" and what a click
+  pending-background-work line; then project and branch, the model (the
+  row's own name from `ModelLabel.short`, with the full id in brackets when it
+  differs, since the snapshot date is checked there) and effort (as the row
+  shows it: there is no friendlier form), the subagent share; then "PID #… · Session <full id>" and what a click
   does. The exact moment joins once the relative age is an hour or more, in
   the user's own locale and clock style, with the date only for earlier days
   and the year only across a year boundary. It is provider text throughout:

@@ -507,10 +507,16 @@ enum ActiveAgentTooltip {
         // (`ActiveAgent.titleDetail`), so the branch has to stay reachable here.
         if let branch = session?.displayBranch { place.append("Branch \(branch)") }
         if !place.isEmpty { details.append(place.joined(separator: " · ")) }
-        // The row shortens the model; here it is whole, which is how a snapshot
-        // date is checked.
+        // The row's own name for the model (`ModelLabel.short`), with the id it
+        // was made from when they differ: a snapshot date is checked there.
         var how: [String] = []
-        if let model = ModelLabel.full(session?.model) { how.append("Model \(model)") }
+        if let full = ModelLabel.full(session?.model) {
+            if let name = ModelLabel.short(session?.model), name != full {
+                how.append("Model \(name) (\(full))")
+            } else {
+                how.append("Model \(full)")
+            }
+        }
         if let effort = SessionLabel.effort(session?.effort) { how.append("Effort \(effort)") }
         if !how.isEmpty { details.append(how.joined(separator: " · ")) }
         // The row's total already includes the subagents; this says how much of

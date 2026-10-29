@@ -69,7 +69,7 @@ final class ActiveAgentTooltipTests: XCTestCase {
         Idle · Last activity: 8d ago (Oct 21, 11:55 AM)
 
         Project AgentMeter · Branch feature/x
-        Model claude-fable-5-1 · Effort xhigh
+        Model fable 5.1 (claude-fable-5-1) · Effort xhigh
 
         PID #501 · Session 019fe5b6-6554-7661-8c45-cc6611229c37
         Click to jump to this session
@@ -107,11 +107,23 @@ final class ActiveAgentTooltipTests: XCTestCase {
         }
     }
 
+    func testTheModelUsesTheRowsNameAndKeepsTheIdItCameFrom() {
+        func model(_ id: String) -> String? {
+            tooltip(agent(session: session(model: id))).components(separatedBy: "\n").first { $0.hasPrefix("Model") }
+        }
+
+        // The row's own formatter, the snapshot date still reachable.
+        XCTAssertEqual(model("claude-opus-4-1-20250805"), "Model opus 4.1 (claude-opus-4-1-20250805)")
+        XCTAssertEqual(model("claude-fable-5-1"), "Model fable 5.1 (claude-fable-5-1)")
+        // An id the row shows as it is has nothing to bracket.
+        XCTAssertEqual(model("gpt-5-codex"), "Model gpt-5-codex")
+    }
+
     func testTheModelIsOneBoundedLine() {
         let text = tooltip(agent(session: session(model: "claude-x\nINJECTED LINE\u{1B}[31m")))
 
         XCTAssertFalse(text.components(separatedBy: "\n").contains { $0.hasPrefix("INJECTED") })
-        XCTAssertTrue(text.contains("Model claude-xINJECTED LINE[31m"))
+        XCTAssertTrue(text.contains("Model xINJECTED LINE[31m (claude-xINJECTED LINE[31m)"))
         XCTAssertLessThanOrEqual(
             tooltip(agent(session: session(model: String(repeating: "m", count: 300))))
                 .components(separatedBy: "\n").first { $0.hasPrefix("Model") }?.count ?? 0, "Model ".count + 40)

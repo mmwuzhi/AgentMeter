@@ -27,7 +27,7 @@ struct ActiveAgentListing: Equatable, Sendable {
 
     var hiddenNote: String? {
         guard hiddenCount > 0 else { return nil }
-        return "\(hiddenCount) idle \(hiddenCount == 1 ? "session" : "sessions") hidden"
+        return "\(hiddenCount) inactive \(hiddenCount == 1 ? "session" : "sessions") hidden"
     }
 
     static var hiddenHelp: String {

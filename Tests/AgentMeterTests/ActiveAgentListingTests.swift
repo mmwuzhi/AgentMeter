@@ -255,8 +255,8 @@ final class ActiveAgentListingTests: XCTestCase {
         let one = ActiveAgentListing([agent(1, status: .idle, stateAge: old, transcriptAge: old)])
         let many = ActiveAgentListing((1...3).map { agent($0, status: .idle, stateAge: old, transcriptAge: old) })
 
-        XCTAssertEqual(one.hiddenNote, "1 idle session hidden")
-        XCTAssertEqual(many.hiddenNote, "3 idle sessions hidden")
+        XCTAssertEqual(one.hiddenNote, "1 inactive session hidden")
+        XCTAssertEqual(many.hiddenNote, "3 inactive sessions hidden")
     }
 
     func testAnEmptyListIsAnEmptyListing() {
