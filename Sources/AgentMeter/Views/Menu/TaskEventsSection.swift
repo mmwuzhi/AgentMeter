@@ -38,7 +38,8 @@ struct TaskEventsSection: View {
     var hooksEnabled: Bool
     /// Live sessions' titles by id. The popover already shows them on the
     /// session rows; the switch that keeps titles out of notifications is
-    /// about banners and the lock screen.
+    /// about banners and the lock screen. A task whose session has ended
+    /// falls back to the title its event recorded.
     var sessionTitles: [String: String] = [:]
     /// Where a click on a session's task would go, once looked up.
     var routes: [String: TaskSessionRoute] = [:]
@@ -219,7 +220,13 @@ struct TaskEventsSection: View {
     }
 
     private func title(for item: TaskEventItem) -> String? {
-        item.sessionID.flatMap { sessionTitles[$0] }
+        Self.sessionTitle(for: item, liveTitles: sessionTitles)
+    }
+
+    /// The live row's title, else the one the task's event recorded, so the
+    /// row says what the banner said after the session has ended.
+    nonisolated static func sessionTitle(for item: TaskEventItem, liveTitles: [String: String]) -> String? {
+        item.sessionID.flatMap { liveTitles[$0] } ?? item.storedSessionTitle
     }
 }
 
@@ -335,9 +342,10 @@ struct TaskEventRow: View {
     }
 
     /// "agentmeter · Fix the quota pacing tooltip", or the short id without a
-    /// title.
+    /// title; "Headless run" for a run a script started.
     nonisolated static func identityLine(for item: TaskEventItem, sessionTitle: String?) -> String {
-        [item.projectName, sessionTitle ?? item.shortSessionID].compactMap { $0 }.joined(separator: " · ")
+        [item.projectName, sessionTitle ?? item.shortSessionID, item.isHeadless ? "Headless run" : nil]
+            .compactMap { $0 }.joined(separator: " · ")
     }
 
     /// Read is not resolved: a wait may still be waiting, an unconfirmed

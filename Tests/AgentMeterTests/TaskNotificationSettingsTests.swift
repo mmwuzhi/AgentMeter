@@ -12,13 +12,14 @@ final class TaskNotificationSettingsTests: XCTestCase {
 
     // MARK: - Preferences
 
-    func testSessionTitlesAreOffByDefaultAndTheSwitchIsRead() {
-        XCTAssertFalse(AgentMeterNotificationPreferences().showsSessionTitle)
-        XCTAssertFalse(AgentMeterNotificationPreferences(stored: { _ in nil }).showsSessionTitle)
-        XCTAssertFalse(AgentMeterNotificationPreferences(stored: { _ in "yes" }).showsSessionTitle, "wrong type keeps the default")
-        let on = AgentMeterNotificationPreferences(stored: { $0 == AgentMeterNotificationPreferences.showsSessionTitleKey ? true : nil })
-        XCTAssertTrue(on.showsSessionTitle)
-        XCTAssertTrue(on.taskCompleted && on.taskFailed && on.taskWaiting, "the three kinds keep their defaults")
+    func testSessionTitlesAreOnByDefaultAndAStoredOffStillWins() {
+        // The user's choice, 2026-10-29: banners name the session by default.
+        XCTAssertTrue(AgentMeterNotificationPreferences().showsSessionTitle)
+        XCTAssertTrue(AgentMeterNotificationPreferences(stored: { _ in nil }).showsSessionTitle)
+        XCTAssertTrue(AgentMeterNotificationPreferences(stored: { _ in "no" }).showsSessionTitle, "wrong type keeps the default")
+        let off = AgentMeterNotificationPreferences(stored: { $0 == AgentMeterNotificationPreferences.showsSessionTitleKey ? false : nil })
+        XCTAssertFalse(off.showsSessionTitle, "someone who turned it off keeps it off")
+        XCTAssertTrue(off.taskCompleted && off.taskFailed && off.taskWaiting, "the three kinds keep their defaults")
         XCTAssertEqual(AgentMeterNotificationPreferences.showsSessionTitleKey, "taskNotificationsShowSessionTitle")
     }
 

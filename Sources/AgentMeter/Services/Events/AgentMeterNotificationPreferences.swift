@@ -13,10 +13,14 @@ import Foundation
 /// switch.
 ///
 /// `showsSessionTitle` decides what a task banner calls the session, its
-/// title or its short id, and defaults off: without a custom title the title
-/// is Claude's summary of the first prompt, and banners can show on the lock
-/// screen. It is read when the event is built, so it applies from the next
-/// one; events already recorded keep their text.
+/// title (as the session list shows it) or its project and short id. On by
+/// default since 2026-10-29, the user's choice: a short id named no session
+/// they could find, and a click cannot jump into an editor's session, so the
+/// text has to say which one it was. That supersedes the 2026-10-20 short-id
+/// default (without a custom title the title is Claude's summary of the
+/// first prompt, and banners can show on the lock screen); a stored false
+/// still wins. It is read when the event is built, so it applies from the
+/// next one; events already recorded keep their text.
 struct AgentMeterNotificationPreferences: Equatable, Sendable {
     static let taskCompletedKey = "taskCompletedNotificationsEnabled"
     static let taskFailedKey = "taskFailedNotificationsEnabled"
@@ -30,7 +34,7 @@ struct AgentMeterNotificationPreferences: Equatable, Sendable {
 
     /// The defaults live here and nowhere else.
     init(taskCompleted: Bool = true, taskFailed: Bool = true, taskWaiting: Bool = true,
-         showsSessionTitle: Bool = false) {
+         showsSessionTitle: Bool = true) {
         self.taskCompleted = taskCompleted
         self.taskFailed = taskFailed
         self.taskWaiting = taskWaiting

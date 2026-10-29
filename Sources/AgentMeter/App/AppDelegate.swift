@@ -79,8 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let monitor = TaskOutcomeMonitor { outcomes in
             Task { @MainActor in
                 for outcome in outcomes {
-                    let row = model.activeAgents.first { $0.session?.id == outcome.sessionID }?.session
-                    let label = row.map { TaskSessionLabel(project: $0.displayProject, title: $0.title) }
+                    let label = await TaskSessionLabel.resolve(for: outcome, rows: model.activeAgents)
                     let showsTitle = AgentMeterNotificationPreferences(defaults: .standard).showsSessionTitle
                     guard let event = TaskOutcomeAnnouncement.event(
                         for: outcome, label: label, discoveredAt: Date(), showsSessionTitle: showsTitle) else { continue }

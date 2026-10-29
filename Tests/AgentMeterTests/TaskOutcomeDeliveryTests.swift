@@ -44,7 +44,8 @@ final class TaskOutcomeDeliveryTests: XCTestCase {
             var submissions: [AgentMeterEventSubmission] = []
             for outcome in result.outcomes {
                 guard let event = TaskOutcomeAnnouncement.event(
-                    for: outcome, label: TaskSessionLabel(project: "AgentMeter", title: "Phase 1b"), discoveredAt: now)
+                    for: outcome, label: TaskSessionLabel(project: "AgentMeter", title: "Phase 1b"), discoveredAt: now,
+                    showsSessionTitle: false)
                 else { continue }
                 submissions.append(await manager.submit(
                     event, intent: TaskOutcomeAnnouncement.intent(for: outcome, launchedAt: launchedAt)))
@@ -67,6 +68,28 @@ final class TaskOutcomeDeliveryTests: XCTestCase {
         let clock = EventTestClock(LedgerScript.at(seconds))
         return Harness(store: store ?? .inMemory(clock: clock.function), clock: clock,
                        launchedAt: LedgerScript.at(seconds), preferences: preferences)
+    }
+
+    /// What names the session in the notification rides on the outcome:
+    /// the ledger's transcript, and how the registry last said the process
+    /// was started, kept after a headless run's entry is gone.
+    func testOutcomesCarryTheTranscriptAndTheLaunchTheRegistryLastSaid() throws {
+        var tracker = TaskOutcomeTracker()
+        var script = LedgerScript()
+        script.human("p1", at: 1)
+        script.stop(at: 120)
+        let headless = Reading(status: .idle, statusUpdatedAt: LedgerScript.at(120.05), launch: .headless)
+        let first = tracker.evaluate(ledgers: [script.ledger!], registry: [script.sessionID: headless], payloads: [:],
+                                     now: LedgerScript.at(120.5), transcript: { _ in .unavailable })
+        XCTAssertTrue(first.outcomes.isEmpty, "not confirmed yet")
+        // The process exits right after its last Stop: the entry is gone.
+        let later = tracker.evaluate(ledgers: [script.ledger!], registry: [:], payloads: [:],
+                                     now: LedgerScript.at(130), transcript: { _ in .unavailable })
+        let outcome = try XCTUnwrap(later.outcomes.first)
+        XCTAssertEqual(outcome.kind, .completed)
+        XCTAssertEqual(outcome.sessionID, script.sessionID, "the main session's id, from the hooks")
+        XCTAssertEqual(outcome.launch, .headless)
+        XCTAssertEqual(outcome.transcriptPath, "/tmp/t.jsonl")
     }
 
     /// The C1a shape stretched to a task worth announcing: polled every
@@ -193,13 +216,13 @@ final class TaskOutcomeDeliveryTests: XCTestCase {
         await h.pass(script, at: 30, registry: reading(.waiting, at: 20, waitingFor: "permission prompt"))
         XCTAssertEqual(h.center.posted.count, 0, "answered within the minute would be silent")
         await h.pass(script, at: 80, registry: reading(.waiting, at: 20, waitingFor: "permission prompt"))
-        XCTAssertEqual(h.center.posted.map(\.content.title), ["AgentMeter needs input"])
+        XCTAssertEqual(h.center.posted.map(\.content.title), ["Needs input · AgentMeter"])
         script.stop(at: 200)
         await h.pass(script, at: 203, registry: reading(.idle, at: 200.03))
-        XCTAssertEqual(h.center.posted.map(\.content.title), ["AgentMeter needs input", "AgentMeter finished"])
+        XCTAssertEqual(h.center.posted.map(\.content.title), ["Needs input · AgentMeter", "Finished · AgentMeter"])
         XCTAssertEqual(Set(h.center.posted.map(\.identifier)).count, 1)
         XCTAssertEqual(h.center.delivered.count, 1)
-        XCTAssertEqual(h.center.delivered.values.first?.content.title, "AgentMeter finished")
+        XCTAssertEqual(h.center.delivered.values.first?.content.title, "Finished · AgentMeter")
     }
 
     /// Reopen: a short follow-up is recorded silently; a long one is
@@ -273,7 +296,7 @@ final class TaskOutcomeDeliveryTests: XCTestCase {
         let end = await h.pass(script, at: 100 + window + 303, registry: reading(.idle, at: 100 + window + 300.03))
         XCTAssertEqual(delivery(end.first)?.state, .posted)
         XCTAssertEqual(h.center.posted.count, 1)
-        XCTAssertEqual(h.center.posted.last?.content.title, "AgentMeter finished")
+        XCTAssertEqual(h.center.posted.last?.content.title, "Finished · AgentMeter")
         XCTAssertEqual(h.center.posted.last?.content.body, "Session 00000000\n16m run")
     }
 }

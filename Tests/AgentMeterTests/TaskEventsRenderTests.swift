@@ -26,8 +26,10 @@ final class TaskEventsRenderTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_792_480_000 + 3_600)
     private let decided = Date(timeIntervalSince1970: 1_792_480_000)
 
+    /// Live titles for two sessions (`titles` below), a title recorded with
+    /// the event for a session that has ended, and a script's headless run.
     private func items() -> [AgentMeterEvent] {
-        [
+        var events = [
             listEvent("c", .taskCompleted, session: "ffafe0d9-1", task: "p1", at: 3_400, body: "Session ffafe0d9\n12m run"),
             listEvent("f", .taskFailed, session: "0a1b2c3d-2", task: "p2", at: 2_900,
                       body: "Session 0a1b2c3d\nRate limit · after 2m"),
@@ -38,6 +40,9 @@ final class TaskEventsRenderTests: XCTestCase {
                       title: "agentmeter stopped, background work running",
                       body: "Session c0ffee00\n2 background shells still running · after 14m"),
         ]
+        events[1].subject.sessionKind = TaskSessionLaunch.headless.rawValue
+        events[3].subject.sessionTitle = "Nightly import chain batch"
+        return events
     }
 
     func testRenderTheTaskListStates() throws {

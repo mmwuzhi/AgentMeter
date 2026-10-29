@@ -50,7 +50,8 @@ usage presentation, cached state, or Claude live-session integration.
   (`taskCompletedNotificationsEnabled`, `taskFailedNotificationsEnabled` and
   `taskWaitingNotificationsEnabled`, all default on; read on every delivery
   by `AgentMeterNotificationPreferences`), `taskNotificationsShowSessionTitle`
-  (default off, read when a task event is built),
+  (default on since 2026-10-29, a stored false still wins; read when a task
+  event is built),
   `taskNotificationsShowListInMenu` (`TaskEventListVisibility`, default on:
   the popover's task list and the menu bar count), the overflow
   acknowledgement (`taskEventsOverflowAcknowledgedCount` and
@@ -523,6 +524,34 @@ usage presentation, cached state, or Claude live-session integration.
   banner is switched off in Settings is still listed and counted: the
   switches are about banners only, and Settings says so. Pending events are
   not counted, so the badge does not flicker while an event settles.
+- Naming the session. When an
+  event is recorded, `TaskSessionLabel.resolve` takes the live row's title
+  (`ActiveAgentSession.displayTitle`, the row's own text), else the title in
+  the session's own transcript (the ledger's `transcriptPath`, only a
+  regular file named `<session id>.jsonl`, read off the main actor by the
+  rows' parser `ActiveAgentService.claudeTranscriptTitle`: custom, then
+  generated), else none; matched by session id only, never invented. The
+  session id is the hook's `session_id`, the main session's even in a
+  subagent's hooks, and the ledger keeps main-agent turns only, so an
+  `agent-<id>.jsonl` never names one. The title is stored on the subject
+  (`sessionTitle`, events.jsonl format 2; a format 1 line reads with nil),
+  and so is `sessionKind` (`TaskSessionLaunch`: the registry's `kind` other
+  than `interactive`, or an `sdk-*` entrypoint, is headless; remembered per
+  session by `TaskOutcomeTracker` since a headless process often exits
+  before its end is called; nil without an entry). Banner: "Finished ·
+  <title>" over "<project> · Claude Code · <short id>" ("Headless run" in
+  place of "Claude Code"), or without a title (or with the switch off)
+  "Finished · <project>" over "Session <short id>" (· "Headless run"); then
+  the detail line. Failed, Needs input, Status unconfirmed, Interrupted
+  alike, status first so truncation keeps it. The list row names the session
+  by the live row's title, else the stored one, else the short id, plus
+  "Headless run". Titles in banners are on by default since 2026-10-29, the
+  user's choice, superseding the 2026-10-20 short-id default (a title
+  without a custom name is Claude's summary of the first prompt, and banners
+  reach the lock screen); with the switch off banners use project and short
+  id, and the list still shows titles. Only `interactive` / `claude-vscode`
+  registry entries were seen locally; the `sdk-*` rule and other `kind`
+  values follow Claude Code's entrypoint names, unverified here.
 - `task_unknown` reads "Task status unconfirmed" with
   `TaskEventStatus.unconfirmedExplanation` ("Background tasks were still
   running at the last check…"), never the stored detail line: 1b wrote
@@ -584,7 +613,7 @@ usage presentation, cached state, or Claude live-session integration.
   isolation route for an experiment; no experiment was run.
 - Settings › Alerts shows the three banner switches (default on; labelled as
   banners, with the note that the menu still records, lists and counts the
-  task), the session-title switch (default off), "Show task list in the
+  task), the session-title switch (default on), "Show task list in the
   menu" (default on) and what System Settings says
   (`AgentMeterNotificationSettings`: permission, alert style, lock screen,
   previews), read when the pane appears and when AgentMeter becomes active
@@ -764,12 +793,10 @@ usage presentation, cached state, or Claude live-session integration.
   opened, sessions with crons armed, uncertain ends, and every interruption.
   All of one
   task's banners share `agentmeter.task.<session>.<task>`, so a wait and the
-  end replace each other. The text is the project, the short session id, run
-  time and error kind; never a prompt, assistant text or error details. The
-  session title is left out by default (without a custom title it is
-  Claude's summary of the first prompt, and banners reach the lock screen);
-  `AgentMeterNotificationPreferences.showsSessionTitle` (Settings › Alerts)
-  turns it on, from the next event.
+  end replace each other. The text is the status, the session's title, the
+  project, the short session id, run time and error kind; never a prompt,
+  assistant text, error details or the task key. The title is named as in
+  "Task notifications in the menu" below.
   Ledgers untouched for 24 h whose session has no live process are swept
   hourly.
 - A payload attaches to a process by its recorded ancestry only, which is

@@ -21,6 +21,9 @@ import Foundation
 // from ever rewriting the file (`AgentMeterEventLogState.newestFormatVersion`),
 // so a downgrade cannot drop what it cannot read. Adding a field or a case to
 // anything written here therefore bumps `formatVersion`.
+//
+// Format 2 (2026-10-29) adds the subject's optional `sessionTitle` and
+// `sessionKind`. A format 1 line decodes as before, with both nil.
 
 /// One line of the log.
 enum AgentMeterEventLogEntry: Sendable, Equatable {
@@ -78,7 +81,7 @@ extension AgentMeterUnreadOverflow: Codable {
 }
 
 enum AgentMeterEventLogCodec {
-    static let formatVersion = 1
+    static let formatVersion = 2
 
     private struct Line: Codable {
         var v: Int

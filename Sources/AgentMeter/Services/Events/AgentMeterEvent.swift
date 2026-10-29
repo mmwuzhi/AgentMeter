@@ -61,15 +61,26 @@ struct AgentMeterEventSubject: Hashable, Sendable, Codable {
     var projectPath: String?
     var ruleID: String?
     var scopeKey: String?
+    /// The session's title when the event was recorded (format 2), as the
+    /// session list showed it; nil when it had none or before format 2. The
+    /// menu names a session that has ended with it. Untrusted text, shown
+    /// only through `SessionLabel`.
+    var sessionTitle: String?
+    /// How the session's process was started (`TaskSessionLaunch` raw
+    /// value, format 2); nil when unknown.
+    var sessionKind: String?
 
     init(provider: String? = nil, sessionID: String? = nil, taskKey: String? = nil,
-         projectPath: String? = nil, ruleID: String? = nil, scopeKey: String? = nil) {
+         projectPath: String? = nil, ruleID: String? = nil, scopeKey: String? = nil,
+         sessionTitle: String? = nil, sessionKind: String? = nil) {
         self.provider = provider
         self.sessionID = sessionID
         self.taskKey = taskKey
         self.projectPath = projectPath
         self.ruleID = ruleID
         self.scopeKey = scopeKey
+        self.sessionTitle = sessionTitle
+        self.sessionKind = sessionKind
     }
 }
 
@@ -242,7 +253,9 @@ struct AgentMeterEvent: Hashable, Sendable, Identifiable {
         func cap(_ value: String?) -> String? { value.map { String($0.prefix(maximumFieldLength)) } }
         return AgentMeterEventSubject(
             provider: cap(subject.provider), sessionID: cap(subject.sessionID), taskKey: cap(subject.taskKey),
-            projectPath: cap(subject.projectPath), ruleID: cap(subject.ruleID), scopeKey: cap(subject.scopeKey))
+            projectPath: cap(subject.projectPath), ruleID: cap(subject.ruleID), scopeKey: cap(subject.scopeKey),
+            sessionTitle: subject.sessionTitle.map { String($0.prefix(maximumTitleLength)) },
+            sessionKind: subject.sessionKind.map { String($0.prefix(maximumReasonLength)) })
     }
 }
 

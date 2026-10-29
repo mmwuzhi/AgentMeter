@@ -86,7 +86,7 @@ struct MenuView: View {
     private var sessionTitles: [String: String] {
         var titles: [String: String] = [:]
         for agent in model.activeAgents {
-            guard let session = agent.session, let title = SessionLabel.title(session.title) else { continue }
+            guard let session = agent.session, let title = session.displayTitle else { continue }
             titles[session.id] = titles[session.id] ?? title
         }
         return titles

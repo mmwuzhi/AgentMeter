@@ -188,6 +188,37 @@ final class TaskEventListTests: XCTestCase {
         XCTAssertEqual(TaskEventRow.statusLine(for: failed), "Failed · Rate limit · after 2m")
     }
 
+    func testARowNamesItsSessionByTheLiveTitleThenTheRecordedOne() throws {
+        func titled(_ id: String, _ title: String?, kind: String? = nil, at offset: TimeInterval = 0) -> AgentMeterEvent {
+            var event = listEvent(id, at: offset)
+            event.subject.sessionTitle = title
+            event.subject.sessionKind = kind
+            return event
+        }
+        // The wait recorded a title, the end did not (the row was gone).
+        let wait = titled("w", "Fix the\nquota tooltip", at: 0)
+        let end = titled("c", nil, at: 600)
+        let item = try XCTUnwrap(TaskEventItem.items(from: [wait, end]).first)
+        XCTAssertEqual(item.storedSessionTitle, "Fix the quota tooltip", "sanitized, from any of the task's events")
+        XCTAssertEqual(TaskEventsSection.sessionTitle(for: item, liveTitles: [:]), "Fix the quota tooltip",
+                       "after the session ended")
+        XCTAssertEqual(TaskEventsSection.sessionTitle(for: item, liveTitles: ["ffafe0d9-aaaa": "Renamed since"]),
+                       "Renamed since", "the live row first, as the session list shows it now")
+        XCTAssertEqual(TaskEventsSection.sessionTitle(for: item, liveTitles: ["other-session": "Someone else's"]),
+                       "Fix the quota tooltip", "another session's row never names it")
+
+        // Before format 2: no title, so the short id.
+        let old = try XCTUnwrap(TaskEventItem.items(from: [listEvent("o")]).first)
+        XCTAssertNil(old.storedSessionTitle)
+        XCTAssertEqual(TaskEventRow.identityLine(for: old, sessionTitle: TaskEventsSection.sessionTitle(for: old, liveTitles: [:])),
+                       "agentmeter · Session ffafe0d9")
+        // A script's run says so.
+        let headless = try XCTUnwrap(TaskEventItem.items(from: [titled("h", nil, kind: "headless")]).first)
+        XCTAssertEqual(TaskEventRow.identityLine(for: headless, sessionTitle: nil), "agentmeter · Session ffafe0d9 · Headless run")
+        XCTAssertEqual(headless.markedRead.isHeadless, true)
+        XCTAssertEqual(item.markedRead.storedSessionTitle, item.storedSessionTitle)
+    }
+
     func testTheTooltipSaysWhatAClickDoesForEachKindOfHost() throws {
         let terminal = TaskSessionProcess(pid: 77, tty: "ttys002", host: itermHost)
         let editor = TaskSessionProcess(pid: 2114, host: TaskSessionHost(pid: 6986, bundleID: "com.microsoft.VSCode", name: "Code"))

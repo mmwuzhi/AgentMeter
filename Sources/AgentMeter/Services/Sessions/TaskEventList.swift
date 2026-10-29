@@ -103,8 +103,15 @@ struct TaskEventItem: Identifiable, Sendable, Equatable {
     /// The task's events the menu knows, newest first.
     let eventIDs: [String]
     let unreadEventIDs: [String]
+    /// The title the newest of its events recorded for the session
+    /// (`AgentMeterEventSubject.sessionTitle`), sanitized; nil for events
+    /// from before format 2 or a session without one. A live row's title
+    /// comes first (`TaskEventsSection`).
+    var storedSessionTitle: String? = nil
 
     var isUnread: Bool { !unreadEventIDs.isEmpty }
+    /// A run a script started, as the registry said when it was recorded.
+    var isHeadless: Bool { latest.subject.sessionKind == TaskSessionLaunch.headless.rawValue }
     var sessionID: String? { latest.subject.sessionID }
     var occurredAt: Date { latest.occurredAt }
 
@@ -130,7 +137,8 @@ struct TaskEventItem: Identifiable, Sendable, Equatable {
     /// The same task with its events read, for a row the menu keeps in place
     /// after the click that read it.
     var markedRead: TaskEventItem {
-        TaskEventItem(id: id, status: status, latest: latest, eventIDs: eventIDs, unreadEventIDs: [])
+        TaskEventItem(id: id, status: status, latest: latest, eventIDs: eventIDs, unreadEventIDs: [],
+                      storedSessionTitle: storedSessionTitle)
     }
 
     /// What became of the banner, for the tooltip.
@@ -170,7 +178,8 @@ struct TaskEventItem: Identifiable, Sendable, Equatable {
             let sorted = events.sorted(by: newestFirst)
             guard let latest = sorted.first, let status = TaskEventStatus(kind: latest.kind) else { return nil }
             return TaskEventItem(id: key, status: status, latest: latest, eventIDs: sorted.map(\.id),
-                                 unreadEventIDs: sorted.filter(\.isUnread).map(\.id))
+                                 unreadEventIDs: sorted.filter(\.isUnread).map(\.id),
+                                 storedSessionTitle: sorted.lazy.compactMap { SessionLabel.title($0.subject.sessionTitle) }.first)
         }
         .sorted { newestFirst($0.latest, $1.latest) }
     }

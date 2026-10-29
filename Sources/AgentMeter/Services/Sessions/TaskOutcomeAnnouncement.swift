@@ -7,6 +7,38 @@ struct TaskSessionLabel: Sendable, Equatable {
     var title: String?
 }
 
+extension TaskSessionLabel {
+    /// Names the outcome's session the way the session list does, when its
+    /// event is recorded: the live row's title (`ActiveAgentSession
+    /// .displayTitle`, what the row shows), else the title in the session's
+    /// own transcript read by the rows' parser, else none. Matched by session
+    /// id only and never invented; the transcript is read off the main actor.
+    @MainActor
+    static func resolve(
+        for outcome: TaskOutcome, rows: [ActiveAgent],
+        transcriptTitle: @Sendable (_ path: String, _ sessionID: String) async -> String? = TaskSessionLabel.transcriptTitle
+    ) async -> TaskSessionLabel {
+        let session = rows.lazy.compactMap(\.session).first { $0.id == outcome.sessionID }
+        var title = session?.displayTitle
+        if title == nil, let path = outcome.transcriptPath {
+            title = SessionLabel.title(await transcriptTitle(path, outcome.sessionID))
+        }
+        return TaskSessionLabel(project: session?.displayProject, title: title)
+    }
+
+    /// The title in the transcript at `path`, only when the file is that
+    /// session's own (`<session id>.jsonl`, a regular file): a subagent's
+    /// transcript (`agent-<id>.jsonl`) or another session's never names it.
+    nonisolated static func transcriptTitle(path: String, sessionID: String) async -> String? {
+        let url = URL(fileURLWithPath: path)
+        guard path.hasPrefix("/"), url.pathExtension == "jsonl", !sessionID.isEmpty,
+              url.deletingPathExtension().lastPathComponent == sessionID,
+              let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true else { return nil }
+        return await ActiveAgentService.claudeTranscriptTitle(at: url)
+    }
+}
+
 /// Turns a `TaskOutcome` into the event `NotificationManager.submit` records,
 /// and decides whether it is announced or only recorded. The text names the
 /// project, the session and how long the task ran; never a prompt, an
@@ -63,23 +95,32 @@ enum TaskOutcomeAnnouncement {
 
     /// Nil for an outcome that is not an event (`unresolved`).
     ///
-    /// - Parameter showsSessionTitle: name the session by its title instead
-    ///   of its short id. Off by default: without a custom title it is
-    ///   Claude's summary of the first prompt, and banners show on the lock
-    ///   screen. The switch is `AgentMeterNotificationPreferences.showsSessionTitle`.
+    /// The status leads the banner's title, so truncation keeps it:
+    /// "Finished · <session title>" over "<project> · Claude Code ·
+    /// <short id>", or without a title "Finished · <project>" over "Session
+    /// <short id>"; the second body line is the run time or what it waits
+    /// for. A run a script started says "Headless run" (`TaskSessionLaunch`).
+    /// The resolved title is kept on the subject either way, for the menu.
+    ///
+    /// - Parameter showsSessionTitle: name the session by its title in the
+    ///   banner. On by default since 2026-10-29 (the user's choice: a short id
+    ///   names no session they know). Without a custom title it is Claude's
+    ///   summary of the first prompt, and banners can show on the lock
+    ///   screen; the switch is `AgentMeterNotificationPreferences.showsSessionTitle`.
     static func event(for outcome: TaskOutcome, label: TaskSessionLabel?, discoveredAt: Date,
-                      showsSessionTitle: Bool = false) -> AgentMeterEvent? {
+                      showsSessionTitle: Bool = true) -> AgentMeterEvent? {
         guard let kind = outcome.kind.eventKind else { return nil }
         let project = SessionLabel.title(label?.project)
             ?? outcome.cwd.flatMap { SessionLabel.title(URL(fileURLWithPath: $0).lastPathComponent) }
             ?? "Claude"
-        let shortID = "Session \(outcome.sessionID.prefix(8))"
-        let session = showsSessionTitle ? (SessionLabel.title(label?.title) ?? shortID) : shortID
-        let title: String
+        let shortID = String(outcome.sessionID.prefix(8))
+        let sessionTitle = SessionLabel.title(label?.title)
+        let headless = outcome.launch == .headless
+        let status: String
         let detail: String
         switch outcome.kind {
         case .completed:
-            title = "\(project) finished"
+            status = "Finished"
             var parts = [outcome.isReopened ? "Follow-up · \(format(outcome.duration)) run" : "\(format(outcome.duration)) run"]
             if outcome.shellsStillRunning > 0 {
                 let count = outcome.shellsStillRunning
@@ -87,10 +128,10 @@ enum TaskOutcomeAnnouncement {
             }
             detail = parts.joined(separator: " · ")
         case .failed:
-            title = "\(project) failed"
+            status = "Failed"
             detail = "\(errorText(outcome.error)) · after \(format(outcome.duration))"
         case .waiting:
-            title = "\(project) needs input"
+            status = "Needs input"
             let lead = switch outcome.waitingReason {
             case .input: "Waiting for your answer"
             case .dialog: "Waiting for your decision"
@@ -100,14 +141,23 @@ enum TaskOutcomeAnnouncement {
         case .uncertain:
             // What was seen, when: the shell may have ended since without a
             // hook to say so (docs/agent/ui-state.md, known limit).
-            title = "\(project) task status unconfirmed"
+            status = "Status unconfirmed"
             let count = outcome.shellsStillRunning
             detail = "\(count) background \(count == 1 ? "task" : "tasks") running at the last check · after \(format(outcome.duration))"
         case .interrupted:
-            title = "\(project) interrupted"
+            status = "Interrupted"
             detail = "Stopped after \(format(outcome.duration))"
         case .unresolved:
             return nil
+        }
+        let title: String
+        let identity: String
+        if showsSessionTitle, let sessionTitle {
+            title = "\(status) · \(sessionTitle)"
+            identity = "\(project) · \(headless ? "Headless run" : "Claude Code") · \(shortID)"
+        } else {
+            title = "\(status) · \(project)"
+            identity = "Session \(shortID)" + (headless ? " · Headless run" : "")
         }
         return AgentMeterEvent(
             id: outcome.id,
@@ -116,10 +166,11 @@ enum TaskOutcomeAnnouncement {
             discoveredAt: discoveredAt,
             subject: AgentMeterEventSubject(
                 provider: Provider.claude.rawValue, sessionID: outcome.sessionID,
-                taskKey: outcome.taskKey, projectPath: outcome.cwd),
+                taskKey: outcome.taskKey, projectPath: outcome.cwd,
+                sessionTitle: sessionTitle, sessionKind: outcome.launch?.rawValue),
             content: AgentMeterEventContent(
                 title: title,
-                body: "\(session)\n\(detail)",
+                body: "\(identity)\n\(detail)",
                 // One banner per task: a wait, then the end, replace each other.
                 notificationIdentifier: "agentmeter.task.\(outcome.sessionID).\(outcome.taskKey)",
                 threadIdentifier: "agentmeter.task.\(outcome.cwd ?? outcome.sessionID)"),

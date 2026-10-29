@@ -32,6 +32,11 @@ struct ClaudeSessionRegistryEntry: Sendable, Equatable {
     /// values and drops the rest.
     let waitingFor: String?
     let statusUpdatedAt: Date?
+    /// How Claude Code was started (`kind`, e.g. `interactive`; `entrypoint`,
+    /// e.g. `cli`, `claude-vscode`, `sdk-cli`). Untrusted, bounded, only
+    /// compared (`TaskSessionLaunch`), never shown.
+    var kind: String? = nil
+    var entrypoint: String? = nil
 
     /// The row state the registry status maps to. `shell` is the user's own
     /// command running in an idle session, so it is idle for the row.
@@ -61,6 +66,7 @@ enum ClaudeSessionRegistry {
     /// is garbage, not a clock skew.
     static let futureStartTolerance: TimeInterval = 60
     static let waitingForMaximumLength = 64
+    static let launchFieldMaximumLength = 64
 
     /// Every readable entry, by PID. Only `<pid>.json` files count: the
     /// `<pid>.<hash>.key` files beside them hold the messaging-socket secret
@@ -119,7 +125,9 @@ enum ClaudeSessionRegistry {
             startedAt: date(object["startedAt"]),
             status: string(object["status"]).flatMap(ClaudeSessionRegistryEntry.Status.init(rawValue:)),
             waitingFor: string(object["waitingFor"]).map { String($0.prefix(waitingForMaximumLength)) },
-            statusUpdatedAt: date(object["statusUpdatedAt"])
+            statusUpdatedAt: date(object["statusUpdatedAt"]),
+            kind: string(object["kind"]).map { String($0.prefix(launchFieldMaximumLength)) },
+            entrypoint: string(object["entrypoint"]).map { String($0.prefix(launchFieldMaximumLength)) }
         )
     }
 

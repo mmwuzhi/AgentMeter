@@ -368,10 +368,10 @@ final class AgentMeterEventStoreTests: XCTestCase {
         let url = dir.appendingPathComponent(AgentMeterEventStore.fileName)
         // A newer build's line: an extra field, a higher version, and an
         // operation this build does not know.
-        let newer = #"{"v":2,"op":"event","event":{"id":"n","kind":"task_paused","occurredAt":1792458306000,"#
+        let newer = #"{"v":3,"op":"event","event":{"id":"n","kind":"task_paused","occurredAt":1792458306000,"#
             + #""discoveredAt":1792458306000,"subject":{},"content":{"title":"t","body":"b"},"#
             + #""delivery":{"state":"posted","decidedAt":1792458306000},"futureField":true}}"# + "\n"
-            + #"{"v":2,"op":"pin","id":"n"}"# + "\n"
+            + #"{"v":3,"op":"pin","id":"n"}"# + "\n"
         try Data(newer.utf8).write(to: url)
 
         let limits = AgentMeterEventStore.Limits(retention: 180 * 86_400, maximumEvents: 2, minimumSupersededLines: 0)
@@ -387,7 +387,7 @@ final class AgentMeterEventStoreTests: XCTestCase {
         let count = await store.events().count
         XCTAssertEqual(count, 5, "the cap waits for a rewrite this build may not do")
         let stats = await store.statistics()
-        XCTAssertEqual(stats.newestFormatVersion, 2)
+        XCTAssertEqual(stats.newestFormatVersion, 3)
     }
 
     func testTheLineFormatIsPinned() throws {
@@ -400,7 +400,7 @@ final class AgentMeterEventStoreTests: XCTestCase {
             producerVersion: "task-outcome/1")
         let line = String(decoding: try AgentMeterEventLogCodec.encode(.event(event)), as: UTF8.self)
         let decoded = try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
-        XCTAssertEqual(decoded?["v"] as? Int, 1)
+        XCTAssertEqual(decoded?["v"] as? Int, 2)
         XCTAssertEqual(decoded?["op"] as? String, "event")
         let body = decoded?["event"] as? [String: Any]
         XCTAssertEqual(body?["occurredAt"] as? Int64, 1_792_458_306_123)
@@ -410,16 +410,44 @@ final class AgentMeterEventStoreTests: XCTestCase {
         XCTAssertTrue(line.hasSuffix("}\n"))
         XCTAssertEqual(line.filter { $0 == "\n" }.count, 1)
         XCTAssertTrue(line.contains(#""projectPath":"/Users/u/p""#), "paths are written without escaped slashes")
+        XCTAssertFalse(line.contains("sessionTitle"), "an absent title writes nothing")
 
         let read = try AgentMeterEventLogCodec.encode(.read(ids: ["a"], at: Date(timeIntervalSince1970: 1)))
-        XCTAssertEqual(String(decoding: read, as: UTF8.self), #"{"at":1000,"ids":["a"],"op":"read","v":1}"# + "\n")
+        XCTAssertEqual(String(decoding: read, as: UTF8.self), #"{"at":1000,"ids":["a"],"op":"read","v":2}"# + "\n")
         let overflow = try AgentMeterEventLogCodec.encode(.unreadOverflow(AgentMeterUnreadOverflow(
             count: 2, throughDiscoveredAt: Date(timeIntervalSince1970: 1), lastDroppedAt: Date(timeIntervalSince1970: 2))))
         XCTAssertEqual(String(decoding: overflow, as: UTF8.self),
-                       #"{"op":"unreadOverflow","unreadOverflow":{"count":2,"lastDroppedAt":2000,"throughDiscoveredAt":1000},"v":1}"# + "\n")
+                       #"{"op":"unreadOverflow","unreadOverflow":{"count":2,"lastDroppedAt":2000,"throughDiscoveredAt":1000},"v":2}"# + "\n")
         let interrupted = try AgentMeterEventLogCodec.encode(.delivery(id: "a", delivery: .interrupted(at: Date(timeIntervalSince1970: 3))))
         XCTAssertEqual(String(decoding: interrupted, as: UTF8.self),
-                       #"{"delivery":{"decidedAt":3000,"state":"interrupted"},"id":"a","op":"delivery","v":1}"# + "\n")
+                       #"{"delivery":{"decidedAt":3000,"state":"interrupted"},"id":"a","op":"delivery","v":2}"# + "\n")
+    }
+
+    /// Format 2 adds the subject's `sessionTitle` and `sessionKind`; a format 1
+    /// line, as every earlier build wrote it, reads with both nil, and the new
+    /// fields round-trip.
+    func testAFormat1EventReadsWithoutTheSessionTitleAndFormat2KeepsIt() throws {
+        let old = #"{"event":{"content":{"body":"Session ffafe0d9\n12m run","title":"agentmeter finished"},"#
+            + #""delivery":{"decidedAt":1792458306000,"state":"posted"},"discoveredAt":1792458306000,"id":"a","#
+            + #""kind":"task_completed","occurredAt":1792458306000,"producerVersion":"task-outcome/1","#
+            + #""subject":{"projectPath":"/Users/u/p","provider":"claude","sessionID":"ffafe0d9-aaaa","taskKey":"p1"}},"#
+            + #""op":"event","v":1}"#
+        guard case let .entry(.event(event), version) = AgentMeterEventLogCodec.decode(Data(old.utf8), using: JSONDecoder()) else {
+            return XCTFail("a format 1 line no longer decodes")
+        }
+        XCTAssertEqual(version, 1)
+        XCTAssertEqual(event.subject.sessionID, "ffafe0d9-aaaa")
+        XCTAssertNil(event.subject.sessionTitle)
+        XCTAssertNil(event.subject.sessionKind)
+
+        var titled = event
+        titled.subject.sessionTitle = "Fix the quota pacing tooltip"
+        titled.subject.sessionKind = TaskSessionLaunch.headless.rawValue
+        let line = try AgentMeterEventLogCodec.encode(.event(titled))
+        guard case let .entry(.event(back), _) = AgentMeterEventLogCodec.decode(line, using: JSONDecoder()) else {
+            return XCTFail("a format 2 line does not decode")
+        }
+        XCTAssertEqual(back, titled)
     }
 
     func testReplayingTheSameLinesTwiceChangesNothing() throws {

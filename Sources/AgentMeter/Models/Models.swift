@@ -721,6 +721,10 @@ struct ActiveAgentSession: Codable, Sendable, Equatable {
         return TokenFormat.short(tokenCount)
     }
 
+    /// The title as a row shows it, sanitized. Task notifications name the
+    /// session with this too, so a banner and the session list agree.
+    var displayTitle: String? { SessionLabel.title(title) }
+
     var displayProject: String {
         if let projectName, !projectName.isEmpty { return projectName }
         if let projectPath, !projectPath.isEmpty {
@@ -1014,7 +1018,7 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     /// is the one place that precedence lives; the tooltip shows the branch
     /// unconditionally so it stays reachable when a title displaces it.
     var titleDetail: String? {
-        SessionLabel.title(session?.title) ?? session?.displayBranch
+        session?.displayTitle ?? session?.displayBranch
     }
 
     /// Row subtitle. The provider is implied by the surrounding popover

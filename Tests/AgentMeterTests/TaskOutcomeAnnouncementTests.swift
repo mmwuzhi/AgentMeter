@@ -3,6 +3,12 @@ import AgentStatusCore
 import Foundation
 import XCTest
 
+/// What `TaskSessionLabel.resolve` asked the transcript reader for.
+private actor TitleReads {
+    var paths: [String] = []
+    func add(_ path: String) { paths.append(path) }
+}
+
 final class TaskOutcomeAnnouncementTests: XCTestCase {
     private let launchedAt = Date(timeIntervalSince1970: 1_792_480_000)
 
@@ -58,41 +64,80 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
 
     // MARK: Event
 
-    func testCompletedEventNamesProjectSessionAndRun() throws {
+    func testCompletedEventLeadsWithTheStatusAndNamesTheSessionByItsTitle() throws {
         let label = TaskSessionLabel(project: "AgentMeter", title: "Phase 1b\nnotifications\u{0007}")
         let event = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.completed, ran: 754, shells: 1),
                                                                  label: label, discoveredAt: launchedAt))
         XCTAssertEqual(event.kind, .taskCompleted)
         XCTAssertEqual(event.id, "completed|x|0")
-        XCTAssertEqual(event.content.title, "AgentMeter finished")
-        // Item 3: the title (often Claude's summary of the prompt) stays out
-        // by default; the short session id names the session.
-        XCTAssertEqual(event.content.body, "Session ffafe0d9\n12m run · 1 background shell still running")
-        let titled = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.completed, ran: 754, shells: 1),
-                                                                  label: label, discoveredAt: launchedAt, showsSessionTitle: true))
-        XCTAssertEqual(titled.content.body, "Phase 1b notifications\n12m run · 1 background shell still running",
-                       "sanitized single line when shown")
+        // On by default (2026-10-29): the status first, so truncation keeps
+        // it, then the session as the session list names it.
+        XCTAssertEqual(event.content.title, "Finished · Phase 1b notifications", "sanitized single line")
+        XCTAssertEqual(event.content.body, "AgentMeter · Claude Code · ffafe0d9\n12m run · 1 background shell still running")
         XCTAssertEqual(event.content.notificationIdentifier, "agentmeter.task.ffafe0d9-1111-2222-3333-444455556666.017d120c")
         XCTAssertEqual(event.content.threadIdentifier, "agentmeter.task./Users/u/work/agentmeter")
         XCTAssertEqual(event.subject, AgentMeterEventSubject(
             provider: "claude", sessionID: "ffafe0d9-1111-2222-3333-444455556666", taskKey: "017d120c",
-            projectPath: "/Users/u/work/agentmeter"))
+            projectPath: "/Users/u/work/agentmeter", sessionTitle: "Phase 1b notifications"))
         XCTAssertEqual(event.producerVersion, "task-outcome/1")
         XCTAssertEqual(event.occurredAt, launchedAt)
+
+        // Switched off: project and short id in the banner, the title still
+        // kept for the menu's list.
+        let off = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.completed, ran: 754, shells: 1),
+                                                               label: label, discoveredAt: launchedAt, showsSessionTitle: false))
+        XCTAssertEqual(off.content.title, "Finished · AgentMeter")
+        XCTAssertEqual(off.content.body, "Session ffafe0d9\n12m run · 1 background shell still running")
+        XCTAssertEqual(off.subject.sessionTitle, "Phase 1b notifications")
     }
 
-    func testEventFallsBackToFolderAndShortSessionID() throws {
+    func testWithoutATitleTheProjectAndShortIDNameIt() throws {
         let event = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.completed, ran: 3700, segment: 2),
                                                                  label: nil, discoveredAt: launchedAt))
-        XCTAssertEqual(event.content.title, "agentmeter finished")
+        XCTAssertEqual(event.content.title, "Finished · agentmeter", "the folder when no row names the project")
         XCTAssertEqual(event.content.body, "Session ffafe0d9\nFollow-up · 1h 1m run")
+        XCTAssertNil(event.subject.sessionTitle, "no title is invented")
+        // Never the task key (a prompt id) or the full session id as a title.
+        XCTAssertFalse(event.content.title.contains("017d120c"))
+        XCTAssertFalse((event.content.title + event.content.body).contains("ffafe0d9-1111"))
+    }
+
+    func testAHeadlessRunIsCalledSoNotTakenForTheUsersSession() throws {
+        var run = outcome(.completed, ran: 180)
+        run.launch = .headless
+        let untitled = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: run, label: nil, discoveredAt: launchedAt))
+        XCTAssertEqual(untitled.content.title, "Finished · agentmeter")
+        XCTAssertEqual(untitled.content.body, "Session ffafe0d9 · Headless run\n3m run")
+        XCTAssertEqual(untitled.subject.sessionKind, "headless")
+        let titled = try XCTUnwrap(TaskOutcomeAnnouncement.event(
+            for: run, label: TaskSessionLabel(project: nil, title: "Batch the import chain"), discoveredAt: launchedAt))
+        XCTAssertEqual(titled.content.body, "agentmeter · Headless run · ffafe0d9\n3m run")
+        run.launch = .interactive
+        let person = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: run, label: nil, discoveredAt: launchedAt))
+        XCTAssertEqual(person.content.body, "Session ffafe0d9\n3m run")
+        XCTAssertEqual(person.subject.sessionKind, "interactive")
+    }
+
+    func testTheRegistrySaysWhichRunsAreHeadless() {
+        XCTAssertEqual(TaskSessionLaunch(kind: "interactive", entrypoint: "claude-vscode"), .interactive)
+        XCTAssertEqual(TaskSessionLaunch(kind: "interactive", entrypoint: "cli"), .interactive)
+        XCTAssertEqual(TaskSessionLaunch(kind: "print", entrypoint: "sdk-cli"), .headless)
+        XCTAssertEqual(TaskSessionLaunch(kind: "sdk", entrypoint: nil), .headless, "any kind but interactive")
+        XCTAssertEqual(TaskSessionLaunch(kind: nil, entrypoint: "sdk-ts"), .headless)
+        XCTAssertEqual(TaskSessionLaunch(kind: "interactive", entrypoint: "sdk-py"), .headless, "an SDK entrypoint wins")
+        XCTAssertNil(TaskSessionLaunch(kind: nil, entrypoint: "claude-vscode"), "nothing assumed without the kind")
+        XCTAssertNil(TaskSessionLaunch(kind: nil, entrypoint: nil))
+        let entry = ClaudeSessionRegistry.decode(Data(#"{"pid":42,"sessionId":"s","kind":"interactive","entrypoint":"claude-vscode"}"#.utf8))
+        XCTAssertEqual(entry?.kind, "interactive")
+        XCTAssertEqual(entry?.entrypoint, "claude-vscode")
+        XCTAssertEqual(entry.map(TaskOutcomeRegistryReading.init)?.launch, .interactive)
     }
 
     func testFailedWaitingAndInterruptedWording() throws {
         let failed = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.failed, ran: 125, error: "rate_limit"),
                                                                   label: nil, discoveredAt: launchedAt))
         XCTAssertEqual(failed.kind, .taskFailed)
-        XCTAssertEqual(failed.content.title, "agentmeter failed")
+        XCTAssertEqual(failed.content.title, "Failed · agentmeter")
         XCTAssertEqual(failed.content.body, "Session ffafe0d9\nRate limit · after 2m")
         let unknown = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.failed, error: "brand_new_kind"),
                                                                    label: nil, discoveredAt: launchedAt))
@@ -101,7 +146,7 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
         let waiting = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.waiting, ran: 60, reason: .input),
                                                                    label: nil, discoveredAt: launchedAt))
         XCTAssertEqual(waiting.kind, .taskWaiting)
-        XCTAssertEqual(waiting.content.title, "agentmeter needs input")
+        XCTAssertEqual(waiting.content.title, "Needs input · agentmeter")
         XCTAssertEqual(waiting.content.body, "Session ffafe0d9\nWaiting for your answer · 1m")
         XCTAssertEqual(waiting.content.notificationIdentifier,
                        try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.completed), label: nil, discoveredAt: launchedAt))
@@ -115,7 +160,7 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
         let uncertain = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.uncertain, ran: 125, shells: 2),
                                                                      label: nil, discoveredAt: launchedAt))
         XCTAssertEqual(uncertain.kind, .taskUnknown)
-        XCTAssertEqual(uncertain.content.title, "agentmeter task status unconfirmed")
+        XCTAssertEqual(uncertain.content.title, "Status unconfirmed · agentmeter")
         XCTAssertEqual(uncertain.content.body, "Session ffafe0d9\n2 background tasks running at the last check · after 2m")
         // The shell may have ended since with no hook to say so: what was
         // seen, when, never that it still runs.
@@ -124,8 +169,73 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
         let interrupted = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.interrupted, ran: 45),
                                                                        label: nil, discoveredAt: launchedAt))
         XCTAssertEqual(interrupted.kind, .taskInterrupted)
+        XCTAssertEqual(interrupted.content.title, "Interrupted · agentmeter")
         XCTAssertEqual(interrupted.content.body, "Session ffafe0d9\nStopped after 45s")
         XCTAssertNil(TaskOutcomeAnnouncement.event(for: outcome(.unresolved), label: nil, discoveredAt: launchedAt))
+    }
+
+    // MARK: Naming the session
+
+    @MainActor
+    func testTheTitleComesFromTheLiveRowThenTheTranscriptThenNowhere() async throws {
+        let session = "ffafe0d9-1111-2222-3333-444455556666"
+        var withPath = outcome(.completed)
+        withPath.transcriptPath = "/Users/u/.claude/projects/-Users-u-work-agentmeter/\(session).jsonl"
+        func row(_ id: String, title: String?) -> ActiveAgent {
+            ActiveAgent(provider: .claude, pid: 77, parentPID: 1, command: "claude", elapsedSeconds: 60, observedAt: launchedAt,
+                        session: ActiveAgentSession(id: id, projectPath: "/Users/u/work/agentmeter", projectName: "AgentMeter",
+                                                    branch: "main", lastUpdatedAt: nil, source: "test", title: title))
+        }
+        let reads = TitleReads()
+        let transcript: @Sendable (String, String) async -> String? = { path, id in
+            await reads.add(path)
+            return "From the transcript\n"
+        }
+
+        let live = await TaskSessionLabel.resolve(for: withPath, rows: [row(session, title: "Fix the  quota\ttooltip")],
+                                                  transcriptTitle: transcript)
+        XCTAssertEqual(live, TaskSessionLabel(project: "AgentMeter", title: "Fix the quota tooltip"),
+                       "the row's own text (ActiveAgentSession.displayTitle)")
+        let readsAfterLive = await reads.paths
+        XCTAssertTrue(readsAfterLive.isEmpty, "the row answers; the transcript is not read")
+
+        let ended = await TaskSessionLabel.resolve(for: withPath, rows: [row("another-session", title: "Someone else's")],
+                                                   transcriptTitle: transcript)
+        XCTAssertEqual(ended.title, "From the transcript", "another session's row never names it")
+        XCTAssertNil(ended.project)
+        let readsAfterEnded = await reads.paths
+        XCTAssertEqual(readsAfterEnded, [withPath.transcriptPath!])
+
+        let none = await TaskSessionLabel.resolve(for: outcome(.completed), rows: [], transcriptTitle: transcript)
+        XCTAssertNil(none.title, "no row, no transcript: no title")
+    }
+
+    func testOnlyTheSessionsOwnTranscriptNamesIt() async throws {
+        let dir = historyTempDirectory()
+        let session = "a1b2c3d4-aaaa-bbbb-cccc-ddddeeeeffff"
+        let own = dir.appendingPathComponent("\(session).jsonl")
+        let titles = #"{"type":"ai-title","aiTitle":"Generated title","sessionId":"\#(session)"}"# + "\n"
+            + #"{"type":"custom-title","customTitle":"Renamed by the user","sessionId":"\#(session)"}"# + "\n"
+        try Data(titles.utf8).write(to: own)
+        let resolved = await TaskSessionLabel.transcriptTitle(path: own.path, sessionID: session)
+        XCTAssertEqual(resolved, "Renamed by the user", "the rows' order: custom, then generated")
+
+        let subagent = dir.appendingPathComponent("agent-a1b2c3.jsonl")
+        try Data(titles.utf8).write(to: subagent)
+        let fromSubagent = await TaskSessionLabel.transcriptTitle(path: subagent.path, sessionID: session)
+        XCTAssertNil(fromSubagent, "a subagent's transcript never names the main session")
+        let fromOther = await TaskSessionLabel.transcriptTitle(path: own.path, sessionID: "0000aaaa-other")
+        XCTAssertNil(fromOther, "matched by session id only")
+        let link = dir.appendingPathComponent("link/\(session).jsonl")
+        try FileManager.default.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: own)
+        let fromLink = await TaskSessionLabel.transcriptTitle(path: link.path, sessionID: session)
+        XCTAssertNil(fromLink, "not through a symbolic link")
+        let missing = await TaskSessionLabel.transcriptTitle(path: dir.appendingPathComponent("gone/\(session).jsonl").path,
+                                                             sessionID: session)
+        XCTAssertNil(missing, "a deleted transcript names nothing")
+        let relative = await TaskSessionLabel.transcriptTitle(path: "\(session).jsonl", sessionID: session)
+        XCTAssertNil(relative)
     }
 
     func testDurationFormat() {

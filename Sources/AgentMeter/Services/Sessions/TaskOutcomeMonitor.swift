@@ -22,6 +22,10 @@ struct TaskOutcomeTracker {
     /// `waiting` (Claude Code rewrites an unchanged status at times) does not
     /// restart the delay.
     private var waitingSince: [String: Date] = [:]
+    /// How each session's process was started, as its registry entry last
+    /// said: a headless run's entry can be gone by the time its end is
+    /// called (the process exits right after its last `Stop`).
+    private var launches: [String: TaskSessionLaunch] = [:]
     static let maximumRemembered = 10_000
     static let registryCarryOver: TimeInterval = 3
 
@@ -60,14 +64,19 @@ struct TaskOutcomeTracker {
                 }
             )
             if let check = evaluation.nextCheck { nextCheck = min(nextCheck ?? check, check) }
-            for outcome in evaluation.outcomes where settled.insert(outcome.id).inserted {
-                if outcome.kind != .unresolved { outcomes.append(outcome) }
+            if let launch = registry[ledger.sessionID]?.launch { launches[ledger.sessionID] = launch }
+            for var outcome in evaluation.outcomes where settled.insert(outcome.id).inserted {
+                guard outcome.kind != .unresolved else { continue }
+                outcome.transcriptPath = ledger.transcriptPath
+                outcome.launch = launches[ledger.sessionID]
+                outcomes.append(outcome)
             }
         }
         if settled.count > Self.maximumRemembered { settled.removeAll(keepingCapacity: true) }
         if verdicts.count > Self.maximumRemembered { verdicts.removeAll(keepingCapacity: true) }
         let sessions = Set(ledgers.map(\.sessionID))
         lastReadings = lastReadings.filter { sessions.contains($0.key) }
+        launches = launches.filter { sessions.contains($0.key) }
         waitingSince = waitingSince.filter { turns.contains($0.key) }
         return (outcomes, nextCheck)
     }

@@ -475,6 +475,24 @@ final class TaskEventFeedTests: XCTestCase {
         XCTAssertTrue(second.center.posted.isEmpty, "nothing posted again")
     }
 
+    func testTheRecordedTitleNamesTheTaskAfterARestart() async throws {
+        let dir = historyTempDirectory()
+        let clock = EventTestClock()
+        let url = dir.appendingPathComponent(AgentMeterEventStore.fileName)
+        let first = rig(store: AgentMeterEventStore(fileURL: url, clock: clock.function), clock: clock)
+        var titled = event("a", at: clock)
+        titled.subject.sessionTitle = "Fix the quota pacing tooltip"
+        await first.manager.submit(titled)
+        await first.manager.submit(event("b", task: "p2", at: clock))
+        await settle { first.model.taskEvents.unreadCount == 2 }
+
+        let second = rig(store: AgentMeterEventStore(fileURL: url, clock: clock.function), clock: clock)
+        await second.feed.reloadNow()
+        let items = try snapshot(second).unread
+        XCTAssertEqual(items.first { $0.id.hasSuffix("|a") }?.storedSessionTitle, "Fix the quota pacing tooltip")
+        XCTAssertNil(items.first { $0.id.hasSuffix("|p2") }?.storedSessionTitle)
+    }
+
     func testDroppedUnreadEventsAreShownUntilAcknowledgedAndAgainWhenMoreGo() async throws {
         let clock = EventTestClock()
         var limits = AgentMeterEventStore.Limits.standard

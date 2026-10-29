@@ -1279,6 +1279,13 @@ enum ActiveAgentService {
         return display
     }
 
+    /// A Claude transcript's title as its session row would show it (custom,
+    /// else generated), for naming a task's session that is not in the rows
+    /// (`TaskSessionLabel.resolve`). The rows' own parser and cache.
+    static func claudeTranscriptTitle(at url: URL) async -> String? {
+        await claudeTitles(url: url).title
+    }
+
     private static func claudeTitles(url: URL) async -> ClaudeSessionTitles {
         await incrementalParse(url, cache: claudeTitleCache, empty: ClaudeSessionTitles()) { line, titles in
             consumeTitle(line: line, into: &titles)

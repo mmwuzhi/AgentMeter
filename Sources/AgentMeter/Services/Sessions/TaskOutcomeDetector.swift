@@ -54,20 +54,50 @@ import Foundation
 //   record must be Claude Code's interruption marker. Recorded, never
 //   announced. A registry-idle turn without the marker is left alone.
 
+/// How a session's process was started, as Claude Code's registry says
+/// (`kind`, `entrypoint`): a person's session in a terminal or an editor, or
+/// a run a script started (`claude -p`, the Agent SDK). Only what the
+/// registry says; nil without an entry, and nothing is guessed from a
+/// folder or a title. The detector never uses it: a task's notification
+/// names it so a script's run is not taken for one of the user's sessions.
+enum TaskSessionLaunch: String, Sendable, Equatable {
+    case interactive
+    case headless
+
+    /// Headless when `kind` is anything but `interactive`, or the entrypoint
+    /// is one of the SDK's (`sdk-cli` for `claude -p`, `sdk-ts`, `sdk-py`);
+    /// editors (`claude-vscode`) and the terminal (`cli`) are interactive.
+    init?(kind: String?, entrypoint: String?) {
+        if let kind, kind != "interactive" {
+            self = .headless
+        } else if let entrypoint, entrypoint.hasPrefix("sdk-") {
+            self = .headless
+        } else if kind == "interactive" {
+            self = .interactive
+        } else {
+            return nil
+        }
+    }
+}
+
 /// A registry reading for one session: the live process's entry.
 struct TaskOutcomeRegistryReading: Sendable, Equatable {
     var status: ClaudeSessionRegistryEntry.Status?
     var waitingFor: String?
     var statusUpdatedAt: Date?
+    var launch: TaskSessionLaunch?
 
-    init(status: ClaudeSessionRegistryEntry.Status?, waitingFor: String? = nil, statusUpdatedAt: Date?) {
+    init(status: ClaudeSessionRegistryEntry.Status?, waitingFor: String? = nil, statusUpdatedAt: Date?,
+         launch: TaskSessionLaunch? = nil) {
         self.status = status
         self.waitingFor = waitingFor
         self.statusUpdatedAt = statusUpdatedAt
+        self.launch = launch
     }
 
     init(_ entry: ClaudeSessionRegistryEntry) {
-        self.init(status: entry.status, waitingFor: entry.waitingFor, statusUpdatedAt: entry.statusUpdatedAt)
+        self.init(status: entry.status, waitingFor: entry.waitingFor, statusUpdatedAt: entry.statusUpdatedAt,
+                  launch: TaskSessionLaunch(kind: entry.kind, entrypoint: entry.entrypoint))
     }
 
     /// The main loop is idle: `idle`, or the REPL's `shell` (idle while a
@@ -144,6 +174,11 @@ struct TaskOutcome: Sendable, Equatable {
     var waitingReason: ActiveAgentWaitingReason?
     /// Names the occurrence; also the event id (`AgentMeterEvent.id`).
     var id: String
+    /// Set by `TaskOutcomeTracker` for naming the session, never by the
+    /// detector: the session's transcript (the ledger's, from the hooks) and
+    /// how its process was started (the registry's, last seen).
+    var transcriptPath: String? = nil
+    var launch: TaskSessionLaunch? = nil
 
     var duration: TimeInterval { max(0, endedAt.timeIntervalSince(startedAt)) }
     var isReopened: Bool { segment > 0 }
