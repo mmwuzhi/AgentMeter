@@ -383,6 +383,49 @@ final class TaskOutcomeMonitorTests: XCTestCase {
         XCTAssertNil(TaskOutcomeMonitor.processStartDate(0))
     }
 
+    /// A helper registered under the session's id (a `claude -p` the user
+    /// ran from inside it) never makes the user's own session headless,
+    /// whichever entry was written last.
+    func testASessionIsHeadlessOnlyWhenEveryLiveEntryIs() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        func entry(_ pid: Int, _ session: String, kind: String?, entrypoint: String?, updated: TimeInterval) -> ClaudeSessionRegistryEntry {
+            ClaudeSessionRegistryEntry(pid: pid, sessionID: session, cwd: nil, startedAt: Date(timeIntervalSince1970: 999_000),
+                                       status: .idle, waitingFor: nil, statusUpdatedAt: Date(timeIntervalSince1970: updated),
+                                       kind: kind, entrypoint: entrypoint)
+        }
+        let live = TaskOutcomeMonitor.liveRegistry(
+            [1: entry(1, "editor", kind: "interactive", entrypoint: "claude-vscode", updated: 10),
+             2: entry(2, "editor", kind: "print", entrypoint: "sdk-cli", updated: 20),
+             3: entry(3, "script", kind: "print", entrypoint: "sdk-cli", updated: 30),
+             4: entry(4, "script", kind: nil, entrypoint: "sdk-ts", updated: 40),
+             5: entry(5, "mixed", kind: "print", entrypoint: "sdk-cli", updated: 50),
+             6: entry(6, "mixed", kind: "some-future-kind", entrypoint: nil, updated: 60)],
+            processStart: { _ in Date(timeIntervalSince1970: 998_999) }, now: now)
+        XCTAssertEqual(live["editor"]?.launch, .interactive, "the helper's entry is the newest, and still")
+        XCTAssertEqual(live["editor"]?.statusUpdatedAt, Date(timeIntervalSince1970: 20), "status: the newest, as before")
+        XCTAssertEqual(live["script"]?.launch, .headless, "every entry an SDK run")
+        XCTAssertNil(live["mixed"]?.launch, "one entry unknown: no hint")
+
+        // Once seen interactive, the tracker keeps it so after the editor's
+        // entry goes and only the helper's is left.
+        var script = LedgerScript()
+        script.human("p1", at: 1)
+        script.stop(at: 120)
+        var tracker = TaskOutcomeTracker()
+        _ = tracker.evaluate(ledgers: [script.ledger!],
+                             registry: [script.sessionID: TaskOutcomeRegistryReading(
+                                status: .busy, statusUpdatedAt: LedgerScript.at(1.05), launch: .interactive)],
+                             payloads: [:], now: LedgerScript.at(60), transcript: { _ in .unavailable })
+        let helperOnly = TaskOutcomeRegistryReading(status: .idle, statusUpdatedAt: LedgerScript.at(120.05), launch: .headless)
+        var outcomes: [TaskOutcome] = []
+        for second in [120.5, 123.0] {
+            outcomes += tracker.evaluate(ledgers: [script.ledger!], registry: [script.sessionID: helperOnly], payloads: [:],
+                                         now: LedgerScript.at(second), transcript: { _ in .unavailable }).outcomes
+        }
+        XCTAssertEqual(outcomes.map(\.kind), [.completed])
+        XCTAssertEqual(outcomes.first?.launch, .interactive)
+    }
+
     /// Review finding 7: one pass that misses a session's registry file (a
     /// read mid-rewrite) does not count as "no registry" and end a held task.
     func testTrackerRidesOverAMissedRegistryRead() {

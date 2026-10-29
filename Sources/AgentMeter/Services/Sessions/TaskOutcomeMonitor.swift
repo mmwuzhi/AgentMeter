@@ -22,9 +22,11 @@ struct TaskOutcomeTracker {
     /// `waiting` (Claude Code rewrites an unchanged status at times) does not
     /// restart the delay.
     private var waitingSince: [String: Date] = [:]
-    /// How each session's process was started, as its registry entry last
+    /// How each session's process was started, as its registry entries last
     /// said: a headless run's entry can be gone by the time its end is
-    /// called (the process exits right after its last `Stop`).
+    /// called (the process exits right after its last `Stop`). Once
+    /// interactive, a session stays so: a helper outliving it is not the
+    /// session.
     private var launches: [String: TaskSessionLaunch] = [:]
     static let maximumRemembered = 10_000
     static let registryCarryOver: TimeInterval = 3
@@ -64,7 +66,9 @@ struct TaskOutcomeTracker {
                 }
             )
             if let check = evaluation.nextCheck { nextCheck = min(nextCheck ?? check, check) }
-            if let launch = registry[ledger.sessionID]?.launch { launches[ledger.sessionID] = launch }
+            if let launch = registry[ledger.sessionID]?.launch, launches[ledger.sessionID] != .interactive {
+                launches[ledger.sessionID] = launch
+            }
             for var outcome in evaluation.outcomes where settled.insert(outcome.id).inserted {
                 guard outcome.kind != .unresolved else { continue }
                 outcome.transcriptPath = ledger.transcriptPath
@@ -249,7 +253,8 @@ final class TaskOutcomeMonitor: @unchecked Sendable {
     }
 
     /// The live process's entry per session (newest status wins when two
-    /// processes claim one session). An entry whose process is gone, or
+    /// processes claim one session), with the launch of all of them
+    /// (`TaskSessionLaunch.combined`). An entry whose process is gone, or
     /// whose PID a later process reuses (the registry's own start-time
     /// guard, as the rows apply it), does not count.
     static func liveRegistry(
@@ -258,15 +263,21 @@ final class TaskOutcomeMonitor: @unchecked Sendable {
         now: Date
     ) -> [String: TaskOutcomeRegistryReading] {
         var result: [String: (Date, TaskOutcomeRegistryReading)] = [:]
+        var launches: [String: [TaskSessionLaunch?]] = [:]
         for entry in entries.values {
             guard let sessionID = entry.sessionID, let started = processStart(entry.pid),
                   ClaudeSessionRegistry.entry(for: entry.pid, processStartedAt: started, observedAt: now, in: entries) != nil
             else { continue }
+            launches[sessionID, default: []].append(TaskSessionLaunch(kind: entry.kind, entrypoint: entry.entrypoint))
             let updated = entry.statusUpdatedAt ?? .distantPast
             if let existing = result[sessionID], existing.0 >= updated { continue }
             result[sessionID] = (updated, TaskOutcomeRegistryReading(entry))
         }
-        return result.mapValues(\.1)
+        return result.reduce(into: [:]) { readings, element in
+            var reading = element.value.1
+            reading.launch = TaskSessionLaunch.combined(launches[element.key] ?? [])
+            readings[element.key] = reading
+        }
     }
 
     /// When the process started, from the kernel; nil when there is none.

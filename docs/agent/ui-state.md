@@ -535,10 +535,14 @@ usage presentation, cached state, or Claude live-session integration.
   subagent's hooks, and the ledger keeps main-agent turns only, so an
   `agent-<id>.jsonl` never names one. The title is stored on the subject
   (`sessionTitle`, events.jsonl format 2; a format 1 line reads with nil),
-  and so is `sessionKind` (`TaskSessionLaunch`: the registry's `kind` other
-  than `interactive`, or an `sdk-*` entrypoint, is headless; remembered per
-  session by `TaskOutcomeTracker` since a headless process often exits
-  before its end is called; nil without an entry). Banner: "Finished ·
+  and so is `sessionKind` (`TaskSessionLaunch`, from every live registry
+  entry of the session: interactive when any entry's `kind` is
+  `interactive`, headless only when every entry has a known SDK entrypoint
+  (`sdk-cli`, `sdk-ts`, `sdk-py`), otherwise unknown and no hint, so a
+  `claude -p` helper registered under the user's session id never makes it
+  headless; remembered per session by `TaskOutcomeTracker`, interactive
+  once seen, since a headless process often exits before its end is
+  called). Banner: "Finished ·
   <title>" over "<project> · Claude Code · <short id>" ("Headless run" in
   place of "Claude Code"), or without a title (or with the switch off)
   "Finished · <project>" over "Session <short id>" (· "Headless run"); then
@@ -549,9 +553,10 @@ usage presentation, cached state, or Claude live-session integration.
   user's choice, superseding the 2026-10-20 short-id default (a title
   without a custom name is Claude's summary of the first prompt, and banners
   reach the lock screen); with the switch off banners use project and short
-  id, and the list still shows titles. Only `interactive` / `claude-vscode`
-  registry entries were seen locally; the `sdk-*` rule and other `kind`
-  values follow Claude Code's entrypoint names, unverified here.
+  id, and the list still shows titles (the title is kept with the event
+  either way). Only `interactive` / `claude-vscode` registry entries were
+  seen locally; the SDK entrypoint names follow Claude Code's, unverified
+  here.
 - `task_unknown` reads "Task status unconfirmed" with
   `TaskEventStatus.unconfirmedExplanation` ("Background tasks were still
   running at the last check…"), never the stored detail line: 1b wrote

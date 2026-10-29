@@ -64,19 +64,33 @@ enum TaskSessionLaunch: String, Sendable, Equatable {
     case interactive
     case headless
 
-    /// Headless when `kind` is anything but `interactive`, or the entrypoint
-    /// is one of the SDK's (`sdk-cli` for `claude -p`, `sdk-ts`, `sdk-py`);
-    /// editors (`claude-vscode`) and the terminal (`cli`) are interactive.
+    /// The SDK's entrypoints: `sdk-cli` is `claude -p`, `sdk-ts` and `sdk-py`
+    /// the Agent SDKs. Only these count as headless: a kind or entrypoint
+    /// this build does not know says nothing.
+    static let headlessEntrypoints: Set<String> = ["sdk-cli", "sdk-ts", "sdk-py"]
+
+    /// One registry entry's say: interactive when its `kind` is
+    /// `interactive` (an editor's `claude-vscode`, the terminal's `cli`),
+    /// headless only for a known SDK entrypoint under any other kind, else
+    /// nothing.
     init?(kind: String?, entrypoint: String?) {
-        if let kind, kind != "interactive" {
-            self = .headless
-        } else if let entrypoint, entrypoint.hasPrefix("sdk-") {
-            self = .headless
-        } else if kind == "interactive" {
+        if kind == "interactive" {
             self = .interactive
+        } else if let entrypoint, Self.headlessEntrypoints.contains(entrypoint) {
+            self = .headless
         } else {
             return nil
         }
+    }
+
+    /// A session's, from every live entry that reports it: a helper Claude
+    /// Code registers under the session's id (a `claude -p` run from inside
+    /// it) must not make the user's own session headless. Interactive when
+    /// any entry is; headless only when every entry is; else nothing.
+    static func combined(_ launches: [TaskSessionLaunch?]) -> TaskSessionLaunch? {
+        if launches.contains(.interactive) { return .interactive }
+        if !launches.isEmpty, launches.allSatisfy({ $0 == .headless }) { return .headless }
+        return nil
     }
 }
 

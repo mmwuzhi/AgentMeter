@@ -121,12 +121,21 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
     func testTheRegistrySaysWhichRunsAreHeadless() {
         XCTAssertEqual(TaskSessionLaunch(kind: "interactive", entrypoint: "claude-vscode"), .interactive)
         XCTAssertEqual(TaskSessionLaunch(kind: "interactive", entrypoint: "cli"), .interactive)
+        XCTAssertEqual(TaskSessionLaunch(kind: "interactive", entrypoint: "sdk-py"), .interactive, "the kind says so")
         XCTAssertEqual(TaskSessionLaunch(kind: "print", entrypoint: "sdk-cli"), .headless)
-        XCTAssertEqual(TaskSessionLaunch(kind: "sdk", entrypoint: nil), .headless, "any kind but interactive")
         XCTAssertEqual(TaskSessionLaunch(kind: nil, entrypoint: "sdk-ts"), .headless)
-        XCTAssertEqual(TaskSessionLaunch(kind: "interactive", entrypoint: "sdk-py"), .headless, "an SDK entrypoint wins")
+        // Only known evidence: a kind or entrypoint this build does not know
+        // says nothing, rather than calling the session a script's.
+        XCTAssertNil(TaskSessionLaunch(kind: "sdk", entrypoint: nil))
+        XCTAssertNil(TaskSessionLaunch(kind: "some-future-kind", entrypoint: "cli"))
+        XCTAssertNil(TaskSessionLaunch(kind: nil, entrypoint: "sdk-future"))
         XCTAssertNil(TaskSessionLaunch(kind: nil, entrypoint: "claude-vscode"), "nothing assumed without the kind")
         XCTAssertNil(TaskSessionLaunch(kind: nil, entrypoint: nil))
+        // A session: interactive when any entry is, headless only when all are.
+        XCTAssertEqual(TaskSessionLaunch.combined([.headless, .interactive]), .interactive)
+        XCTAssertEqual(TaskSessionLaunch.combined([.headless, .headless]), .headless)
+        XCTAssertNil(TaskSessionLaunch.combined([.headless, nil]), "one entry unknown: not unambiguous")
+        XCTAssertNil(TaskSessionLaunch.combined([]))
         let entry = ClaudeSessionRegistry.decode(Data(#"{"pid":42,"sessionId":"s","kind":"interactive","entrypoint":"claude-vscode"}"#.utf8))
         XCTAssertEqual(entry?.kind, "interactive")
         XCTAssertEqual(entry?.entrypoint, "claude-vscode")
