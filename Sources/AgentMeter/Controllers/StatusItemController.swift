@@ -82,6 +82,12 @@ final class StatusItemController {
         visible.contains(.claude) ? .claude : visible.first
     }
 
+    /// The unread count an item shows: only on the item that carries the
+    /// list, and none while the list is hidden in Settings.
+    static func unreadBadge(_ state: TaskEventsState, carriesList: Bool, listShown: Bool) -> Int {
+        carriesList && listShown ? state.unreadCount : 0
+    }
+
     /// Refresh the menubar text when the model changes.
     private func observeModel() {
         withObservationTracking {
@@ -228,7 +234,9 @@ private final class StatusItemSlotController: NSObject {
         let showsQuota = elements.contains { $0.segment?.remaining != nil }
         let stale = showsQuota && model.staleQuotaProviders.contains(slot.provider)
         contentView.dimmed = stale
-        let unread = taskEvents == nil ? 0 : model.taskEvents.unreadCount
+        let unread = StatusItemController.unreadBadge(
+            model.taskEvents, carriesList: taskEvents != nil,
+            listShown: TaskEventListVisibility.isShown(in: .standard))
         contentView.unreadBadge = unread
         let summary = accessibilitySummary(elements.compactMap(\.segment))
             + (stale ? " — quota data stale, refresh failing" : "")

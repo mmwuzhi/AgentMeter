@@ -259,6 +259,20 @@ struct TaskEventsSnapshot: Sendable, Equatable {
     }
 }
 
+/// Settings › Alerts › "Show task list in the menu": whether the popover
+/// lists the tasks and the menu bar counts them. Default on. Off hides those
+/// two and nothing else: banners, the event log and read state carry on, so
+/// turning it back on shows everything as it stands.
+enum TaskEventListVisibility {
+    static let key = "taskNotificationsShowListInMenu"
+    static let defaultValue = true
+
+    /// A missing value, or one of the wrong type, keeps the default.
+    static func isShown(in defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? defaultValue
+    }
+}
+
 /// Before the event log is read, the menu says so instead of "nothing yet".
 enum TaskEventsState: Sendable, Equatable {
     case loading

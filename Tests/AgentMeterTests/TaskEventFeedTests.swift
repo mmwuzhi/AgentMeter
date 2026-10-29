@@ -196,6 +196,30 @@ final class TaskEventFeedTests: XCTestCase {
         XCTAssertEqual(try snapshot(rig).handled.first?.status, .completed, "reading keeps the status")
     }
 
+    func testWithTheListHiddenTasksAreStillRecordedAndPostedButATapOpensNoMenu() async throws {
+        let defaults = defaults()
+        defaults.set(false, forKey: TaskEventListVisibility.key)
+        let rig = rig(defaults: defaults)
+        await rig.manager.submit(event("done", at: rig.clock))
+        XCTAssertEqual(rig.center.posted.count, 1, "banners are not the list's business")
+        await settle { rig.model.taskEvents.unreadCount == 1 }
+        XCTAssertEqual(StatusItemController.unreadBadge(rig.model.taskEvents, carriesList: true,
+                                                        listShown: TaskEventListVisibility.isShown(in: defaults)), 0,
+                       "recorded and counted, but no badge")
+
+        var shown = 0
+        rig.feed.showList = { shown += 1 }
+        await rig.manager.handleEventResponse(eventID: "done", actionIdentifier: UNNotificationDefaultActionIdentifier)
+        XCTAssertEqual(shown, 0, "no popover with nothing to show")
+        XCTAssertNil(rig.model.taskEventNotice)
+        XCTAssertFalse(rig.model.taskEventsExpanded)
+        await settle({ rig.model.taskEvents.unreadCount == 0 }, "the tap still reads the task")
+
+        // Back on: everything as it stands.
+        defaults.set(true, forKey: TaskEventListVisibility.key)
+        XCTAssertEqual(try snapshot(rig).handled.map(\.id), ["ffafe0d9-aaaa|done"])
+    }
+
     func testATapThatReachesTheSessionReadsTheWholeTask() async throws {
         let observed = Date(timeIntervalSince1970: 1_792_458_306)
         let rig = rig(lookup: { recorder, now in

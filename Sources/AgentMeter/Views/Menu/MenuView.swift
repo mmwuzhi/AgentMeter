@@ -24,6 +24,7 @@ struct MenuView: View {
     var onQuit: () -> Void
     @State private var sectionsHeight: CGFloat = 0
     @AppStorage("statusHooksEnabled") private var statusHooksEnabled = false
+    @AppStorage(TaskEventListVisibility.key) private var showsTaskList = TaskEventListVisibility.defaultValue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -48,7 +49,7 @@ struct MenuView: View {
 
     private var sections: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let taskEvents {
+            if let taskEvents, showsTaskList {
                 TaskEventsSection(
                     state: model.taskEvents,
                     isExpanded: $model.taskEventsExpanded,

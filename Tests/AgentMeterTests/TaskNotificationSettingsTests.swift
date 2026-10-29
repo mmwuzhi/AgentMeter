@@ -36,6 +36,20 @@ final class TaskNotificationSettingsTests: XCTestCase {
         XCTAssertFalse(read.notifies(.taskUnknown), "an unconfirmed task is never posted")
     }
 
+    func testTheTaskListIsShownByDefaultAndTheSwitchIsRead() throws {
+        let suite = "agentmeter.tests.list.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(TaskEventListVisibility.key, "taskNotificationsShowListInMenu")
+        XCTAssertTrue(TaskEventListVisibility.isShown(in: defaults), "on by default")
+        defaults.set("no", forKey: TaskEventListVisibility.key)
+        XCTAssertTrue(TaskEventListVisibility.isShown(in: defaults), "wrong type keeps the default")
+        defaults.set(false, forKey: TaskEventListVisibility.key)
+        XCTAssertFalse(TaskEventListVisibility.isShown(in: defaults))
+        XCTAssertEqual(AgentMeterNotificationPreferences(defaults: defaults), AgentMeterNotificationPreferences(),
+                       "hiding the list leaves every banner switch as it was")
+    }
+
     // MARK: - System settings, reported never changed
 
     func testWhatSettingsSaysForEachPermissionAndStyle() {
@@ -127,6 +141,16 @@ final class TaskNotificationSettingsTests: XCTestCase {
         XCTAssertEqual(StatusItemController.taskEventsSlot(visible: [.codex, .copilot]), .codex,
                        "Claude's item hidden: the count must not vanish with it")
         XCTAssertNil(StatusItemController.taskEventsSlot(visible: []))
+    }
+
+    func testTheCountShowsOnlyOnTheListsItemAndOnlyWhileTheListIsShown() {
+        let unread = TaskEventsState.loaded(TaskEventsSnapshot.make(
+            unreadEvents: [listEvent("a", task: "a"), listEvent("b", task: "b")], recentEvents: [], overflow: nil))
+        XCTAssertEqual(StatusItemController.unreadBadge(unread, carriesList: true, listShown: true), 2)
+        XCTAssertEqual(StatusItemController.unreadBadge(unread, carriesList: false, listShown: true), 0)
+        XCTAssertEqual(StatusItemController.unreadBadge(unread, carriesList: true, listShown: false), 0,
+                       "hidden with the list")
+        XCTAssertEqual(StatusItemController.unreadBadge(.loading, carriesList: true, listShown: true), 0)
     }
 
     func testTheCountIsDrawnInsideTheDeclaredWidth() throws {

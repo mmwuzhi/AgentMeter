@@ -50,7 +50,9 @@ usage presentation, cached state, or Claude live-session integration.
   (`taskCompletedNotificationsEnabled`, `taskFailedNotificationsEnabled` and
   `taskWaitingNotificationsEnabled`, all default on; read on every delivery
   by `AgentMeterNotificationPreferences`), `taskNotificationsShowSessionTitle`
-  (default off, read when a task event is built), the overflow
+  (default off, read when a task event is built),
+  `taskNotificationsShowListInMenu` (`TaskEventListVisibility`, default on:
+  the popover's task list and the menu bar count), the overflow
   acknowledgement (`taskEventsOverflowAcknowledgedCount` and
   `taskEventsOverflowAcknowledgedDroppedAt`), `launchAtLogin`,
   `statusHooksEnabled`, and `claudeOAuthSucceededOnce` (gates the one-time
@@ -486,6 +488,12 @@ usage presentation, cached state, or Claude live-session integration.
   unread rows ("Show N more"), "Read · latest 10" collapsed, and "Mark all
   read" in the header while something is unread. The overflow notice shows
   collapsed too.
+- "Show task list in the menu" off (`TaskEventListVisibility`) hides the
+  section and the menu bar count and nothing else: events are recorded,
+  banners posted per their own switches, read state and history kept, so
+  switching it back on shows everything as it stands. A banner tap still
+  does what a row click does (tab, app, or nothing) and reads the task, but
+  never opens the popover: there would be nothing to show in it.
 - One item per task (`<session>|<task>`, `TaskEventItem`): a wait and the
   end replace each other on screen as their banners do, and the item shows
   the latest status. The menu bar counts tasks, not events. A row reads
@@ -576,7 +584,8 @@ usage presentation, cached state, or Claude live-session integration.
   isolation route for an experiment; no experiment was run.
 - Settings › Alerts shows the three banner switches (default on; labelled as
   banners, with the note that the menu still records, lists and counts the
-  task), the session-title switch (default off) and what System Settings says
+  task), the session-title switch (default off), "Show task list in the
+  menu" (default on) and what System Settings says
   (`AgentMeterNotificationSettings`: permission, alert style, lock screen,
   previews), read when the pane appears and when AgentMeter becomes active
   again. AgentMeter never changes them and never imitates a persistent

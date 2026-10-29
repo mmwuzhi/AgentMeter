@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 /// Settings › Alerts: which Claude Code task outcomes become macOS
-/// notifications, what they call the session, and what System Settings
-/// currently does with them. AgentMeter shows the system's permission and
+/// notifications, what they call the session, whether AgentMeter's menu
+/// lists them, and what System Settings currently does with them. AgentMeter shows the system's permission and
 /// style and says how to change them; it never changes them itself.
 struct TaskNotificationSettingsSections: View {
     // Defaults come from the one place that defines them.
@@ -15,6 +15,8 @@ struct TaskNotificationSettingsSections: View {
     private var waiting = AgentMeterNotificationPreferences().taskWaiting
     @AppStorage(AgentMeterNotificationPreferences.showsSessionTitleKey)
     private var showsSessionTitle = AgentMeterNotificationPreferences().showsSessionTitle
+    @AppStorage(TaskEventListVisibility.key)
+    private var showsList = TaskEventListVisibility.defaultValue
 
     var manager: NotificationManager = .shared
     @State private var system: SystemState = .reading
@@ -35,6 +37,11 @@ struct TaskNotificationSettingsSections: View {
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Show session titles in banners", isOn: $showsSessionTitle)
             Text("Off by default: unless you renamed the session, its title is Claude's summary of your first prompt, and banners can appear on the lock screen. Applies to banners sent from now on.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        Section("Claude Code tasks: AgentMeter menu") {
+            Toggle("Show task list in the menu", isOn: $showsList)
+            Text("Lists finished, failed and waiting tasks in the popover, with the unread count in the menu bar. Off hides both; banners, the history and which tasks are read stay as they are, so turning it back on shows everything again.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         Section("macOS notifications") {

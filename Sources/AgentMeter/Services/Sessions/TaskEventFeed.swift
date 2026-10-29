@@ -156,8 +156,10 @@ final class TaskEventFeed {
     /// A tap on a task's notification (`NotificationManager.onEventResponse`):
     /// the same as a click on its row. The task's unread events (the wait
     /// before the end too) are read either way. When nothing came forward,
-    /// the menu opens on the list to say why. Returns true, so the manager
-    /// reads the tapped event too.
+    /// the menu opens on the list to say why; with the list hidden in
+    /// Settings there is nothing to open it on, so the tap ends there, as a
+    /// banner whose session is gone otherwise would. Returns true, so the
+    /// manager reads the tapped event too.
     func handleNotificationResponse(_ event: AgentMeterEvent) async -> Bool {
         guard TaskEventStatus(kind: event.kind) != nil else { return true }
         let key = TaskEventItem.key(event)
@@ -171,7 +173,8 @@ final class TaskEventFeed {
         let listed = model.taskEvents.snapshot.flatMap { snapshot in
             (snapshot.unread + snapshot.handled).first { $0.id == key }
         }
-        if let failure, let item = listed ?? TaskEventItem.items(from: [event]).first {
+        if let failure, TaskEventListVisibility.isShown(in: defaults),
+           let item = listed ?? TaskEventItem.items(from: [event]).first {
             model.taskEventNotice = TaskEventNotice(item: item.markedRead, reason: failure.reason,
                                                     hostName: failure.hostName)
             model.taskEventsExpanded = true
