@@ -175,8 +175,12 @@ final class MenuBarContentView: NSView {
 
         let captionFont = Self.captionFont()
         let valueFont = Self.valueFont(showCaptions: showCaptions)
+        // Every column reads from its left edge: caption, value and gauge all
+        // start at `x`, whatever their lengths, with captions or without.
+        // Centring the bare values put a value with an alert dot three points
+        // in from one without, and the dot past the column's declared width.
         let style = NSMutableParagraphStyle()
-        style.alignment = showCaptions ? .left : .center
+        style.alignment = .left
         let captionAttr: [NSAttributedString.Key: Any] = [
             .font: captionFont, .foregroundColor: fg, .paragraphStyle: style]
         let valueAttr: [NSAttributedString.Key: Any] = [
@@ -211,7 +215,6 @@ final class MenuBarContentView: NSView {
                 drawAlertDot(
                     for: s,
                     at: x,
-                    width: w,
                     captionAttributes: captionAttr,
                     valueAttributes: valueAttr,
                     y: alertDotY
@@ -227,8 +230,10 @@ final class MenuBarContentView: NSView {
                 let barY = showCaptions
                     ? valueY + max(0, (valueHeight - barHeight) / 2)
                     : (height - barHeight) / 2
-                let barX = x + max(0, (w - Self.barWidth) / 2)
-                drawBar(s, in: NSRect(x: barX, y: barY, width: Self.barWidth, height: barHeight), color: fg)
+                // Under the start of the caption, not centred under it: a
+                // countdown caption is wider than the gauge, and a centred
+                // gauge sat apart from text that starts at the column edge.
+                drawBar(s, in: NSRect(x: x, y: barY, width: Self.barWidth, height: barHeight), color: fg)
                 x += w + Self.spacing
             }
         }
@@ -379,7 +384,6 @@ final class MenuBarContentView: NSView {
     private func drawAlertDot(
         for segment: MenuBarSegment,
         at x: CGFloat,
-        width: CGFloat,
         captionAttributes: [NSAttributedString.Key: Any],
         valueAttributes: [NSAttributedString.Key: Any],
         y: CGFloat
@@ -397,8 +401,9 @@ final class MenuBarContentView: NSView {
         } else {
             textWidth = NSAttributedString(string: segment.value, attributes: valueAttributes).size().width
         }
-        let textLeft = showCaptions ? x : x + max(0, (width - textWidth) / 2)
-        let rect = NSRect(x: ceil(textLeft + textWidth + 1), y: y, width: size, height: size)
+        // Text starts at the column edge in both modes (see `draw`), so the
+        // dot follows the text there; `columnWidth` reserves its 6 points.
+        let rect = NSRect(x: ceil(x + textWidth + 1), y: y, width: size, height: size)
         color.setFill()
         NSBezierPath(roundedRect: rect, xRadius: size / 2, yRadius: size / 2).fill()
     }

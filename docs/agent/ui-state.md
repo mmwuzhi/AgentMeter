@@ -80,6 +80,13 @@ usage presentation, cached state, or Claude live-session integration.
 - Draw with native backing scale and baseline-anchored attributed strings.
   Resolve color from `NSAppearance.currentDrawing()` (`white` or
   `.textColor`).
+- Every column reads from its left edge: caption, value and `.bar` gauge start
+  at the column's `x` whatever their lengths, with captions on or off, and an
+  alert dot follows the text inside the column's declared width. A gauge
+  centred under a countdown caption, or a bare value centred beside its dot
+  pad, sat apart from its neighbours. Alignment never changes a width
+  (`columnWidth`, `barColumnWidth`); `MenuBarColumnAlignmentTests` checks the
+  drawn pixels.
 - A low-quota dot belongs beside the exact quota segment that triggered it,
   never in a global corner. `.bar` elements carry the same cue in the gauge
   fill itself (yellow/red) instead of a separate dot.
