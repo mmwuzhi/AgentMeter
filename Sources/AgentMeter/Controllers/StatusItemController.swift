@@ -21,10 +21,19 @@ final class StatusItemController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(defaultsChanged),
             name: UserDefaults.didChangeNotification, object: nil)
+        // A reset countdown is read off the clock, and its tick is a timer that
+        // sleep stalls and a clock change can leave an hour out of step.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(clockMayHaveJumped),
+            name: .NSSystemClockDidChange, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(clockMayHaveJumped),
+            name: NSWorkspace.didWakeNotification, object: nil)
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     @objc private func defaultsChanged() {
@@ -32,6 +41,12 @@ final class StatusItemController {
             self.reconcileSlots()
             self.updateAll()
         }
+    }
+
+    /// `nonisolated`: nothing documents which thread posts a clock change, and
+    /// a main-actor `@objc` thunk traps when it is called from another one.
+    @objc private nonisolated func clockMayHaveJumped() {
+        Task { @MainActor in self.updateAll() }
     }
 
     private func reconcileSlots() {
@@ -124,6 +139,8 @@ private final class StatusItemSlotController: NSObject {
     private let closeOthers: (MenuBarSlot) -> Void
     private let contentView = MenuBarContentView()
     private var lastLength: CGFloat = -1
+    /// Re-renders when a reset countdown in this item next changes text.
+    private lazy var countdownTicker = CountdownTicker { [weak self] in self?.updateTitle() }
 
     init(
         slot: MenuBarSlot,
@@ -146,6 +163,7 @@ private final class StatusItemSlotController: NSObject {
     }
 
     func remove() {
+        countdownTicker.stop()
         closePopover()
         NSStatusBar.system.removeStatusItem(statusItem)
     }
@@ -183,7 +201,9 @@ private final class StatusItemSlotController: NSObject {
 
     func updateTitle() {
         guard let button = statusItem.button else { return }
-        let elements = MenuBarLayout.activeElements(model, slot: slot)
+        // One reading for the captions, the tooltip and the next tick.
+        let now = Date()
+        let elements = MenuBarLayout.activeElements(model, slot: slot, now: now)
         let showCaptions = UserDefaults.standard.object(forKey: "menuBarShowCaptions") as? Bool ?? true
         // Dim only when the item actually displays quota numbers — usage/spend
         // come from local logs and are never network-stale.
@@ -192,10 +212,14 @@ private final class StatusItemSlotController: NSObject {
         contentView.dimmed = stale
         let unread = taskEvents == nil ? 0 : model.taskEvents.unreadCount
         contentView.unreadBadge = unread
-        let summary = accessibilitySummary() + (stale ? " — quota data stale, refresh failing" : "")
+        let summary = accessibilitySummary(elements.compactMap(\.segment))
+            + (stale ? " — quota data stale, refresh failing" : "")
             + MenuBarContentView.unreadSummary(unread)
-        button.toolTip = summary
-        button.setAccessibilityLabel(summary)
+        // Only on a change: most renders (defaults, model, wake) leave it as it was.
+        if button.toolTip != summary {
+            button.toolTip = summary
+            button.setAccessibilityLabel(summary)
+        }
 
         let width = MenuBarContentView.width(elements: elements, showCaptions: showCaptions, unreadBadge: unread)
         let statusLength = MenuBarContentView.statusLength(forVisualWidth: width)
@@ -209,19 +233,13 @@ private final class StatusItemSlotController: NSObject {
             showCaptions: showCaptions,
             fillsByUsed: QuotaDisplay.showsUsed
         )
+        countdownTicker.arm(at: MenuBarLayout.nextCountdownChange(in: elements, after: now))
     }
 
-    private func accessibilitySummary() -> String {
-        let rows = MenuBarLayout.activeSegments(model, slot: slot)
+    private func accessibilitySummary(_ rows: [MenuBarSegment]) -> String {
         guard !rows.isEmpty else { return "AgentMeter \(slot.displayName) — no items shown" }
-        // A bare "61%" is read as the remainder by anyone who has not opened
-        // Settings, so a quota figure says which end it counts from. Usage and
-        // spend segments carry no `remaining` and are read as-is.
         let end = QuotaDisplay.word(showsUsed: QuotaDisplay.showsUsed)
-        let parts = rows.map { row in
-            row.remaining == nil ? "\(row.label) \(row.value)" : "\(row.label) \(row.value) \(end)"
-        }
-        return "AgentMeter \(slot.displayName) — " + parts.joined(separator: ", ")
+        return "AgentMeter \(slot.displayName) — " + rows.map { $0.spokenText(end: end) }.joined(separator: ", ")
     }
 
     @objc private func statusItemClicked() {

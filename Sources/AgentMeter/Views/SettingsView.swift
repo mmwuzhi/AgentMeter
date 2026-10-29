@@ -35,6 +35,10 @@ private struct MenuBarSettings: View {
     // reach the preview zones' rebuild signature or the chips keep the old fill
     // direction until some other display state changes.
     @AppStorage(QuotaDisplay.defaultsKey) private var quotaShowsUsed = false
+    // Same for the caption mode and the countdown colours: the chips are drawn
+    // from them, so they go into the signature as well.
+    @AppStorage(ResetCaptionMode.defaultsKey) private var resetCaptionMode = ResetCaptionMode.window
+    @AppStorage(ResetCaptionColors.defaultsKey) private var resetColors = ""
     @State private var selectedSlot: MenuBarSlot = .codex
 
     init(model: AppViewModel) {
@@ -45,12 +49,20 @@ private struct MenuBarSettings: View {
         Form {
             Section("Display") {
                 Toggle("Show captions", isOn: $showCaptions)
+                Picker("Claude quota caption", selection: $resetCaptionMode) {
+                    ForEach(ResetCaptionMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Window shows 5h or 7d. Countdown shows the time left until that quota resets. Both shows the two together.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Text("Each visible provider becomes its own menu-bar icon with its own popover and fields.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Provider Fields") {
                 Picker("Provider", selection: $selectedSlot) {
-                    ForEach(MenuBarSlot.allCases) { slot in
+                    ForEach(MenuBarSlot.alphabetical) { slot in
                         Text(slot.displayName).tag(slot)
                     }
                 }
@@ -58,12 +70,23 @@ private struct MenuBarSettings: View {
                 SlotItemSettings(
                     model: model,
                     slot: selectedSlot,
-                    displaySignature: "\(showCaptions)-\(quotaShowsUsed)"
+                    displaySignature: MenuBarPreviewSignature.make(
+                        showCaptions: showCaptions, quotaShowsUsed: quotaShowsUsed,
+                        resetCaptionMode: resetCaptionMode, resetColors: resetColors)
                 )
                 .id(selectedSlot.rawValue)
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Every display default a preview chip's rendering depends on, in one string:
+/// a new preference is a new segment here, not a new parameter downstream.
+enum MenuBarPreviewSignature {
+    static func make(showCaptions: Bool, quotaShowsUsed: Bool,
+                     resetCaptionMode: ResetCaptionMode, resetColors: String) -> String {
+        "\(showCaptions)-\(quotaShowsUsed)-\(resetCaptionMode.rawValue)-\(resetColors)"
     }
 }
 
@@ -74,6 +97,8 @@ private struct SlotItemSettings: View {
     /// rebuilt only when this changes, so a preference missing from it renders
     /// stale previews.
     let displaySignature: String
+    @AppStorage(ResetCaptionMode.defaultsKey) private var resetCaptionMode = ResetCaptionMode.window
+    @AppStorage(ResetCaptionColors.defaultsKey) private var resetColors = ""
     @StateObject private var coordinator: LayoutEditorCoordinator
 
     init(model: AppViewModel, slot: MenuBarSlot, displaySignature: String) {
@@ -94,7 +119,58 @@ private struct SlotItemSettings: View {
                 .font(.caption).foregroundStyle(.secondary)
             LayoutZoneView(zone: .hidden, backing: coordinator, signature: displaySignature)
                 .frame(height: 46)
+            if slot == .claude, resetCaptionMode != .window {
+                countdownColors
+            }
         }
+    }
+
+    /// One colour per quota window, so two weeklies can differ. The window's
+    /// identity keys it, so reordering the fields above never moves a colour.
+    @ViewBuilder
+    private var countdownColors: some View {
+        let windows = model.claude.quota.windows.filter { $0.isOneTimeCredit != true }
+        if !windows.isEmpty {
+            Divider()
+            Text("Countdown colors")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            ForEach(windows) { window in
+                let key = ResetCaptionColors.key(provider: .claude, windowID: window.id)
+                LabeledContent(window.label) {
+                    HStack(spacing: 8) {
+                        ColorPicker("", selection: colorBinding(for: key), supportsOpacity: false)
+                            .labelsHidden()
+                        Button("Default") { setColor(nil, for: key) }
+                            .disabled(ResetCaptionColors.tint(forKey: key, in: resetColors) == nil)
+                    }
+                }
+            }
+            Text("Default follows the system text color.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func colorBinding(for key: String) -> Binding<Color> {
+        Binding(
+            get: {
+                guard let tint = ResetCaptionColors.tint(forKey: key, in: resetColors) else {
+                    return Color(nsColor: .labelColor)
+                }
+                return Color(.sRGB, red: tint.red, green: tint.green, blue: tint.blue)
+            },
+            set: { color in
+                guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return }
+                setColor(ResetCaptionColors.hex(red: rgb.redComponent, green: rgb.greenComponent,
+                                                blue: rgb.blueComponent), for: key)
+            }
+        )
+    }
+
+    private func setColor(_ hex: String?, for key: String) {
+        var colors = ResetCaptionColors.decode(resetColors)
+        colors[key] = hex
+        resetColors = colors.isEmpty ? "" : ResetCaptionColors.encode(colors)
     }
 }
 

@@ -35,7 +35,10 @@ final class MenuBarContentView: NSView {
     static let barWidth: CGFloat = 26
 
     // iStat-style compact two-line readout: balanced captions and restrained values.
-    static func captionFont() -> NSFont { .systemFont(ofSize: 8.5, weight: .regular) }
+    /// Tabular digits for the same reason as the value font: a reset countdown
+    /// caption re-renders every minute, and with proportional digits each
+    /// change of a digit would resize the item and move the popover.
+    static func captionFont() -> NSFont { .monospacedDigitSystemFont(ofSize: 8.5, weight: .regular) }
     /// Tabular digits: `statusItem.length` follows the text exactly, the menu
     /// bar is right-anchored and the popover is anchored to the item, so with
     /// proportional digits a refresh that turned a "1" into a "3" moved the
@@ -76,6 +79,22 @@ final class MenuBarContentView: NSView {
             }
         }
         return dimmed ? base.withAlphaComponent(0.45) : base
+    }
+
+    /// The caption as drawn: `attributes` throughout, with the countdown part
+    /// in the colour chosen for that quota when there is one. Without a choice
+    /// the whole caption keeps the system text colour in `attributes`.
+    static func captionString(_ segment: MenuBarSegment, attributes: [NSAttributedString.Key: Any],
+                              dimmed: Bool = false) -> NSAttributedString {
+        let text = NSMutableAttributedString(string: segment.label, attributes: attributes)
+        guard let reset = segment.reset, let tint = reset.tint, segment.label.hasSuffix(reset.countdown) else {
+            return text
+        }
+        let length = reset.countdown.utf16.count
+        let color = NSColor(srgbRed: tint.red, green: tint.green, blue: tint.blue, alpha: dimmed ? 0.45 : 1)
+        text.addAttribute(.foregroundColor, value: color,
+                          range: NSRange(location: text.length - length, length: length))
+        return text
     }
 
     /// Width of one value column (sizing only; color-independent).
@@ -180,7 +199,7 @@ final class MenuBarContentView: NSView {
             case .segment(let s):
                 let w = Self.columnWidth(s, showCaptions: showCaptions)
                 if showCaptions {
-                    NSAttributedString(string: s.label, attributes: captionAttr)
+                    Self.captionString(s, attributes: captionAttr, dimmed: dimmed)
                         .draw(with: NSRect(x: x, y: captionY, width: w, height: captionHeight), options: [], context: nil)
                     NSAttributedString(string: s.value, attributes: valueAttr)
                         .draw(with: NSRect(x: x, y: valueY, width: w, height: valueHeight), options: [], context: nil)
@@ -201,7 +220,7 @@ final class MenuBarContentView: NSView {
             case .bar(let s):
                 let w = Self.barColumnWidth(s, showCaptions: showCaptions)
                 if showCaptions {
-                    NSAttributedString(string: s.label, attributes: captionAttr)
+                    Self.captionString(s, attributes: captionAttr, dimmed: dimmed)
                         .draw(with: NSRect(x: x, y: captionY, width: w, height: captionHeight), options: [], context: nil)
                 }
                 let barHeight: CGFloat = showCaptions ? 8 : 10

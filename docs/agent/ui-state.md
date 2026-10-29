@@ -85,10 +85,47 @@ usage presentation, cached state, or Claude live-session integration.
   fill itself (yellow/red) instead of a separate dot.
 - `QuotaWindow.shortLabel` is menu-bar-only; `QuotaRow` shows the full label.
   Format all token counts with `TokenFormat.short`.
-- `StatusItemController.accessibilitySummary` appends `QuotaDisplay.word`
-  ("used"/"left") to every segment carrying a `remaining`, because a spoken bare
-  "61%" is heard as the remainder by anyone who has not opened Settings. Usage
-  and spend segments carry no `remaining` and are read as-is.
+- What a Claude quota column's caption says is a preference,
+  `ResetCaptionMode` (`menuBarResetCaptionMode`, Settings > Menu Bar > Display):
+  `window` (default; the `shortLabel` `5h` / `7d`, exactly what the app always
+  showed, no countdown computed and no timer), `countdown` (the time left until
+  that window's own `resetsAt`) or `both` (`5h 3h23m`). The countdown
+  (`ResetCountdown.text`: `45m`, `3h05m`, `6d12h`; minutes round up, so 14:00
+  seen at 10:37 reads `3h23m`) comes from the window's own `resetsAt`, never
+  from the 5-hour or 7-day cycle. A window with no `resetsAt`, one already
+  past, or one 100+ days out keeps its `shortLabel` in every mode, so the
+  column never shows a negative or stale countdown. One-time credits (an
+  expiry, not a refill), Codex and Copilot keep their codes. The Settings chips
+  (`MenuBarLayout.preview`) follow the mode and the colours as of when they are
+  built; the mode and the colours are part of `MenuBarPreviewSignature`.
+- A countdown's colour is chosen per quota window (Settings > Menu Bar >
+  Provider Fields > Countdown colors, Claude, while the mode is not `window`)
+  and keyed by the window's identity, `claude:seven_day_fable`
+  (`ResetCaptionColors`, JSON under `menuBarResetColors`), never by a position
+  in the layout and not inside `MenuBarItem`, which `commit()` rebuilds from
+  bare keys on every drop. Two weeklies are two entries, a text field and a bar
+  field of one window share one, and no entry means the system text colour.
+  Only the countdown part of the caption is coloured
+  (`MenuBarContentView.captionString`); a stale quota dims it like the rest.
+- The countdown caption no longer names its window, so the segment carries
+  `reset` (window name, instant, countdown, tint) and the tooltip and VoiceOver
+  read "5-hour 63% left (resets in 3h23m)". `MenuBarSegment.spokenText`
+  appends `QuotaDisplay.word` ("used"/"left") to every segment carrying a
+  `remaining`, because a spoken bare "61%" is heard as the remainder by anyone
+  who has not opened Settings. Usage and spend segments carry no `remaining`
+  and are read as-is.
+- Nothing counts down in the model: the caption is a function of the clock, and
+  `StatusItemSlotController.updateTitle` re-renders when
+  `ResetCountdown.nextChange` says a caption changes. `CountdownTicker` is one
+  one-shot timer in the common run-loop modes, re-armed by every render: one
+  wake-up a minute while a countdown shows, none otherwise, no network request.
+  Sleep stalls it and a clock change can leave it an hour out of step, so
+  `NSWorkspace.didWakeNotification` and `NSSystemClockDidChange` re-render too
+  (`nonisolated` observers: a main-actor `@objc` thunk traps when called off the
+  main thread). The caption font uses tabular digits for the same reason as the
+  value font: a tick must not resize the item.
+- The Settings provider picker lists `MenuBarSlot.alphabetical`; `allCases`
+  stays the menu bar's slot order.
 - Which end a quota figure counts from is a preference, `QuotaDisplay`
   (`quotaShowsUsed`, default **remaining** — an upgrade must not turn every row
   over). One switch covers the popover headline, its bar, the menu bar's quota

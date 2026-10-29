@@ -25,6 +25,12 @@ enum MenuBarSlot: String, Codable, Sendable, CaseIterable, Identifiable {
         }
     }
 
+    /// The slots in the order the Settings picker lists them: alphabetical by
+    /// name. `allCases` stays the menu bar's own slot order.
+    static var alphabetical: [MenuBarSlot] {
+        allCases.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
     var menuBarLimit: Int {
         switch self {
         case .codex, .claude: return 8
@@ -65,6 +71,30 @@ struct MenuBarSegment: Equatable {
     let value: String       // value line
     let remaining: Double?  // 0…100 for quota items; nil for usage/spend
     let alertLevel: MenuBarAlertLevel
+    /// Set when `label` is a reset countdown rather than the window's own code.
+    var reset: ResetCaption? = nil
+}
+
+/// What a countdown caption stands for: the caption may no longer name its
+/// window, so the tooltip does, and the status item re-renders when it next
+/// changes. `label` always ends with `countdown`, the part `tint` colours.
+struct ResetCaption: Equatable {
+    let windowName: String
+    let at: Date
+    let countdown: String
+    let tint: ResetTint?
+}
+
+extension MenuBarSegment {
+    /// How the tooltip and VoiceOver read the column. A bare "61%" is read as the
+    /// remainder by anyone who has not opened Settings, so a quota figure says
+    /// which end it counts from (`end`, see `QuotaDisplay.word`). Usage and
+    /// spend carry no `remaining` and are read as-is.
+    func spokenText(end: String) -> String {
+        guard remaining != nil else { return "\(label) \(value)" }
+        if let reset { return "\(reset.windowName) \(value) \(end) (resets in \(reset.countdown))" }
+        return "\(label) \(value) \(end)"
+    }
 }
 
 /// One thing the menu bar draws, in config order: an icon, a value column, or
@@ -314,7 +344,21 @@ enum MenuBarLayout {
 
     // MARK: - Resolution / rendering
 
-    private static func resolve(_ key: String, _ model: AppViewModel)
+    /// The countdown to the window's own reset, as the caption of its column.
+    /// Claude only, and not for a one-time credit, whose date is an expiry
+    /// rather than a refill. A window with no usable reset (none stated,
+    /// already past) keeps its code, so it never reads as a stale countdown.
+    private static func resetCaption(for window: QuotaWindow, provider: Provider, now: Date,
+                                     mode: ResetCaptionMode) -> (label: String, caption: ResetCaption)? {
+        guard mode != .window, provider == .claude, window.isOneTimeCredit != true, let at = window.resetsAt,
+              let countdown = ResetCountdown.text(until: at, now: now) else { return nil }
+        let tint = ResetCaptionColors.tint(forKey: ResetCaptionColors.key(provider: provider, windowID: window.id))
+        let caption = ResetCaption(windowName: window.label, at: at, countdown: countdown, tint: tint)
+        return (mode == .both ? "\(window.shortLabel) \(countdown)" : countdown, caption)
+    }
+
+    /// `now` is the clock reading the reset countdowns are computed against.
+    private static func resolve(_ key: String, _ model: AppViewModel, now: Date)
         -> (element: MenuBarElement, provider: Provider)? {
         let parts = key.split(separator: ":").map(String.init)
         guard parts.count >= 2, let p = provider(parts[1]) else { return nil }
@@ -326,10 +370,12 @@ enum MenuBarLayout {
             // stays the field the bar fill and the alert thresholds use, so
             // there is still one definition of how low is low.
             let shown = QuotaDisplay.percent(remaining: w.remainingPercent, showsUsed: QuotaDisplay.showsUsed)
-            let segment = MenuBarSegment(label: w.shortLabel,
+            let countdown = resetCaption(for: w, provider: p, now: now, mode: .current)
+            let segment = MenuBarSegment(label: countdown?.label ?? w.shortLabel,
                                          value: "\(Int(shown.rounded()))%",
                                          remaining: w.remainingPercent,
-                                         alertLevel: alertLevel(forRemaining: w.remainingPercent))
+                                         alertLevel: alertLevel(forRemaining: w.remainingPercent),
+                                         reset: countdown?.caption)
             return (parts.first == "b" ? .bar(segment) : .segment(segment), p)
         case "u":
             guard parts.count == 3, let window = UsageWindow(rawValue: parts[2]) else { return nil }
@@ -347,13 +393,17 @@ enum MenuBarLayout {
         }
     }
 
-    /// A single item's current element for the settings preview chips.
-    static func preview(_ key: String, _ model: AppViewModel, slot: MenuBarSlot) -> MenuBarElement? {
-        resolve(key, model)?.element
+    /// A single item's current element for the settings preview chips. Drawn as
+    /// of `now`, so a chip is a snapshot until something rebuilds it.
+    static func preview(_ key: String, _ model: AppViewModel, slot: MenuBarSlot,
+                        now: Date = Date()) -> MenuBarElement? {
+        resolve(key, model, now: now)?.element
     }
 
-    /// Enabled elements in order, resolved against the model.
-    static func activeElements(_ model: AppViewModel, slot: MenuBarSlot, limit: Int? = nil) -> [MenuBarElement] {
+    /// Enabled elements in order, resolved against the model. `now` is the
+    /// reading the reset countdowns are computed against.
+    static func activeElements(_ model: AppViewModel, slot: MenuBarSlot, limit: Int? = nil,
+                               now: Date = Date()) -> [MenuBarElement] {
         let enabled = baseConfig(model, for: slot).filter(\.enabled)
         let maxItems = limit ?? slot.menuBarLimit
 
@@ -363,10 +413,19 @@ enum MenuBarLayout {
                 out.append(.icon(icon(for: slot)))
                 continue
             }
-            guard let r = resolve(item.key, model) else { continue }
+            guard let r = resolve(item.key, model, now: now) else { continue }
             out.append(r.element)
         }
         return Array(out.prefix(maxItems))
+    }
+
+    /// When a countdown caption among `elements` next changes text, so the
+    /// status item can re-render exactly then; nil when none is drawn.
+    static func nextCountdownChange(in elements: [MenuBarElement], after now: Date) -> Date? {
+        elements
+            .compactMap { $0.segment?.reset }
+            .compactMap { ResetCountdown.nextChange(of: $0.at, after: now) }
+            .min()
     }
 
     static func visibleSlots(_ model: AppViewModel) -> [MenuBarSlot] {
@@ -379,10 +438,10 @@ enum MenuBarLayout {
         }
     }
 
-    /// The value columns only (text and bar), for the alert level and
-    /// accessibility text.
-    static func activeSegments(_ model: AppViewModel, slot: MenuBarSlot, limit: Int? = nil) -> [MenuBarSegment] {
-        activeElements(model, slot: slot, limit: limit).compactMap(\.segment)
+    /// The value columns only (text and bar).
+    static func activeSegments(_ model: AppViewModel, slot: MenuBarSlot, limit: Int? = nil,
+                               now: Date = Date()) -> [MenuBarSegment] {
+        activeElements(model, slot: slot, limit: limit, now: now).compactMap(\.segment)
     }
 
     /// Providers/data types that should refresh at the foreground cadence. Quota
