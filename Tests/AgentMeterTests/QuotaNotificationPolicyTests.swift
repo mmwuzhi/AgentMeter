@@ -134,7 +134,7 @@ final class QuotaNotificationPolicyTests: XCTestCase {
 
         XCTAssertTrue(recoveryEvents.isEmpty)
         XCTAssertTrue(repeatedCriticalEvents.isEmpty)
-        XCTAssertFalse(state.criticalNotified.isEmpty)
+        XCTAssertFalse(state.alerts.isEmpty)
     }
 
     func testNonCriticalResetDoesNotNotify() {
@@ -251,7 +251,7 @@ final class QuotaNotificationPolicyTests: XCTestCase {
 
         XCTAssertTrue(disabledEvents.isEmpty)
         XCTAssertTrue(reenabledEvents.isEmpty)
-        XCTAssertTrue(state.criticalNotified.isEmpty)
+        XCTAssertTrue(state.alerts.isEmpty)
     }
 
     func testRecoveryToggleSuppressesRecoveryButRearmsCritical() {
@@ -292,7 +292,7 @@ final class QuotaNotificationPolicyTests: XCTestCase {
         )
 
         XCTAssertTrue(events.isEmpty)
-        XCTAssertTrue(state.criticalNotified.isEmpty)
+        XCTAssertTrue(state.alerts.isEmpty)
     }
 
     // MARK: Reset epochs
@@ -311,6 +311,7 @@ final class QuotaNotificationPolicyTests: XCTestCase {
         _ windows: [QuotaWindow],
         provider: Provider = .claude,
         at now: Date,
+        threshold: Double = 10,
         recoveryEnabled: Bool = true,
         state: inout QuotaNotificationState
     ) -> [QuotaNotificationEvent] {
@@ -318,7 +319,7 @@ final class QuotaNotificationPolicyTests: XCTestCase {
             provider: provider,
             windows: windows,
             now: now,
-            threshold: 10,
+            threshold: threshold,
             alertsEnabled: true,
             recoveryEnabled: recoveryEnabled,
             canDeliver: true,
@@ -486,7 +487,45 @@ final class QuotaNotificationPolicyTests: XCTestCase {
 
         XCTAssertTrue(adopted.isEmpty)
         XCTAssertTrue(drift.isEmpty)
-        XCTAssertEqual(state.criticalResetAt["claude:five_hour"], reset)
+        XCTAssertEqual(state.alerts["claude:five_hour"]?.resetsAt, reset)
+    }
+
+    /// Review 2026-10-30: the scrape alerts (no reset), the Mac sleeps across
+    /// the reset, and the first stated reset is of the next epoch, already
+    /// low. Taken as the alert's own, it went unalerted, and the persisted
+    /// state kept it so after a relaunch too.
+    func testAnAlertWithoutAResetDoesNotHideALaterEpoch() {
+        var state = QuotaNotificationState()
+        _ = evaluate([fiveHour(used: 95, resetsAt: nil)], at: start, state: &state)
+
+        let nextEpoch = fiveHour(used: 93, resetsAt: start.addingTimeInterval(8 * 3600))
+        XCTAssertEqual(evaluate([nextEpoch], at: start.addingTimeInterval(6 * 3600), state: &state),
+                       [.critical(provider: .claude, window: nextEpoch)])
+        var relaunched = state.kept(at: start.addingTimeInterval(6 * 3600 + 60))
+        XCTAssertTrue(evaluate([nextEpoch], at: start.addingTimeInterval(6 * 3600 + 60), state: &relaunched).isEmpty)
+
+        // Within drift of the epoch's start it counts as begun: once more.
+        var nearStart = QuotaNotificationState()
+        _ = evaluate([fiveHour(used: 95, resetsAt: nil)], at: start, state: &nearStart)
+        let begunJustBefore = fiveHour(used: 95, resetsAt: start.addingTimeInterval(5 * 3600 - 120))
+        XCTAssertEqual(evaluate([begunJustBefore], at: start.addingTimeInterval(60), state: &nearStart),
+                       [.critical(provider: .claude, window: begunJustBefore)])
+    }
+
+    /// The reset an alert took stays alerted when another login's window
+    /// alerts in between.
+    func testATakenResetStaysAlertedAfterAnotherLogin() {
+        let reset = start.addingTimeInterval(3600)
+        let otherLogin = fiveHour(used: 94, resetsAt: start.addingTimeInterval(3 * 3600))
+        var state = QuotaNotificationState()
+
+        var events = evaluate([fiveHour(used: 95, resetsAt: nil)], at: start, state: &state)
+        for (step, window) in [fiveHour(used: 96, resetsAt: reset), otherLogin, fiveHour(used: 97, resetsAt: reset)].enumerated() {
+            events += evaluate([window], at: start.addingTimeInterval(Double(step + 1) * 60), state: &state)
+        }
+
+        XCTAssertEqual(events, [.critical(provider: .claude, window: fiveHour(used: 95, resetsAt: nil)),
+                                .critical(provider: .claude, window: otherLogin)])
     }
 
     /// Notifications have one level: a rise from critical into the warn band
@@ -524,7 +563,7 @@ final class QuotaNotificationPolicyTests: XCTestCase {
         let afterRefresh = evaluate([refreshed], at: start.addingTimeInterval(180), state: &notified)
 
         XCTAssertTrue(cachedAtLaunch.isEmpty)
-        XCTAssertTrue(fresh.criticalNotified.isEmpty)
+        XCTAssertTrue(fresh.alerts.isEmpty)
         XCTAssertTrue(carriedAlong.isEmpty)
         XCTAssertEqual(afterRefresh, [.recovered(provider: .claude, window: refreshed)])
     }
@@ -545,19 +584,259 @@ final class QuotaNotificationPolicyTests: XCTestCase {
         XCTAssertEqual(state, before)
     }
 
-    /// The dedup state lives in memory: after a relaunch a window that is
-    /// still critical in its live reading notifies once more.
-    func testRelaunchNotifiesStillCriticalWindowOnce() {
-        let low = weekly(used: 95, resetsAt: start.addingTimeInterval(3 * 86400))
+    /// 2026-10-29: the weekly alert went out at 16:51 and again right after
+    /// the 18:22 relaunch, one `resetsAt`. The state now outlives a launch:
+    /// the same epoch stays alerted.
+    func testARelaunchInTheSameEpochDoesNotAlertAgain() throws {
+        let low = weekly(used: 96, resetsAt: start.addingTimeInterval(3 * 86400))
+        let suite = "agentmeter.tests.quota.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = QuotaNotificationStateStore.defaults(defaults)
+
+        var state = store.load()
+        XCTAssertEqual(evaluate([low], at: start, state: &state), [.critical(provider: .claude, window: low)])
+        store.save(state)
+
+        var relaunched = store.load().kept(at: start.addingTimeInterval(5400))
+        XCTAssertEqual(relaunched, state, "an epoch still running is kept whole")
+        XCTAssertTrue(evaluate([low], at: start.addingTimeInterval(5400), state: &relaunched).isEmpty)
+        // The scrape's reading without a reset is the same epoch too.
+        XCTAssertTrue(evaluate([weekly(used: 97, resetsAt: nil)], at: start.addingTimeInterval(5460), state: &relaunched).isEmpty)
+    }
+
+    /// An alert whose epoch ended while AgentMeter was not running is
+    /// dropped at launch: the new epoch alerts as any new epoch does, and no
+    /// recovery banner goes out for an end nobody saw.
+    func testALaunchAfterTheResetDropsTheAlert() {
+        let reset = start.addingTimeInterval(3600)
         var state = QuotaNotificationState()
-        _ = evaluate([low], at: start, state: &state)
+        _ = evaluate([fiveHour(used: 95, resetsAt: reset)], at: start, state: &state)
 
-        var relaunched = QuotaNotificationState()
-        let first = evaluate([low], at: start.addingTimeInterval(600), state: &relaunched)
-        let second = evaluate([low], at: start.addingTimeInterval(660), state: &relaunched)
+        let launch = reset.addingTimeInterval(QuotaWindow.sameEpochTolerance + 1)
+        var relaunched = state.kept(at: launch)
+        XCTAssertTrue(relaunched.alerts.isEmpty)
+        let refilled = fiveHour(used: 20, resetsAt: reset.addingTimeInterval(5 * 3600))
+        XCTAssertTrue(evaluate([refilled], at: launch, state: &relaunched).isEmpty, "no recovery for an unseen end")
+        let lowAgain = fiveHour(used: 95, resetsAt: reset.addingTimeInterval(5 * 3600))
+        XCTAssertEqual(evaluate([lowAgain], at: launch.addingTimeInterval(60), state: &relaunched),
+                       [.critical(provider: .claude, window: lowAgain)])
 
-        XCTAssertEqual(first, [.critical(provider: .claude, window: low)])
-        XCTAssertTrue(second.isEmpty)
+        // Within drift of its reset the epoch may still be the one alerted.
+        XCTAssertEqual(state.kept(at: reset.addingTimeInterval(60)), state)
+    }
+
+    /// Without a stated reset nothing shows the epoch is still running:
+    /// dropped at launch, so it can alert once more but never miss one.
+    func testAnAlertWithoutAResetDoesNotOutliveALaunch() {
+        var state = QuotaNotificationState()
+        _ = evaluate([fiveHour(used: 95, resetsAt: nil)], at: start, state: &state)
+        XCTAssertEqual(state.alerts.count, 1)
+        XCTAssertTrue(state.kept(at: start.addingTimeInterval(60)).alerts.isEmpty)
+    }
+
+    /// "Critical notifications fire once" (Settings): a threshold changed
+    /// within the epoch, raised or lowered (the field writes on each edit),
+    /// never alerts it twice; one raised before the crossing alerts as the
+    /// reading meets it.
+    func testThresholdChangesDoNotAlertAnEpochTwice() {
+        let reset = start.addingTimeInterval(3 * 86400)
+        var state = QuotaNotificationState()
+        let eight = weekly(used: 92, resetsAt: reset)
+        let four = weekly(used: 96, resetsAt: reset)
+
+        XCTAssertEqual(evaluate([eight], at: start, threshold: 10, state: &state), [.critical(provider: .claude, window: eight)])
+        for (step, threshold) in [20.0, 9, 8, 7, 6, 5].enumerated() {
+            XCTAssertTrue(evaluate([four], at: start.addingTimeInterval(Double(step + 1) * 60), threshold: threshold,
+                                   state: &state).isEmpty, "threshold \(threshold)")
+        }
+
+        var untouched = QuotaNotificationState()
+        let fifteen = weekly(used: 85, resetsAt: reset)
+        XCTAssertTrue(evaluate([fifteen], at: start, threshold: 10, state: &untouched).isEmpty)
+        XCTAssertEqual(evaluate([fifteen], at: start.addingTimeInterval(60), threshold: 20, state: &untouched),
+                       [.critical(provider: .claude, window: fifteen)])
+    }
+
+    /// Readings carry no account. Another login's window has its own reset,
+    /// earlier as well as later: an epoch not yet alerted, so it alerts once;
+    /// switching back and forth alerts neither again, and an earlier reset
+    /// never counts as a recovery.
+    func testAnotherLoginsWindowAlertsOnceAndAlternatingStaysQuiet() {
+        let resetA = start.addingTimeInterval(4 * 86400)
+        let resetB = start.addingTimeInterval(2 * 86400)
+        var state = QuotaNotificationState()
+        let lowA = weekly(used: 95, resetsAt: resetA)
+        let lowB = weekly(used: 93, resetsAt: resetB)
+        let fineB = weekly(used: 40, resetsAt: resetB)
+
+        var events: [QuotaNotificationEvent] = []
+        for (step, window) in [lowA, fineB, lowA, lowB, lowA, lowB, fineB, lowA].enumerated() {
+            events += evaluate([window], at: start.addingTimeInterval(Double(step) * 60), state: &state)
+        }
+        XCTAssertEqual(events, [.critical(provider: .claude, window: lowA), .critical(provider: .claude, window: lowB)])
+
+        let drifted = weekly(used: 96, resetsAt: resetA.addingTimeInterval(-3 * 60))
+        XCTAssertTrue(evaluate([drifted], at: start.addingTimeInterval(600), state: &state).isEmpty, "drift: same epoch")
+    }
+
+    /// Review 2026-10-29: a Codex reset credit spent mid-epoch, then a wake
+    /// before the network is up, and the rollout log's fallback reading
+    /// still carries the epoch before (an earlier reset, still ahead). The
+    /// alternation used to post low, low, recovered, low.
+    func testAStaleFallbackOfAnAlertedEpochStaysQuiet() {
+        let r1 = start.addingTimeInterval(2 * 86400)
+        let r2 = start.addingTimeInterval(7 * 86400)
+        var state = QuotaNotificationState()
+        let lowR1 = weekly(used: 95, resetsAt: r1)
+        let refilledR2 = weekly(used: 0, resetsAt: r2)
+        let lowR2 = weekly(used: 95, resetsAt: r2)
+        let halfR1 = weekly(used: 50, resetsAt: r1)
+
+        var events: [QuotaNotificationEvent] = []
+        for (step, window) in [lowR1, refilledR2, lowR2, lowR1, lowR2, halfR1, lowR2].enumerated() {
+            events += evaluate([window], provider: .codex, at: start.addingTimeInterval(Double(step) * 600), state: &state)
+        }
+        XCTAssertEqual(events, [.critical(provider: .codex, window: lowR1), .recovered(provider: .codex, window: refilledR2),
+                                .critical(provider: .codex, window: lowR2)])
+    }
+
+    /// Alerted resets go once they pass, so the state holds only epochs that
+    /// still run.
+    func testAlertedResetsAreForgottenOnceTheyPass() {
+        var state = QuotaNotificationState()
+        let reset = start.addingTimeInterval(3600)
+        _ = evaluate([fiveHour(used: 95, resetsAt: reset)], at: start, state: &state)
+        XCTAssertEqual(state.alertedResets["claude:five_hour"], [reset])
+        let next = fiveHour(used: 20, resetsAt: reset.addingTimeInterval(5 * 3600))
+        XCTAssertEqual(evaluate([next], at: reset.addingTimeInterval(QuotaWindow.sameEpochTolerance + 1), state: &state),
+                       [.recovered(provider: .claude, window: next)])
+        XCTAssertTrue(state.alerts.isEmpty)
+        XCTAssertTrue(state.alertedResets.isEmpty)
+    }
+
+    /// One key beside the alert settings; a value that does not decode
+    /// reads as empty, as before the key existed.
+    func testTheStoreKeepsOneKeyAndReadsGarbageAsEmpty() throws {
+        let suite = "agentmeter.tests.quota.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(QuotaNotificationStateStore.defaultsKey, "quotaAlertState")
+        let store = QuotaNotificationStateStore.defaults(defaults)
+        XCTAssertEqual(store.load(), QuotaNotificationState())
+        defaults.set(Data("{not json".utf8), forKey: QuotaNotificationStateStore.defaultsKey)
+        XCTAssertEqual(store.load(), QuotaNotificationState())
+        defaults.set("a string", forKey: QuotaNotificationStateStore.defaultsKey)
+        XCTAssertEqual(store.load(), QuotaNotificationState())
+    }
+
+    /// Through the manager, as the app runs it: a second instance on the
+    /// same defaults (the relaunch) posts nothing for the same epoch, and the
+    /// state it writes is what the next one reads.
+    @MainActor
+    func testTheManagerDoesNotRepostAfterARelaunch() async throws {
+        let suite = "agentmeter.tests.quota.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = UserDefaults.standard
+        let saved = ["alertsEnabled", "alertThresholdPercent"].map { ($0, settings.object(forKey: $0)) }
+        settings.set(true, forKey: "alertsEnabled")
+        settings.set(10.0, forKey: "alertThresholdPercent")
+        defer { for (key, value) in saved { if let value { settings.set(value, forKey: key) } else { settings.removeObject(forKey: key) } } }
+
+        let clock = EventTestClock(start)
+        func launch() async -> (NotificationManager, AuthorizationCenterStub) {
+            let center = AuthorizationCenterStub(result: .success(true), status: .authorized)
+            let manager = NotificationManager(authorizationCenter: center, bundleIdentifier: { "com.shu.agentmeter.tests" },
+                                              now: { clock.now }, quotaStateStore: .defaults(defaults))
+            await manager.requestAuthorizationIfNeeded()
+            return (manager, center)
+        }
+        let low = [weekly(used: 96, resetsAt: start.addingTimeInterval(3 * 86400))]
+
+        let (first, firstCenter) = await launch()
+        first.evaluate(provider: .claude, windows: low)
+        first.evaluate(provider: .claude, windows: low)
+        XCTAssertEqual(firstCenter.posted.map(\.content.title), ["Claude quota low"])
+
+        clock.advance(5400)
+        let (second, secondCenter) = await launch()
+        second.evaluate(provider: .claude, windows: low)
+        XCTAssertTrue(secondCenter.posted.isEmpty, "same epoch after a relaunch")
+        second.evaluate(provider: .codex, windows: [fiveHour(used: 95, resetsAt: start.addingTimeInterval(7200))])
+        XCTAssertEqual(secondCenter.posted.map(\.content.title), ["Codex quota low"], "another provider is its own window")
+
+        clock.advance(3 * 86400)
+        let (third, thirdCenter) = await launch()
+        let nextWeek = [weekly(used: 97, resetsAt: start.addingTimeInterval(10 * 86400))]
+        third.evaluate(provider: .claude, windows: nextWeek)
+        XCTAssertEqual(thirdCenter.posted.map(\.content.title), ["Claude quota low"], "a new epoch alerts")
+        // Both earlier epochs ended before this launch: dropped, not kept.
+        let kept = QuotaNotificationStateStore.defaults(defaults).load()
+        XCTAssertEqual(Set(kept.alerts.keys), ["claude:seven_day"])
+        XCTAssertEqual(kept.alerts["claude:seven_day"]?.resetsAt, start.addingTimeInterval(10 * 86400))
+        XCTAssertEqual(kept.alertedResets, ["claude:seven_day": [start.addingTimeInterval(10 * 86400)]])
+    }
+
+    /// A launch writes back what it dropped, so ended epochs do not pile up
+    /// in the key however long nothing changes.
+    @MainActor
+    func testALaunchWritesBackWhatItDropped() throws {
+        let suite = "agentmeter.tests.quota.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = QuotaNotificationStateStore.defaults(defaults)
+        var state = QuotaNotificationState()
+        _ = evaluate([fiveHour(used: 95, resetsAt: start.addingTimeInterval(3600))], at: start, state: &state)
+        _ = evaluate([weekly(used: 95, resetsAt: start.addingTimeInterval(3 * 86400))], at: start, state: &state)
+        _ = evaluate([fiveHour(used: 95, resetsAt: nil)], provider: .codex, at: start, state: &state)
+        store.save(state)
+
+        let clock = EventTestClock(start.addingTimeInterval(2 * 3600))
+        _ = NotificationManager(authorizationCenter: AuthorizationCenterStub(result: .success(true)),
+                                bundleIdentifier: { "com.shu.agentmeter.tests" }, now: { clock.now }, quotaStateStore: store)
+        let written = store.load()
+        XCTAssertEqual(Set(written.alerts.keys), ["claude:seven_day"])
+        XCTAssertEqual(Set(written.alertedResets.keys), ["claude:seven_day"])
+    }
+
+    /// Two instances on one defaults domain (a development build beside the
+    /// installed app) each read the key when they evaluate: neither drops
+    /// the other's alert.
+    @MainActor
+    func testTwoInstancesKeepEachOthersAlerts() async throws {
+        let suite = "agentmeter.tests.quota.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = UserDefaults.standard
+        let saved = ["alertsEnabled", "alertThresholdPercent"].map { ($0, settings.object(forKey: $0)) }
+        settings.set(true, forKey: "alertsEnabled")
+        settings.set(10.0, forKey: "alertThresholdPercent")
+        defer { for (key, value) in saved { if let value { settings.set(value, forKey: key) } else { settings.removeObject(forKey: key) } } }
+
+        let clock = EventTestClock(start)
+        func instance() async -> (NotificationManager, AuthorizationCenterStub) {
+            let center = AuthorizationCenterStub(result: .success(true), status: .authorized)
+            let manager = NotificationManager(authorizationCenter: center, bundleIdentifier: { "com.shu.agentmeter.tests" },
+                                              now: { clock.now }, quotaStateStore: .defaults(defaults))
+            await manager.requestAuthorizationIfNeeded()
+            return (manager, center)
+        }
+        let codex = [fiveHour(used: 95, resetsAt: start.addingTimeInterval(7200))]
+        let claude = [weekly(used: 96, resetsAt: start.addingTimeInterval(3 * 86400))]
+        let (a, aCenter) = await instance()
+        let (b, bCenter) = await instance()
+        a.evaluate(provider: .codex, windows: codex)
+        b.evaluate(provider: .claude, windows: claude)
+        b.evaluate(provider: .codex, windows: codex)
+        a.evaluate(provider: .claude, windows: claude)
+        XCTAssertEqual(aCenter.posted.map(\.content.title), ["Codex quota low"])
+        XCTAssertEqual(bCenter.posted.map(\.content.title), ["Claude quota low"])
+
+        let (c, cCenter) = await instance()
+        c.evaluate(provider: .codex, windows: codex)
+        c.evaluate(provider: .claude, windows: claude)
+        XCTAssertTrue(cCenter.posted.isEmpty)
     }
 
     func testCriticalNotificationBodyUsesExpiresForOneTimeCredit() {

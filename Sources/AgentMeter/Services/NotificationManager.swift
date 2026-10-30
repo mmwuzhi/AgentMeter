@@ -43,12 +43,95 @@ extension UNUserNotificationCenter: NotificationAuthorizationCenter {
     }
 }
 
-struct QuotaNotificationState: Equatable {
-    /// Windows whose critical alert has gone out for their current epoch.
-    var criticalNotified: Set<String> = []
-    /// The `resetsAt` of the epoch each alert went out for; absent while no
-    /// reading of that epoch has carried one.
-    var criticalResetAt: [String: Date] = [:]
+/// The quota alerts that went out, by `provider:window`: what keeps one
+/// depletion from alerting twice. Kept across launches
+/// (`QuotaNotificationStateStore`): it used to live in memory only, and every
+/// relaunch alerted again for a window still low in the same epoch.
+struct QuotaNotificationState: Equatable, Codable {
+    struct Alert: Equatable, Codable {
+        /// The `resetsAt` of the epoch it went out for; nil while no reading
+        /// of that epoch has carried one.
+        var resetsAt: Date?
+        var alertedAt: Date
+    }
+
+    /// The latest alert per window: a recovery is judged against it.
+    var alerts: [String: Alert] = [:]
+    /// The reset of every epoch alerted per window, while it is still ahead:
+    /// a reading of one of them alerts no more. Readings carry no account,
+    /// and two epochs of one window can read side by side: another login's,
+    /// or a stale fallback reading (Codex's rollout log after a reset credit
+    /// was spent) of the epoch before.
+    var alertedResets: [String: [Date]] = [:]
+
+    /// What a launch keeps: what still describes an epoch that runs by its
+    /// stated reset. An alert whose reset passed more than
+    /// `sameEpochTolerance` ago ended while AgentMeter was not watching, so
+    /// its window re-arms as on any new epoch, with no recovery banner for an
+    /// end nobody saw; one without a reset cannot show it is still running
+    /// and is dropped too (at worst one alert again, never one missed).
+    func kept(at now: Date) -> QuotaNotificationState {
+        var kept = self
+        kept.alerts = alerts.filter { _, alert in alert.resetsAt.map { Self.runs($0, at: now) } ?? false }
+        kept.dropEndedResets(at: now)
+        return kept
+    }
+
+    /// Forgets alerted resets that have passed: no reading of their epoch is
+    /// taken any more (`QuotaNotificationPolicy` skips a reading past its
+    /// reset), so they can match nothing.
+    mutating func dropEndedResets(at now: Date) {
+        alertedResets = alertedResets.compactMapValues { resets in
+            let running = resets.filter { Self.runs($0, at: now) }
+            return running.isEmpty ? nil : running
+        }
+    }
+
+    func hasAlerted(_ key: String, epochEndingAt reset: Date) -> Bool {
+        alertedResets[key]?.contains { QuotaNotificationPolicy.isSameEpoch(reset, $0) } ?? false
+    }
+
+    mutating func remember(_ key: String, epochEndingAt reset: Date?) {
+        guard let reset, !hasAlerted(key, epochEndingAt: reset) else { return }
+        alertedResets[key, default: []].append(reset)
+    }
+
+    private static func runs(_ reset: Date, at now: Date) -> Bool {
+        reset.addingTimeInterval(QuotaWindow.sameEpochTolerance) > now
+    }
+}
+
+/// Where the quota alerts' state is kept: one `UserDefaults` key beside the
+/// alert settings, the only copy. Read at each evaluation, so a second
+/// instance on the same defaults (a development build beside the installed
+/// app) builds on the first one's alerts instead of overwriting them, though
+/// not atomically (two processes refreshing at the same moment can still both
+/// post); written whenever it changes. A value that does not decode reads as
+/// empty, as before the key existed.
+struct QuotaNotificationStateStore {
+    var load: () -> QuotaNotificationState
+    var save: (QuotaNotificationState) -> Void
+
+    static let defaultsKey = "quotaAlertState"
+
+    static func defaults(_ defaults: UserDefaults) -> Self {
+        Self(
+            load: {
+                guard let data = defaults.data(forKey: defaultsKey) else { return QuotaNotificationState() }
+                return (try? JSONDecoder().decode(QuotaNotificationState.self, from: data)) ?? QuotaNotificationState()
+            },
+            save: { state in
+                guard let data = try? JSONEncoder().encode(state) else { return }
+                defaults.set(data, forKey: defaultsKey)
+            })
+    }
+
+    /// Tests: kept for this store's lifetime only.
+    static var memory: Self {
+        final class Box { var state = QuotaNotificationState() }
+        let box = Box()
+        return Self(load: { box.state }, save: { box.state = $0 })
+    }
 }
 
 enum QuotaNotificationEvent: Equatable {
@@ -80,33 +163,39 @@ enum QuotaNotificationPolicy {
             // a failed refresh keeps the last live snapshot whole.
             if let reset = window.resetsAt, reset <= now { continue }
             let key = Self.key(provider: provider, windowID: window.id)
-            let notified = state.criticalNotified.contains(key)
-            let alertedReset = state.criticalResetAt[key]
+            let alert = state.alerts[key]
             if window.remainingPercent <= threshold {
-                if notified {
-                    guard let alertedReset else {
-                        state.criticalResetAt[key] = window.resetsAt
+                if let alert {
+                    if let alertedReset = alert.resetsAt {
+                        // Without a reset time the reading may be the `claude
+                        // /usage` scrape echoing a cached level, so only a
+                        // stated reset re-alerts.
+                        guard let reset = window.resetsAt, !isSameEpoch(reset, alertedReset) else { continue }
+                    } else if !epoch(of: window, beganAfter: alert.alertedAt) {
+                        // An alert from a reading without a reset takes the
+                        // first one stated, unless that epoch began after the
+                        // alert went out (the Mac slept across the reset).
+                        state.alerts[key]?.resetsAt = window.resetsAt
+                        state.remember(key, epochEndingAt: window.resetsAt)
                         continue
                     }
-                    // Without a reset time the reading may be the `claude
-                    // /usage` scrape echoing a cached level, so only a stated
-                    // reset re-alerts.
-                    guard window.resetsAt != nil, isLaterEpoch(window, than: alertedReset, now: now) else { continue }
                 }
-                state.criticalNotified.insert(key)
-                state.criticalResetAt[key] = window.resetsAt
+                // An epoch alerted before, earlier or later than the latest.
+                if let reset = window.resetsAt, state.hasAlerted(key, epochEndingAt: reset) { continue }
+                state.alerts[key] = QuotaNotificationState.Alert(resetsAt: window.resetsAt, alertedAt: now)
+                state.remember(key, epochEndingAt: window.resetsAt)
                 events.append(.critical(provider: provider, window: window))
-            } else if notified {
+            } else if let alert {
                 // With no reset time on record there is no epoch to wait out,
                 // and waiting would leave the window disarmed until relaunch.
-                if let alertedReset, !isLaterEpoch(window, than: alertedReset, now: now) { continue }
+                if let alertedReset = alert.resetsAt, !isLaterEpoch(window, than: alertedReset, now: now) { continue }
                 if recoveryEnabled {
                     events.append(.recovered(provider: provider, window: window))
                 }
-                state.criticalNotified.remove(key)
-                state.criticalResetAt.removeValue(forKey: key)
+                state.alerts.removeValue(forKey: key)
             }
         }
+        state.dropEndedResets(at: now)
         return events
     }
 
@@ -114,25 +203,44 @@ enum QuotaNotificationPolicy {
         "\(provider.rawValue):\(windowID)"
     }
 
+    /// Whether two resets name one epoch: within drift of each other
+    /// (`sameEpochTolerance`; Codex's shifted by minutes in 17fb060).
+    static func isSameEpoch(_ reset: Date, _ other: Date) -> Bool {
+        abs(reset.timeIntervalSince(other)) <= QuotaWindow.sameEpochTolerance
+    }
+
     /// Whether `window` reads a later epoch than the one ending at
-    /// `alertedReset`. A reading that states its reset is later when that
-    /// reset falls beyond `alertedReset` by more than drift: a reset spent
-    /// mid-epoch (a Claude limit reset, a Codex reset credit) starts a full
-    /// cycle from when it is spent, while drift within `sameEpochTolerance`
-    /// (Codex's shifted by minutes in 17fb060) stays one epoch even after
-    /// `alertedReset` has passed. A reading without one is later only once
-    /// `alertedReset` has passed: Claude drops `resets_at` mid-epoch and
-    /// later brings the same one back.
+    /// `alertedReset`, which a recovery needs. A reading that states its
+    /// reset is later when that reset falls beyond `alertedReset` by more
+    /// than drift: a reset spent mid-epoch (a Claude limit reset, a Codex
+    /// reset credit) starts a full cycle from when it is spent, while drift
+    /// within `sameEpochTolerance` stays one epoch even after `alertedReset`
+    /// has passed. An earlier one is never a recovery: a stale fallback
+    /// reading or another login's window would otherwise post one each time
+    /// it alternated with the alerted one. A reading without one is later
+    /// only once `alertedReset` has passed: Claude drops `resets_at`
+    /// mid-epoch and later brings the same one back.
     private static func isLaterEpoch(_ window: QuotaWindow, than alertedReset: Date, now: Date) -> Bool {
         guard let reset = window.resetsAt else { return alertedReset <= now }
         return reset.timeIntervalSince(alertedReset) > QuotaWindow.sameEpochTolerance
     }
+
+    /// Whether the epoch `window` reads began after `alertedAt`: its stated
+    /// reset less one stated cycle (a reset spent mid-epoch starts a full
+    /// cycle too). Within drift of that start it counts as begun, so an
+    /// unclear case alerts once more rather than never. Without a reset or a
+    /// cycle (Copilot states none) there is nothing to tell by: no.
+    private static func epoch(of window: QuotaWindow, beganAfter alertedAt: Date) -> Bool {
+        guard let reset = window.resetsAt, let cycle = window.cycle else { return false }
+        return alertedAt <= reset.addingTimeInterval(QuotaWindow.sameEpochTolerance - cycle)
+    }
 }
 
 /// Posts a system notification when a provider's quota drops to/below the user's
-/// critical threshold. Dedups per window and reset epoch: each depletion
-/// notifies once, and a window re-arms once a later epoch has begun (its reset
-/// passed, or a limit reset spent early moved it).
+/// critical threshold. Dedups per window and reset epoch, across launches
+/// (`QuotaNotificationState`): each depletion notifies once, and a
+/// window re-arms once another epoch has begun (its reset passed, a limit
+/// reset spent early moved it, or another login's window reads).
 ///
 /// Also the one deliverer of events (`NotificationManager+Events.swift`):
 /// session task outcomes now, rule alerts later. They share the permission
@@ -146,7 +254,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private let bundleIdentifier: () -> String?
     private(set) var authorized = false
     private(set) var requested = false
-    private var notificationState = QuotaNotificationState()
+    /// The quota alerts' dedup state, read at each evaluation. At init what
+    /// no longer runs is dropped and written back
+    /// (`QuotaNotificationState.kept(at:)`).
+    private let quotaStateStore: QuotaNotificationStateStore
     /// The permission prompt while it is open, so an event that needs the
     /// answer waits for the same prompt instead of asking again.
     private(set) var authorizationRequest: Task<Void, Never>?
@@ -180,7 +291,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         preferences = { AgentMeterNotificationPreferences(defaults: .standard) }
         now = { Date() }
         maximumDeliveryDelay = Self.defaultMaximumDeliveryDelay
+        quotaStateStore = .defaults(.standard)
         super.init()
+        dropEndedQuotaAlerts()
     }
 
     init(
@@ -189,7 +302,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         eventStore: AgentMeterEventStore = .inMemory(),
         preferences: @escaping @MainActor () -> AgentMeterNotificationPreferences = { AgentMeterNotificationPreferences() },
         now: @escaping () -> Date = { Date() },
-        maximumDeliveryDelay: TimeInterval = NotificationManager.defaultMaximumDeliveryDelay
+        maximumDeliveryDelay: TimeInterval = NotificationManager.defaultMaximumDeliveryDelay,
+        quotaStateStore: QuotaNotificationStateStore = .memory
     ) {
         self.authorizationCenter = authorizationCenter
         self.bundleIdentifier = bundleIdentifier
@@ -197,7 +311,17 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         self.preferences = preferences
         self.now = now
         self.maximumDeliveryDelay = maximumDeliveryDelay
+        self.quotaStateStore = quotaStateStore
         super.init()
+        dropEndedQuotaAlerts()
+    }
+
+    /// At launch: what ended while AgentMeter was not running goes, and stays
+    /// gone (written back), so the key holds only running epochs.
+    private func dropEndedQuotaAlerts() {
+        let stored = quotaStateStore.load()
+        let kept = stored.kept(at: now())
+        if kept != stored { quotaStateStore.save(kept) }
     }
 
     private var enabled: Bool {
@@ -271,14 +395,17 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             }
             return
         }
+        let before = quotaStateStore.load()
+        var state = before
         let events = QuotaNotificationPolicy.evaluate(
             provider: provider,
             windows: windows,
+            now: now(),
             threshold: threshold,
             alertsEnabled: enabled,
             recoveryEnabled: recoveryEnabled,
             canDeliver: authorized && hasBundle,
-            state: &notificationState
+            state: &state
         )
         for event in events {
             switch event {
@@ -288,15 +415,19 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 postRecovered(provider: provider, window: window)
             }
         }
+        // In the same main-actor turn as the posts, so only a crash can come
+        // between; posted first, it costs at worst one alert again, never one.
+        if state != before { quotaStateStore.save(state) }
     }
 
     /// Dry-runs the policy on a copy of the dedup state: would this evaluation
     /// deliver anything if permission were already granted?
     private func wouldNotify(provider: Provider, windows: [QuotaWindow]) -> Bool {
-        var stateCopy = notificationState
+        var stateCopy = quotaStateStore.load()
         return !QuotaNotificationPolicy.evaluate(
             provider: provider,
             windows: windows,
+            now: now(),
             threshold: threshold,
             alertsEnabled: enabled,
             recoveryEnabled: recoveryEnabled,

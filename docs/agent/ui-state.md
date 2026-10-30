@@ -20,6 +20,41 @@ usage presentation, cached state, or Claude live-session integration.
   window and store its old `resetsAt`, posting a false recovery on the next
   refresh. Delivery goes through the same `NotificationAuthorizationCenter`
   seam as the request, so tests observe posts without the real center.
+- Quota alerts go out once per `provider:window` and reset epoch, across
+  launches (`QuotaNotificationState`, JSON in the `quotaAlertState` defaults
+  key through `QuotaNotificationStateStore`: read at each evaluation, so a
+  second instance on the same defaults builds on the first one's alerts
+  (not atomically: two processes refreshing at the same moment can still
+  both post); written after the posts of that evaluation in the same
+  main-actor turn, so a crash costs at worst one alert again). Before
+  2026-10-29 it
+  lived in memory, and each relaunch alerted again for a window still low in
+  the same epoch. One
+  epoch = resets within `sameEpochTolerance` (5 min) of each other, or a
+  reading without a reset while the alerted one has not passed. Per window
+  the state keeps the latest alert (what a recovery is judged against:
+  recovery needs a later epoch, never an earlier one) and the reset of every
+  epoch alerted while it is still ahead: readings carry no account, and two
+  epochs can read side by side (another login's window; a stale fallback
+  such as Codex's rollout log after a reset credit), so each alerts once and
+  alternating between them alerts neither again; at most one recovery posts,
+  the first time a reading above the threshold is of a later epoch than the
+  latest alert. Two logins whose resets fall within 5 minutes of each other
+  are not told apart. An alert from a reading without a reset (the scrape)
+  takes the first reset stated, unless that epoch began after the alert
+  (reset less the window's stated `cycle`, counted as begun within 5
+  minutes): after a sleep across the reset the next epoch, already low,
+  still alerts, and a window stating no cycle (Copilot) takes it as before.
+  A threshold change never alerts an epoch twice ("Critical
+  notifications fire once", and the field writes on each edit); one raised
+  before the crossing alerts when the reading meets it. At launch what no
+  longer runs is dropped and written back: alerts whose reset passed more
+  than 5 minutes ago (no recovery banner for an end nobody saw; within the
+  5 minutes the alert stays and a recovery can still post) and alerts
+  without a reset, which cannot show their epoch still runs. So with only
+  the `claude /usage` scrape (no OAuth, no reset times) each relaunch can
+  alert once again: a duplicate, never a miss. Alerted resets are also
+  forgotten as they pass while running. Turning alerts off clears the key.
 - Events (`Services/Events`, `NotificationManager+Events.swift`) are the
   second, separate path through `NotificationManager`: a producer submits an
   `AgentMeterEvent` whose id names the occurrence, and `AgentMeterEventStore`
