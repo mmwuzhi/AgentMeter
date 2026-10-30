@@ -47,8 +47,9 @@ offline snapshot in `Resources/embedded-pricing.json`.
 
 > **Claude quota needs the network.** Unlike Codex, Claude does not store its 5-hour /
 > weekly reset windows on disk. The only source is the OAuth usage endpoint, or scraping
-> the CLI). The first OAuth read may show a one-time macOS Keychain prompt ("AgentMeter wants
-> to use the keychain"); click **Always Allow**. If you decline or are offline, Claude
+> the CLI). AgentMeter reads Claude Code's Keychain item through macOS's
+> `security` tool, the way Claude Code itself does, so its own code signature no longer
+> decides whether macOS asks. If the read fails or you are offline, Claude
 > degrades to usage/spend only and Codex is unaffected.
 
 > **Spend-based Claude plans (e.g. Enterprise) don't have 5-hour/weekly windows at
@@ -75,7 +76,7 @@ The app is ad-hoc signed and runs locally. To move it to another Mac, clear quar
 
 ### Signing and the Keychain prompt
 
-`Scripts/bundle.sh` signs with your first `Apple Development` certificate when one is present, and falls back to ad-hoc (`-`) otherwise (override with `CODESIGN_IDENTITY`). AgentMeter reads the `Claude Code-credentials` Keychain item, so macOS prompts for Keychain access on first read. A stable certificate keeps that **Always Allow** grant across rebuilds; ad-hoc builds get a new code signature each rebuild, so the prompt returns. (Claude Code rotating its OAuth token also re-triggers the prompt, regardless of signing.) This is a Keychain ACL, not a TCC permission, so `tccutil` does not apply here. Releases stay ad-hoc — there is no paid Apple Developer Program account.
+`Scripts/bundle.sh` signs with your first `Apple Development` certificate when one is present, and falls back to ad-hoc (`-`) otherwise (override with `CODESIGN_IDENTITY`). AgentMeter reads the `Claude Code-credentials` Keychain item with `/usr/bin/security`, the tool Claude Code writes it with. The item already trusts that tool, so a rebuild or an ad-hoc signature no longer matters. Reading it in process, as earlier builds did, brought the prompt back after Claude Code rotated its OAuth token, whatever the signing. If macOS does ask during a read (a locked keychain, say) and the dialog is cancelled or denied, AgentMeter waits 5 minutes before trying again. On a system without that tool it reads the item itself, as before. This is a Keychain ACL, not a TCC permission, so `tccutil` does not apply here. Releases stay ad-hoc — there is no paid Apple Developer Program account.
 
 ## Install
 

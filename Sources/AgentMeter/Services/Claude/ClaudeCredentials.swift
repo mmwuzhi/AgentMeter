@@ -1,8 +1,10 @@
 import Foundation
+import os
 import Security
 
-/// Obtains the Claude Code OAuth access token, plaintext file first (no prompt),
-/// then macOS Keychain (`Claude Code-credentials`, one-time access prompt).
+/// Obtains the Claude Code OAuth access token, plaintext file first, then the
+/// macOS Keychain item `Claude Code-credentials` through `/usr/bin/security`
+/// (`KeychainToolReader`), which reads it without a prompt.
 enum ClaudeCredentials {
     struct Token: Sendable {
         let accessToken: String
@@ -31,11 +33,9 @@ enum ClaudeCredentials {
 
     /// In-process token cache. On macOS the token usually lives only in the
     /// Keychain (no `~/.claude/.credentials.json`), so an uncached read hits the
-    /// Keychain. Whenever Claude Code rotates its OAuth token it rewrites the
-    /// Keychain item, which invalidates any prior one-time "Allow" grant and
-    /// makes the next read re-prompt. Reusing a loaded token until it nears
-    /// expiry keeps us off the Keychain between rotations (was: one read per
-    /// 60s refresh, ~1440/day).
+    /// Keychain. Reusing a loaded token until it nears expiry keeps us off the
+    /// Keychain between rotations (was: one read per 60s refresh, ~1440/day);
+    /// it also spared prompts while reads went through the Security API.
     private actor Cache {
         private var token: Token?
         private var loading: Task<Token?, Never>?
@@ -102,10 +102,75 @@ enum ClaudeCredentials {
 
     // MARK: - Keychain
 
+    /// After a failed read, the next one waits this long. A failure other
+    /// than "no such item" may have been a dialog of the tool's own (a locked
+    /// keychain, an item that stopped trusting the tool), cancelled, denied or
+    /// timed out: a refresh a minute must not keep bringing it back.
+    static let failureBackoff: Duration = .seconds(5 * 60)
+    private static let lastFailure = OSAllocatedUnfairLock<ContinuousClock.Instant?>(initialState: nil)
+
     private static func loadFromKeychain() -> Token? {
+        keychainToken(
+            toolAvailable: KeychainToolReader.isAvailable,
+            read: { KeychainToolReader.readGenericPassword(service: keychainService, account: keychainAccount()) },
+            readWithSecurityAPI: loadWithSecurityAPI,
+            now: .now)
+    }
+
+    /// Reads through the tool; only on a system without it is the item read
+    /// in process, as before 2026-10-30, at the cost of a prompt after each
+    /// token refresh. A failed read is no token, never a second, prompting
+    /// try.
+    static func keychainToken(
+        toolAvailable: Bool,
+        read: () -> KeychainToolReader.Result,
+        readWithSecurityAPI: () -> Token?,
+        now: ContinuousClock.Instant
+    ) -> Token? {
+        guard toolAvailable else { return readWithSecurityAPI() }
+        if keychainReadsHeldOff(now: now) { return nil }
+        switch read() {
+        case let .data(data):
+            return parse(data)
+        case .failed(.exit(KeychainToolReader.itemNotFoundStatus)):
+            return nil
+        case .failed, .unavailable:
+            lastFailure.withLock { $0 = now }
+            return nil
+        }
+    }
+
+    /// True while reads wait after a failure. `claude /usage` reads the same
+    /// item through the same tool, so the scrape waits too.
+    static func keychainReadsHeldOff(now: ContinuousClock.Instant = .now) -> Bool {
+        guard let last = lastFailure.withLock({ $0 }) else { return false }
+        return now < last.advanced(by: failureBackoff)
+    }
+
+    static func resetKeychainBackoff() {
+        lastFailure.withLock { $0 = nil }
+    }
+
+    /// The account Claude Code stores the item under: `USER`, else the login
+    /// name, and `claude-code-user` for anything that is not a plain name
+    /// (Claude Code 2.1.301's own rule). Read as Claude Code reads it, so a
+    /// stray item with the same service under another account is not used.
+    static func keychainAccount(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        userName: String = NSUserName()
+    ) -> String {
+        let name = environment["USER"].flatMap { $0.isEmpty ? nil : $0 } ?? userName
+        let plain = !name.isEmpty && name.unicodeScalars.allSatisfy {
+            $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "._-".unicodeScalars.contains($0))
+        }
+        return plain ? name : "claude-code-user"
+    }
+
+    private static func loadWithSecurityAPI() -> Token? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount(),
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -118,7 +183,10 @@ enum ClaudeCredentials {
     // MARK: - Parse
 
     /// Shape: { "claudeAiOauth": { "accessToken", "refreshToken", "expiresAt" (ms epoch), "subscriptionType", "rateLimitTier" } }
+    /// `security -w` prints a value that is not plain text as hex; that is
+    /// decoded first.
     static func parse(_ data: Data) -> Token? {
+        let data = hexDecoded(data) ?? data
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let oauth = (obj["claudeAiOauth"] as? [String: Any]) ?? obj
         guard let access = oauth["accessToken"] as? String, !access.isEmpty else { return nil }
@@ -151,4 +219,30 @@ enum ClaudeCredentials {
     /// field. Anchored, and `parse` also requires the match to span the whole
     /// value, so a partial hit never gets through.
     static let rateLimitTierPattern = "^[a-z][a-z0-9_]{0,63}$"
+
+    /// The bytes an even-length run of hex digits stands for; nil for anything
+    /// else (a JSON document never is one).
+    static func hexDecoded(_ data: Data) -> Data? {
+        guard !data.isEmpty, data.count.isMultiple(of: 2) else { return nil }
+        func nibble(_ byte: UInt8) -> UInt8? {
+            switch byte {
+            case 0x30...0x39: byte - 0x30
+            case 0x41...0x46: byte - 0x41 + 10
+            case 0x61...0x66: byte - 0x61 + 10
+            default: nil
+            }
+        }
+        var result = Data(capacity: data.count / 2)
+        var high: UInt8?
+        for byte in data {
+            guard let value = nibble(byte) else { return nil }
+            if let h = high {
+                result.append(h << 4 | value)
+                high = nil
+            } else {
+                high = value
+            }
+        }
+        return result
+    }
 }

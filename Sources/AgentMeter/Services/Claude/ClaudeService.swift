@@ -87,7 +87,10 @@ struct ClaudeService: Sendable {
         }
         // 2. CLI scrape fallback. The panel names no plan, so the badge keeps
         //    what the credential said — a rejected token still knew its plan.
-        if ClaudeCLIScraper.isAvailable {
+        //    Not while Keychain reads wait after a failure: `claude /usage`
+        //    reads the same item through the same tool and would bring a
+        //    cancelled or denied dialog straight back.
+        if ClaudeCLIScraper.isAvailable, token != nil || !ClaudeCredentials.keychainReadsHeldOff() {
             if let snap = try? await ClaudeCLIScraper.fetch(
                 planType: token?.subscriptionType, rateLimitTier: token?.rateLimitTier
             ) { return snap }

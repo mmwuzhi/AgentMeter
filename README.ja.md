@@ -26,7 +26,7 @@ AgentMeterは、**Codex**、**Claude Code**、**GitHub Copilot**の利用状況�
 
 価格情報は[LiteLLM](https://github.com/BerriAI/litellm)から取得し、models.devをフォールバックとして使います。キャッシュは `~/Library/Application Support/AgentMeter/pricing.json` に保存され、アプリには `Resources/embedded-pricing.json` のオフラインスナップショットも含まれています。
 
-> **Claudeのクォータ取得にはネットワークが必要です。** Codexと違い、Claudeは5時間または週間のリセットウィンドウをローカルに保存しません。取得元はOAuth usage endpoint、またはCLI出力のスクレイピングです。初回のOAuth読み取りでは、macOS Keychainの確認（"AgentMeter wants to use the keychain"）が表示されることがあります。その場合は**Always Allow**を選んでください。拒否した場合やオフラインの場合、Claudeは利用量とコストのみの表示に切り替わり、Codexには影響しません。
+> **Claudeのクォータ取得にはネットワークが必要です。** Codexと違い、Claudeは5時間または週間のリセットウィンドウをローカルに保存しません。取得元はOAuth usage endpoint、またはCLI出力のスクレイピングです。AgentMeterはClaude Code自身と同じくmacOSの `security` ツールでKeychainを読むため、AgentMeter自身の署名によって確認が出るかどうかは変わりません。読み取りに失敗した場合やオフラインの場合、Claudeは利用量とコストのみの表示に切り替わり、Codexには影響しません。
 
 > **Enterprise など消費額ベースのClaudeプランには5時間/週間ウィンドウ自体がありません。**
 > セッション単位のレート制限ではなく、組織単位の支出上限で課金されるためです。
@@ -54,7 +54,7 @@ xattr -dr com.apple.quarantine /Applications/AgentMeter.app
 
 ### 署名とKeychainプロンプト
 
-`Scripts/bundle.sh` は `Apple Development` 証明書があればそれで署名し、なければad-hoc（`-`、`CODESIGN_IDENTITY` で上書き可）にフォールバックします。AgentMeterは `Claude Code-credentials` のKeychain項目を読むため、初回読み取り時にmacOSがKeychainアクセスを求めます。安定した証明書なら「常に許可」は再ビルドしても有効ですが、ad-hocは再ビルドごとに署名が変わるため、プロンプトが再び出ます。（Claude CodeがOAuthトークンをローテーションしたときも、署名に関係なくプロンプトが再度出ます。）これはKeychainのACLであり、TCC権限ではないため、`tccutil` は適用されません。リリースはad-hocのままです——有料のApple Developer Programアカウントがないためです。
+`Scripts/bundle.sh` は `Apple Development` 証明書があればそれで署名し、なければad-hoc（`-`、`CODESIGN_IDENTITY` で上書き可）にフォールバックします。AgentMeterは `Claude Code-credentials` のKeychain項目を `/usr/bin/security` で読みます。Claude Codeがこの項目を書き込むのも同じツールで、項目はすでにこのツールを信頼しているため、再ビルドやad-hoc署名は関係ありません。以前のビルドのようにアプリ自身が項目を読むと、署名に関係なく、Claude CodeがOAuthトークンをローテーションするたびにプロンプトが再び出ていました。読み取り中にmacOSが確認を求め（キーチェーンがロックされているときなど）、それがキャンセルまたは拒否された場合、AgentMeterは5分待ってから再試行します。このツールがないシステムでは、以前と同じくアプリ自身が項目を読みます。これはKeychainのACLであり、TCC権限ではないため、`tccutil` は適用されません。リリースはad-hocのままです——有料のApple Developer Programアカウントがないためです。
 
 ## インストール
 

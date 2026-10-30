@@ -26,7 +26,7 @@ AgentMeter 是一个原生 macOS 菜单栏应用，可以快速查看 **Codex**�
 
 价格来自 [LiteLLM](https://github.com/BerriAI/litellm)，并以 models.dev 作为回退；缓存位置是 `~/Library/Application Support/AgentMeter/pricing.json`，应用内还带有 `Resources/embedded-pricing.json` 离线快照。
 
-> **Claude 额度需要网络。** 与 Codex 不同，Claude 不会把 5 小时或每周重置窗口写在本机。额度来源只能是 OAuth usage endpoint，或者抓取 CLI 输出。第一次 OAuth 读取可能弹出一次 macOS 钥匙串提示（“AgentMeter wants to use the keychain”），请选择 **Always Allow**。如果拒绝或离线，Claude 会降级到只显示使用量和花费，Codex 不受影响。
+> **Claude 额度需要网络。** 与 Codex 不同，Claude 不会把 5 小时或每周重置窗口写在本机。额度来源只能是 OAuth usage endpoint，或者抓取 CLI 输出。AgentMeter 和 Claude Code 一样通过 macOS 自带的 `security` 工具读取钥匙串，是否弹窗不再取决于 AgentMeter 自己的签名。如果读取失败或离线，Claude 会降级到只显示使用量和花费，Codex 不受影响。
 
 > **按花费计费的 Claude plan（比如 Enterprise）根本没有 5 小时/每周这种时间窗口**——
 > 它们走的是组织级花费上限，不是按会话限流。AgentMeter 会显示账号上那笔一次性的
@@ -53,7 +53,7 @@ xattr -dr com.apple.quarantine /Applications/AgentMeter.app
 
 ### 签名与 Keychain 弹窗
 
-`Scripts/bundle.sh` 有 `Apple Development` 证书时用它签名，没有则回退 ad-hoc（`-`，可用 `CODESIGN_IDENTITY` 覆盖）。AgentMeter 会读取 `Claude Code-credentials` 这个 Keychain 项，所以首次读取时 macOS 会弹出 Keychain 授权。用稳定证书签名时，「始终允许」跨重新构建有效；ad-hoc 每次重新构建都换新签名，弹窗会再次出现。（Claude Code 轮换 OAuth token 时也会重新触发弹窗，与签名无关。）这是 Keychain ACL，不是 TCC 权限，所以 `tccutil` 在这里不适用。发布仍然是 ad-hoc——没有付费的 Apple Developer Program 账户。
+`Scripts/bundle.sh` 有 `Apple Development` 证书时用它签名，没有则回退 ad-hoc（`-`，可用 `CODESIGN_IDENTITY` 覆盖）。AgentMeter 用 `/usr/bin/security` 读取 `Claude Code-credentials` 这个 Keychain 项，Claude Code 本身也用这个工具写入它。该项已经信任这个工具，所以重新构建、ad-hoc 签名都没有影响。以前的版本由 App 自己读取，Claude Code 每次轮换 OAuth token 后都会重新弹窗，与签名无关。如果读取时 macOS 仍然要求授权（比如钥匙串已锁定），对话框被取消或拒绝后，AgentMeter 会等 5 分钟再试。在没有这个工具的系统上，仍由 App 自己读取，和以前一样。这是 Keychain ACL，不是 TCC 权限，所以 `tccutil` 在这里不适用。发布仍然是 ad-hoc——没有付费的 Apple Developer Program 账户。
 
 ## 安装
 

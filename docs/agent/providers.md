@@ -45,7 +45,18 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
 ## Claude
 
 - Credential order is `~/.claude/.credentials.json` → Keychain item
-  `Claude Code-credentials`. Quota fallback order is `ClaudeOAuthFetcher`
+  `Claude Code-credentials`, read through `/usr/bin/security`
+  (`KeychainToolReader`), the tool Claude Code itself reads and writes it
+  with, under Claude Code's account (`USER`, else the login name, else
+  `claude-code-user`). The item trusts that tool and carries its
+  `apple-tool:` partition. A CLI token refresh can prompt AgentMeter
+  again even after "Always Allow"; inferred, not observed directly: the write drops the app's
+  `teamid:` from the partition list. A failed read is no token; any failure
+  but "no such item" (exit 44) holds reads and the `claude /usage` scrape off
+  for 5 min (monotonic clock), so a cancelled or denied dialog does not come
+  back every refresh. Only a system without the tool falls back to
+  `SecItemCopyMatching`. Never log the tool's output.
+  Quota fallback order is `ClaudeOAuthFetcher`
   (`GET api.anthropic.com/api/oauth/usage`) → `ClaudeCLIScraper` (`claude
   /usage`) → usage-only. Reset windows require network access.
 - The scrape runs when there is no readable token or OAuth answers 401, and
