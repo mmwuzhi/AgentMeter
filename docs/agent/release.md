@@ -13,9 +13,65 @@ DMG creation, versions, or the GitHub release workflow.
   versions into `Scripts/Info.plist`; adds the Frameworks rpath; then signs
   nested code before the app.
 - `Scripts/dmg.sh` uses `dmgbuild` for the styled installer and falls back to
-  plain `hdiutil`.
-- Local releases are ad-hoc/not notarized. On another Mac, clear quarantine
-  with `xattr -dr com.apple.quarantine`.
+  plain `hdiutil`. Release images are `AgentMeter-<version>.dmg`; an rc build
+  (`UPDATE_CHANNEL=rc`) makes `AgentMeter-<version>-rc.dmg`. Never publish an rc
+  image or put it in the appcast.
+
+## Version and build number
+
+- Marketing version: the `VERSION` file at the repo root (`X.Y.Z`).
+  `bundle.sh` and `dmg.sh` default `MARKETING_VERSION` from it; the env var
+  still overrides. `release.yml` fails when the tag version differs from it, so
+  bump `VERSION` in the commit that gets the tag.
+- Build number (`CFBundleVersion`, what Sparkle compares with
+  `sparkle:version`): `Scripts/build-number.sh` prints
+  `TZ=Asia/Tokyo date +%Y%m%d%H%M`, 12 digits. `bundle.sh` defaults
+  `BUILD_VERSION` from it and `release.yml` uses it instead of the run number.
+  The zone is fixed to Asia/Tokyo so the number does not depend on the
+  machine, has no DST step, stays above earlier local builds (for example
+  `202610301854`), and is comparable between local and CI builds.
+- Releases up to v0.8.2 used the CI run number (v0.8.2 is build 19), so any
+  12-digit number is greater and Sparkle offers it. The verify step in
+  `release.yml` requires 12 digits and a number above the `sparkle:version` of
+  the published latest appcast (it only prints a notice when there is none).
+- `HookHelperOwnership` ranks running copies by version, then build.
+
+## Update channel
+
+- `UPDATE_CHANNEL=release` (default) keeps the Info.plist feed settings.
+- `UPDATE_CHANNEL=rc` is a test build: `bundle.sh` removes `SUFeedURL`, sets
+  `SUEnableAutomaticChecks` to false and adds `AgentMeterUpdateChannel` = `rc`.
+  `UpdatePolicy` (`Sources/AgentMeter/Services/UpdatePolicy.swift`) reads that
+  key: `UpdaterController` does not start Sparkle, and Settings › Software
+  Update shows the version as `0.9.0 RC (<build>)` with a line saying updates
+  are off, instead of "Check Now".
+
+## Signing
+
+`bundle.sh` picks the identity: `CODESIGN_IDENTITY`, else the first
+`Developer ID Application:` identity, else the first `Apple Development:`
+(revoked ones are skipped), else ad-hoc (`-`). It prints which one it uses. A
+signing failure fails the script, and it ends with
+`codesign --verify --deep --strict`.
+
+- Never `--deep` when signing. Order, inside-out: Sparkle's
+  `Installer.xpc`, `Downloader.xpc` (with `--preserve-metadata=entitlements`),
+  `Autoupdate`, `Updater.app`, then `Sparkle.framework`; then
+  `Contents/Helpers/agentmeter-hook` with `--identifier com.shu.agentmeter.hook`;
+  then the app with `--entitlements Scripts/AgentMeter.entitlements`.
+- A real identity signs every item with `--options runtime` (hardened
+  runtime). `--timestamp` is added for Developer ID only (notarization needs it
+  and it needs the network); otherwise `--timestamp=none`.
+- Ad-hoc signs the same way without the hardened runtime: library validation
+  would refuse to load an ad-hoc Sparkle.
+- The only entitlement is `com.apple.security.automation.apple-events`: the app
+  drives Terminal, iTerm2 and Ghostty with `NSAppleScript`, and the hardened
+  runtime denies Apple Events without it.
+- Local and rc builds are not notarized. On macOS 15+ the right-click Open
+  bypass is gone: open the app once, then System Settings › Privacy & Security
+  › Open Anyway. `xattr -dr com.apple.quarantine` still works. No Developer ID
+  identity or notarization credentials exist on the dev Mac; the Developer ID
+  and notarization path is untested.
 
 ## Release automation
 

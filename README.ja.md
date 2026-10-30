@@ -46,7 +46,7 @@ make dmg          # dist/AgentMeter-<version>.dmg を作成
 make clean
 ```
 
-アプリは現在ad-hoc署名で、ローカルで実行できます。別のMacに移す場合はquarantineを解除してください。
+ローカルビルドは自分の証明書で署名され（なければad-hoc）、notarizeされていません。別のMacに移す場合はquarantineを解除してください。
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/AgentMeter.app
@@ -54,13 +54,13 @@ xattr -dr com.apple.quarantine /Applications/AgentMeter.app
 
 ### 署名とKeychainプロンプト
 
-`Scripts/bundle.sh` は `Apple Development` 証明書があればそれで署名し、なければad-hoc（`-`、`CODESIGN_IDENTITY` で上書き可）にフォールバックします。AgentMeterは `Claude Code-credentials` のKeychain項目を `/usr/bin/security` で読みます。Claude Codeがこの項目を書き込むのも同じツールで、項目はすでにこのツールを信頼しているため、再ビルドやad-hoc署名は関係ありません。以前のビルドのようにアプリ自身が項目を読むと、署名に関係なく、Claude CodeがOAuthトークンをローテーションするたびにプロンプトが再び出ていました。読み取り中にmacOSが確認を求め（キーチェーンがロックされているときなど）、それがキャンセルまたは拒否された場合、AgentMeterは5分待ってから再試行します。このツールがないシステムでは、以前と同じくアプリ自身が項目を読みます。これはKeychainのACLであり、TCC権限ではないため、`tccutil` は適用されません。リリースはad-hocのままです——有料のApple Developer Programアカウントがないためです。
+`Scripts/bundle.sh` は `Developer ID Application` 証明書、なければ `Apple Development` 証明書で署名し、どちらもなければad-hoc（`-`、`CODESIGN_IDENTITY` で上書き可）にフォールバックします。実際の証明書ではhardened runtimeも有効になります。AgentMeterは `Claude Code-credentials` のKeychain項目を `/usr/bin/security` で読みます。Claude Codeがこの項目を書き込むのも同じツールで、項目はすでにこのツールを信頼しているため、再ビルドやad-hoc署名は関係ありません。以前のビルドのようにアプリ自身が項目を読むと、署名に関係なく、Claude CodeがOAuthトークンをローテーションするたびにプロンプトが再び出ていました。読み取り中にmacOSが確認を求め（キーチェーンがロックされているときなど）、それがキャンセルまたは拒否された場合、AgentMeterは5分待ってから再試行します。このツールがないシステムでは、以前と同じくアプリ自身が項目を読みます。これはKeychainのACLであり、TCC権限ではないため、`tccutil` は適用されません。リリースはad-hocのままです——有料のApple Developer Programアカウントがないためです。
 
 ## インストール
 
 [GitHub Releases](https://github.com/mmwuzhi/AgentMeter/releases/latest)から最新の `AgentMeter-<version>.dmg` をダウンロードし、DMGを開いて `AgentMeter.app` を `/Applications` にドラッグします。
 
-現在のリリースはad-hoc署名でnotarizeされていないため、初回起動時にmacOSがブロックすることがあります。その場合は `AgentMeter.app` を右クリックし、**Open**を選んで確認してください。それでもquarantineが残る場合は、次を実行します。
+現在のリリースはad-hoc署名でnotarizeされていないため、初回起動時にmacOSがブロックします。一度アプリを開いてから、**システム設定 › プライバシーとセキュリティ**で**このまま開く**（Open Anyway）をクリックしてください（macOS 15以降では右クリックの**開く**は使えません）。またはquarantineを解除します。
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/AgentMeter.app
@@ -75,7 +75,7 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-または、GitHub Actionsから**Release** workflowを手動実行し、`1.2.3` を入力します。workflowは `MARKETING_VERSION` をtagまたは入力されたバージョンに設定し、app bundleとDMGを検証し、workflow artifactをアップロードし、DMGと `SHA256SUMS` を含むGitHub Releaseを作成または更新します。
+または、GitHub Actionsから**Release** workflowを手動実行し、`1.2.3` を入力します。バージョンは `VERSION` ファイルから取り、tagまたは入力値はそれと一致する必要があります。ビルド番号はAsia/Tokyoの時刻です（`Scripts/build-number.sh`）。workflowはapp bundleとDMGを検証し、workflow artifactをアップロードし、DMGと `SHA256SUMS` を含むGitHub Releaseを作成または更新します。
 
 リリース成果物は現在ad-hoc署名です。Sparkle appcastの生成はSparkleの秘密鍵があるマシンで実行するか、CIで `SPARKLE_PRIVATE_KEY` secretを設定して実行します。
 

@@ -45,7 +45,7 @@ make dmg          # 打包 dist/AgentMeter-<version>.dmg
 make clean
 ```
 
-应用当前是 ad-hoc 签名，可以在本机运行。如果移动到另一台 Mac，清除 quarantine：
+本地构建用你自己的证书签名（没有证书则 ad-hoc），没有 notarize。如果移动到另一台 Mac，清除 quarantine：
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/AgentMeter.app
@@ -53,13 +53,13 @@ xattr -dr com.apple.quarantine /Applications/AgentMeter.app
 
 ### 签名与 Keychain 弹窗
 
-`Scripts/bundle.sh` 有 `Apple Development` 证书时用它签名，没有则回退 ad-hoc（`-`，可用 `CODESIGN_IDENTITY` 覆盖）。AgentMeter 用 `/usr/bin/security` 读取 `Claude Code-credentials` 这个 Keychain 项，Claude Code 本身也用这个工具写入它。该项已经信任这个工具，所以重新构建、ad-hoc 签名都没有影响。以前的版本由 App 自己读取，Claude Code 每次轮换 OAuth token 后都会重新弹窗，与签名无关。如果读取时 macOS 仍然要求授权（比如钥匙串已锁定），对话框被取消或拒绝后，AgentMeter 会等 5 分钟再试。在没有这个工具的系统上，仍由 App 自己读取，和以前一样。这是 Keychain ACL，不是 TCC 权限，所以 `tccutil` 在这里不适用。发布仍然是 ad-hoc——没有付费的 Apple Developer Program 账户。
+`Scripts/bundle.sh` 优先用 `Developer ID Application` 证书签名，其次是 `Apple Development` 证书，都没有则回退 ad-hoc（`-`，可用 `CODESIGN_IDENTITY` 覆盖）。使用真实证书时还会启用 hardened runtime。AgentMeter 用 `/usr/bin/security` 读取 `Claude Code-credentials` 这个 Keychain 项，Claude Code 本身也用这个工具写入它。该项已经信任这个工具，所以重新构建、ad-hoc 签名都没有影响。以前的版本由 App 自己读取，Claude Code 每次轮换 OAuth token 后都会重新弹窗，与签名无关。如果读取时 macOS 仍然要求授权（比如钥匙串已锁定），对话框被取消或拒绝后，AgentMeter 会等 5 分钟再试。在没有这个工具的系统上，仍由 App 自己读取，和以前一样。这是 Keychain ACL，不是 TCC 权限，所以 `tccutil` 在这里不适用。发布仍然是 ad-hoc——没有付费的 Apple Developer Program 账户。
 
 ## 安装
 
 从 [GitHub Releases](https://github.com/mmwuzhi/AgentMeter/releases/latest) 下载最新的 `AgentMeter-<version>.dmg`，打开 DMG，把 `AgentMeter.app` 拖到 `/Applications`。
 
-因为当前版本是 ad-hoc 签名且没有 notarize，macOS 第一次启动时可能会拦截。如果遇到这种情况，右键点击 `AgentMeter.app`，选择 **Open**，然后确认。如果 macOS 仍保留 quarantine，运行：
+因为当前版本是 ad-hoc 签名且没有 notarize，macOS 第一次启动时会拦截。先打开一次应用，再到**系统设置 › 隐私与安全性**点击**仍要打开**（Open Anyway）；macOS 15 及以后右键**打开**已经不能绕过。或者清除 quarantine：
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/AgentMeter.app
@@ -74,7 +74,7 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-也可以在 GitHub Actions 手动运行 **Release** workflow，并输入 `1.2.3`。workflow 会把 `MARKETING_VERSION` 设为 tag 或输入的版本号，校验 app bundle 和 DMG，上传 workflow artifact，并创建或更新带有 DMG 和 `SHA256SUMS` 的 GitHub Release。
+也可以在 GitHub Actions 手动运行 **Release** workflow，并输入 `1.2.3`。版本号来自 `VERSION` 文件，tag 或输入值必须与它一致；构建号是 Asia/Tokyo 时间（`Scripts/build-number.sh`）。workflow 会校验 app bundle 和 DMG，上传 workflow artifact，并创建或更新带有 DMG 和 `SHA256SUMS` 的 GitHub Release。
 
 发布产物当前是 ad-hoc 签名。Sparkle appcast 生成仍然是单独步骤，需要在已有 Sparkle 私钥的机器上运行，或在 CI 中配置 `SPARKLE_PRIVATE_KEY` secret。
 

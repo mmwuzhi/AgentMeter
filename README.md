@@ -71,12 +71,13 @@ make dmg          # package dist/AgentMeter-<version>.dmg
 make clean
 ```
 
-The app is ad-hoc signed and runs locally. To move it to another Mac, clear quarantine:
+Local builds are signed with your own certificate (ad-hoc without one) and are not notarized.
+To move one to another Mac, clear quarantine:
 `xattr -dr com.apple.quarantine /Applications/AgentMeter.app`.
 
 ### Signing and the Keychain prompt
 
-`Scripts/bundle.sh` signs with your first `Apple Development` certificate when one is present, and falls back to ad-hoc (`-`) otherwise (override with `CODESIGN_IDENTITY`). AgentMeter reads the `Claude Code-credentials` Keychain item with `/usr/bin/security`, the tool Claude Code writes it with. The item already trusts that tool, so a rebuild or an ad-hoc signature no longer matters. Reading it in process, as earlier builds did, brought the prompt back after Claude Code rotated its OAuth token, whatever the signing. If macOS does ask during a read (a locked keychain, say) and the dialog is cancelled or denied, AgentMeter waits 5 minutes before trying again. On a system without that tool it reads the item itself, as before. This is a Keychain ACL, not a TCC permission, so `tccutil` does not apply here. Releases stay ad-hoc — there is no paid Apple Developer Program account.
+`Scripts/bundle.sh` signs with your first `Developer ID Application` certificate, else your first `Apple Development` one, and falls back to ad-hoc (`-`) otherwise (override with `CODESIGN_IDENTITY`). A real certificate also turns on the hardened runtime. AgentMeter reads the `Claude Code-credentials` Keychain item with `/usr/bin/security`, the tool Claude Code writes it with. The item already trusts that tool, so a rebuild or an ad-hoc signature no longer matters. Reading it in process, as earlier builds did, brought the prompt back after Claude Code rotated its OAuth token, whatever the signing. If macOS does ask during a read (a locked keychain, say) and the dialog is cancelled or denied, AgentMeter waits 5 minutes before trying again. On a system without that tool it reads the item itself, as before. This is a Keychain ACL, not a TCC permission, so `tccutil` does not apply here. Releases stay ad-hoc — there is no paid Apple Developer Program account.
 
 ## Install
 
@@ -84,9 +85,10 @@ Download the latest `AgentMeter-<version>.dmg` from
 [GitHub Releases](https://github.com/mmwuzhi/AgentMeter/releases/latest), open
 the DMG, and drag `AgentMeter.app` into `/Applications`.
 
-Because the current release is ad-hoc signed and not notarized, macOS may block
-the first launch. If that happens, right-click `AgentMeter.app`, choose
-**Open**, and confirm. If macOS still keeps quarantine attached, run:
+Because the current release is ad-hoc signed and not notarized, macOS blocks
+the first launch. Open the app once, then go to **System Settings › Privacy &
+Security** and click **Open Anyway** (on macOS 15 and later right-click **Open**
+no longer works). Or clear quarantine:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/AgentMeter.app
@@ -102,7 +104,8 @@ git push origin v1.2.3
 ```
 
 Or run the **Release** workflow manually from GitHub Actions and enter `1.2.3`.
-The workflow builds with `MARKETING_VERSION` set to the tag/input version,
+The version comes from the `VERSION` file; the tag/input must match it. The
+build number is the Asia/Tokyo time (`Scripts/build-number.sh`). The workflow
 verifies the app bundle and DMG, uploads the DMG as a workflow artifact, and
 creates or updates a GitHub Release with the DMG plus `SHA256SUMS`.
 

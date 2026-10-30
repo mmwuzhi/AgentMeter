@@ -842,8 +842,8 @@ since as unread.
 - Every hook runs one shared helper, `bin/agentmeter-hook` in the app's
   support directory, and only the newest running AgentMeter writes it
   (`HookHelperOwnership`: highest version, then build within one numbering
-  — local builds are timestamps, releases CI run numbers — then the last
-  launched; all read from the bundles on disk).
+  — builds are 12-digit times since 0.9.0, releases before it CI run
+  numbers — then the last launched; all read from the bundles on disk).
   `HookHelperGuard` puts this build's helper back whenever the directory
   changes and every minute (NSWorkspace posts no launch or quit notice for
   an LSUIElement app), so a stale
