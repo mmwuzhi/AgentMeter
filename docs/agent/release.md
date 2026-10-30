@@ -11,7 +11,12 @@ DMG creation, versions, or the GitHub release workflow.
   helper (`Contents/Helpers/agentmeter-hook`), resource bundle, loose
   `embedded-pricing.json`, `AppIcon.icns`, and `Sparkle.framework`; substitutes
   versions into `Scripts/Info.plist`; adds the Frameworks rpath; then signs
-  nested code before the app.
+  nested code before the app. It first runs `strip -S` on the app binary and the
+  helper: a release link keeps a debug map (OSO entries) with the absolute path
+  of every object file in the build directory, and `-S` drops it without
+  touching the other symbols. Check with `nm -ap <binary> | grep -c " OSO "`
+  (0) and `grep -a -c "/Users/" <binary>` (0); `strings -a` does not read that
+  table and shows 0 either way.
 - `Scripts/dmg.sh` uses `dmgbuild` for the styled installer and falls back to
   plain `hdiutil`. Release images are `AgentMeter-<version>.dmg`; an rc build
   (`UPDATE_CHANNEL=rc`) makes `AgentMeter-<version>-rc.dmg`. Never publish an rc

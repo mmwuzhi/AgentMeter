@@ -43,6 +43,12 @@ cp "$BIN_DIR/AgentMeter" "$APP/Contents/MacOS/AgentMeter"
 cp "$BIN_DIR/AgentMeterHook" "$APP/Contents/Helpers/agentmeter-hook"
 chmod 0755 "$APP/Contents/Helpers/agentmeter-hook"
 
+# A release link leaves a debug map: one OSO entry per object file, each with
+# the absolute path of this machine's build directory. -S drops those debug
+# symbols and nothing else (no -x: the symbol table stays, so crash reports
+# and Swift's runtime lookups keep working). A strip failure stops the build.
+strip -S "$APP/Contents/MacOS/AgentMeter" "$APP/Contents/Helpers/agentmeter-hook"
+
 # Resources go in Contents/Resources (the only place codesign accepts). The SPM
 # resource bundle's generated Bundle.module accessor looks at the .app root, which
 # is illegal for signing, so we ALSO drop embedded-pricing.json loose here and load
