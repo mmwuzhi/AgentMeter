@@ -409,8 +409,13 @@ private struct GeneralSettings: View {
             }
             Section("Software Update") {
                 LabeledContent("Version", value: Self.appVersion)
-                LabeledContent("Check for updates") {
-                    Button("Check Now…") { UpdaterController.shared.checkForUpdates() }
+                if UpdaterController.shared.policy == .offInTestBuild {
+                    Text(UpdatePolicy.testBuildNotice)
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    LabeledContent("Check for updates") {
+                        Button("Check Now…") { UpdaterController.shared.checkForUpdates() }
+                    }
                 }
             }
         }
@@ -445,9 +450,6 @@ private struct GeneralSettings: View {
 
     /// e.g. "1.4.2 (37)" from the bundle, falling back gracefully for dev builds.
     private static var appVersion: String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "—"
-        let build = info?["CFBundleVersion"] as? String
-        return build.map { "\(short) (\($0))" } ?? short
+        UpdatePolicy.versionLabel(from: Bundle.main.infoDictionary)
     }
 }
