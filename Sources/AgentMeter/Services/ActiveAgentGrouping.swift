@@ -74,19 +74,9 @@ struct ActiveAgentGroup: Identifiable, Sendable, Equatable {
         (topStatus?.priority ?? -1) >= AgentStatusState.waiting.priority
     }
 
-    /// Header line shown while the group is collapsed: total count, the most
-    /// urgent status with how many sessions are in it, aggregated usage.
-    var collapsedSummary: String {
-        var parts = ["\(agentCount)"]
-        if let status = topStatus, status != .idle {
-            let count = allAgents.filter { $0.displayStatus == status }.count
-            parts.append("\(count) \(status.rawValue)")
-        }
-        if let usage = aggregatedUsageText {
-            parts.append(usage)
-        }
-        return parts.joined(separator: " · ")
-    }
+    /// Header line shown while the group is collapsed, without any latest
+    /// turn's result (`collapsedSummary(turnResults:)`).
+    var collapsedSummary: String { collapsedSummary(turnResults: [:]) }
 
     /// Combined usage across every attributed session in the group, in the
     /// same format as a single row's usage text. nil when nothing is known.

@@ -1,78 +1,46 @@
 import Foundation
 import os
 
-/// What a click on a task (its row or its banner) could not do, shown as one
-/// short line under the task's row until the next click or until the popover
-/// closes. The click read the task either way.
-struct TaskEventNotice: Sendable, Equatable {
-    enum Reason: Sendable, Equatable {
-        /// No live process reports the session.
-        case ended
-        /// Unrelated live processes report it.
-        case ambiguous
-        /// Alive, but in nothing AgentMeter can bring forward.
-        case unhosted
-        /// The terminal tab was named, but selecting it failed.
-        case focusFailed
-        /// The app the session runs in did not come forward.
-        case activationFailed
-    }
-
-    /// The task as clicked, read: reading moves it out of the unread list,
-    /// and the menu keeps its row where it was while the line shows.
-    var item: TaskEventItem
-    var reason: Reason
-    /// The app the click tried, when there was one.
-    var hostName: String?
-
-    var itemID: String { item.id }
-
-    var message: String {
-        switch reason {
-        case .ended: "Session has ended"
-        case .ambiguous: "More than one process has this session"
-        case .unhosted: "Not in an app AgentMeter can bring forward"
-        case .focusFailed: "Couldn't switch to the \(hostName ?? "terminal") tab"
-        case .activationFailed: "Couldn't bring \(hostName ?? "its app") forward"
-        }
-    }
-}
-
-/// Keeps `AppViewModel.taskEvents` in step with the event log and carries out
-/// what the user does with a task: open it, mark it read, mark them all,
-/// acknowledge dropped events. "Read" is the event's read state (1a's
-/// `readAt`): it says the user looked, never that a wait is over or that an
-/// unconfirmed task finished. Reads only when something changed (the
-/// manager's `onEventsChanged`, a popover opening), never on a timer.
+/// Keeps `AppViewModel.sessionTurnResults` in step with the event log and the
+/// turn ledgers, and carries out a tap on a task's notification. There is no
+/// list to read or mark: macOS notifications tell the user something ended,
+/// the session rows show how each session's latest turn ended, and the log
+/// keeps the history (2026-10-30, replacing the menu's task list).
+///
+/// Reads the log only when something changed (the manager's
+/// `onEventsChanged`, a popover opening), never on a timer; the ledgers'
+/// turn starts come from `TaskOutcomeMonitor`, which reads them anyway.
 @MainActor
 final class TaskEventFeed {
-    /// The newest events read per reload whatever their read state, which
-    /// covers the handled list and the later events of unread tasks.
-    static let recentLimit = 200
+    /// The newest task events read per reload. A result is shown for an
+    /// hour (`ActiveAgent.turnResultWindow`); far more than an hour's worth.
+    static let recentLimit = 500
     /// Changes come in bursts (record, then settle): one reload covers them.
     static let reloadDelay: Duration = .milliseconds(150)
 
     let manager: NotificationManager
     private let model: AppViewModel
-    private let defaults: UserDefaults
     private let lookup: TaskSessionLookup
     private let log: @Sendable (String) -> Void
-    /// Opens the menu that lists the tasks, for a notification click that
-    /// could not bring anything forward. The feed expands the list first.
-    var showList: (@MainActor () -> Void)?
+    /// Opens the menu with the sessions, for a notification tap that could
+    /// not bring the session's app forward although the session still runs.
+    var showSessions: (@MainActor () -> Void)?
 
     private var reloadTask: Task<Void, Never>?
     private var reloadAgain = false
     private(set) var reloadCount = 0
-    /// Sessions whose route `preview` is looking up, with the presentation
-    /// generation the lookup is for.
-    private var previewing: [String: Int] = [:]
+    /// Each session's newest finished or failed turn from the log; nil until
+    /// the log has been read.
+    private var candidates: [String: SessionTurnResult]?
+    /// Each session's latest prompt from the turn ledgers; nil until the
+    /// monitor's first pass. Results wait for both, so a result the next
+    /// prompt already superseded never shows, not even at launch.
+    private var turnStarts: [String: Date]?
 
-    init(manager: NotificationManager, model: AppViewModel, defaults: UserDefaults = .standard,
-         lookup: TaskSessionLookup = .live, log: @escaping @Sendable (String) -> Void = TaskEventFeed.systemLog) {
+    init(manager: NotificationManager, model: AppViewModel, lookup: TaskSessionLookup = .live,
+         log: @escaping @Sendable (String) -> Void = TaskEventFeed.systemLog) {
         self.manager = manager
         self.model = model
-        self.defaults = defaults
         self.lookup = lookup
         self.log = log
     }
@@ -97,142 +65,72 @@ final class TaskEventFeed {
         }
     }
 
-    /// Reads the log (on its own queue) and publishes what the menu shows.
-    /// History-only events stay unread in the log and are left out here
-    /// (`TaskEventAttention`); the log keeps and drops them like read ones.
+    /// Reads the newest task events (on the log's own queue) and publishes
+    /// the sessions' latest turn results.
     func reloadNow() async {
-        let store = manager.eventStore
         let clock = ContinuousClock()
         let started = clock.now
-        let unread = await store.events(matching: AgentMeterEventFilter(kinds: TaskEventStatus.kinds, unreadOnly: true))
-        let recent = await store.events(matching: AgentMeterEventFilter(kinds: TaskEventStatus.kinds), limit: Self.recentLimit)
-        let overflow = TaskEventOverflowAcknowledgement(defaults: defaults).notice(for: await store.unreadOverflow())
-        let snapshot = TaskEventsSnapshot.make(unreadEvents: unread, recentEvents: recent, overflow: overflow)
-        let state = TaskEventsState.loaded(snapshot)
-        if model.taskEvents != state { model.taskEvents = state }
+        let events = await manager.eventStore.events(
+            matching: AgentMeterEventFilter(kinds: SessionTurnResults.eventKinds), limit: Self.recentLimit)
+        candidates = SessionTurnResults.newestBySession(events)
+        publish()
         reloadCount += 1
         if reloadCount == 1 {
             let ms = Int((clock.now - started) / .milliseconds(1))
-            log("task list loaded: \(snapshot.unreadCount) unread tasks, \(ms) ms")
+            log("turn results loaded: \(candidates?.count ?? 0) sessions, \(ms) ms")
         }
+    }
+
+    /// The sessions' latest prompts, from the monitor's pass over the turn
+    /// ledgers (only when they changed).
+    func turnStartsChanged(_ starts: [String: Date]) {
+        turnStarts = starts
+        publish()
+    }
+
+    private func publish() {
+        guard let candidates, let turnStarts else { return }
+        let results = SessionTurnResults.current(candidates, turnStarts: turnStarts)
+        if model.sessionTurnResults != results { model.sessionTurnResults = results }
     }
 
     // MARK: - Acting
 
-    /// The check mark: reads the task without leaving the menu.
-    func markRead(_ item: TaskEventItem) async {
-        model.taskEventNotice = nil
-        await manager.markEventsRead(ids: item.unreadEventIDs)
-    }
-
-    /// The tasks the user was shown, not whatever arrived since.
-    func markAllRead(_ items: [TaskEventItem]) async {
-        model.taskEventNotice = nil
-        await manager.markEventsRead(ids: items.flatMap(\.unreadEventIDs))
-    }
-
-    func acknowledgeOverflow() async {
-        guard let overflow = await manager.eventStore.unreadOverflow() else { return }
-        TaskEventOverflowAcknowledgement(overflow).save(to: defaults)
-        if var snapshot = model.taskEvents.snapshot, snapshot.overflow != nil {
-            snapshot.overflow = nil
-            model.taskEvents = .loaded(snapshot)
-        }
-    }
-
-    /// A click on the task in the menu: brings forward what runs the session
-    /// (its terminal tab, else its app) and reads the task whether or not
-    /// anything came forward. The click is the user looking at it; manual
-    /// marking for a session AgentMeter cannot reach only got in the way. A
-    /// line under the row says what could not be done.
-    func open(_ item: TaskEventItem) async {
-        model.taskEventNotice = nil
-        let generation = model.taskEventsPresentationGeneration
-        let failure = await route(sessionID: item.sessionID, origin: "menu", generation: generation)
-        // The popover may have closed meanwhile: the line was for that one.
-        if model.taskEventsPresentationGeneration == generation {
-            model.taskEventNotice = failure.map {
-                TaskEventNotice(item: item.markedRead, reason: $0.reason, hostName: $0.hostName)
-            }
-        }
-        await manager.markEventsRead(ids: item.unreadEventIDs)
-    }
-
     /// A tap on a task's notification (`NotificationManager.onEventResponse`):
-    /// the same as a click on its row. The task's unread events (the wait
-    /// before the end too) are read either way. When nothing came forward,
-    /// the menu opens on the list to say why; with the list hidden in
-    /// Settings there is nothing to open it on, so the tap ends there, as a
-    /// banner whose session is gone otherwise would. Returns true, so the
-    /// manager reads the tapped event too.
+    /// brings forward what runs the session (its terminal tab, else its app),
+    /// as a click on the session's row does. When that could not be done for
+    /// a session that still runs, the menu opens on the sessions, where its
+    /// row says what it is doing; an ended session has no row to show.
+    /// Returns true: the tap is recorded as the event's read time, history
+    /// only (nothing lists unread events any more).
     func handleNotificationResponse(_ event: AgentMeterEvent) async -> Bool {
-        guard TaskEventStatus(kind: event.kind) != nil else { return true }
-        let key = TaskEventItem.key(event)
-        let siblings = await manager.eventStore.events(matching: AgentMeterEventFilter(
-            kinds: TaskEventStatus.kinds, sessionID: event.subject.sessionID, unreadOnly: true))
-        // Only what the menu lists: a history-only event of the same task
-        // keeps its unread state (it is never read on anyone's behalf).
-        var ids = siblings.filter { TaskEventItem.key($0) == key && TaskEventAttention.needsAttention($0) }.map(\.id)
-        if event.isUnread, !ids.contains(event.id) { ids.append(event.id) }
-        let failure = await route(sessionID: event.subject.sessionID, origin: "notification",
-                                  generation: model.taskEventsPresentationGeneration)
-        let listed = model.taskEvents.snapshot.flatMap { snapshot in
-            (snapshot.unread + snapshot.handled).first { $0.id == key }
-        }
-        // Not tied to an open popover: the line goes into the one opened now.
-        if let failure {
-            if TaskEventListVisibility.isShown(in: defaults), let item = listed ?? TaskEventItem.items(from: [event]).first {
-                model.taskEventNotice = TaskEventNotice(item: item.markedRead, reason: failure.reason,
-                                                        hostName: failure.hostName)
-                model.taskEventsExpanded = true
-                showList?()
-            }
-        } else {
-            model.taskEventNotice = nil
-        }
-        if !ids.isEmpty { await manager.markEventsRead(ids: ids) }
+        guard event.kind.family == .task else { return true }
+        let failure = await route(sessionID: event.subject.sessionID)
+        if let failure, failure != .ended { showSessions?() }
         return true
     }
 
-    /// Where a click on the task would go, for its row's tooltip: looked up
-    /// when the pointer first reaches a row of the session, once per session
-    /// while the popover is open. It only looks; the click looks again.
-    func preview(_ item: TaskEventItem) async {
-        let generation = model.taskEventsPresentationGeneration
-        guard let sessionID = item.sessionID, model.taskEventRoutes[sessionID] == nil,
-              previewing[sessionID] != generation else { return }
-        previewing[sessionID] = generation
-        defer { if previewing[sessionID] == generation { previewing[sessionID] = nil } }
-        let found = await lookup.processes(sessionID: sessionID, rows: model.activeAgents)
-        guard model.taskEventsPresentationGeneration == generation else { return }
-        model.taskEventRoutes[sessionID] = TaskSessionRouting.route(for: found)
-    }
-
     /// Brings forward what runs the session: nil when it came forward, else
-    /// why not. The app is activated only here, on the user's click. The
-    /// route is kept for the tooltips only while the popover the click came
-    /// from (`generation`) is still the current one.
-    private func route(sessionID: String?, origin: String,
-                       generation: Int) async -> (reason: TaskEventNotice.Reason, hostName: String?)? {
+    /// why not. The app is activated only here, on the user's tap.
+    private func route(sessionID: String?) async -> TaskSessionRouteFailure? {
         var found: [TaskSessionProcess] = []
         if let sessionID { found = await lookup.processes(sessionID: sessionID, rows: model.activeAgents) }
         let route = TaskSessionRouting.route(for: found)
-        if let sessionID, model.taskEventsPresentationGeneration == generation { model.taskEventRoutes[sessionID] = route }
-        let failure: (reason: TaskEventNotice.Reason, hostName: String?)?
+        let failure: TaskSessionRouteFailure?
         switch route {
         case let .terminalTab(process):
-            failure = lookup.focusTerminal(process) ? nil : (.focusFailed, process.host?.name)
+            failure = lookup.focusTerminal(process) ? nil : .focusFailed
         case let .appOnly(process):
             let activated = process.host.map { lookup.activate($0) } ?? false
-            failure = activated ? nil : (.activationFailed, process.host?.name)
+            failure = activated ? nil : .activationFailed
         case .unhosted:
-            failure = (.unhosted, nil)
+            failure = .unhosted
         case .ended:
-            failure = (.ended, nil)
+            failure = .ended
         case .ambiguous:
-            failure = (.ambiguous, nil)
+            failure = .ambiguous
         }
-        log("task click (\(origin)): \(Self.logName(route))" + (failure == nil ? "" : ", nothing came forward"))
+        log("task tap: \(Self.logName(route))" + (failure == nil ? "" : ", nothing came forward"))
         return failure
     }
 
@@ -252,4 +150,18 @@ final class TaskEventFeed {
     }
 
     private nonisolated static let feedLogger = Logger(subsystem: "com.shu.agentmeter", category: "events")
+}
+
+/// Why a notification tap brought nothing forward.
+enum TaskSessionRouteFailure: Sendable, Equatable {
+    /// No live process reports the session.
+    case ended
+    /// Unrelated live processes report it.
+    case ambiguous
+    /// Alive, but in nothing AgentMeter can bring forward.
+    case unhosted
+    /// The terminal tab was named, but selecting it failed.
+    case focusFailed
+    /// The app the session runs in did not come forward.
+    case activationFailed
 }

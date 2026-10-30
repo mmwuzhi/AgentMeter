@@ -67,17 +67,16 @@ usage presentation, cached state, or Claude live-session integration.
   with the quota path, and records instead of posting when the kind is
   switched off, the event is older than `maximumDeliveryDelay`, or
   permission is denied. Read state changes only on an explicit read (a tap
-  on the notification when its handler says the tap reads it,
-  `markEventsRead`), never with time, and unread events
-  never age out: the 180-day retention applies to read events, and at the
-  10,000-event cap read events go first. Only when unread events alone
-  exceed the cap do the oldest unread go, counted in `unreadOverflow()` (a
-  running total kept in the log) for a view to show. An unread event its
-  producer recorded for the history only (delivery suppressed with one of
-  `Limits.historyOnlyReasons`) waits for no one: it is kept and dropped like
-  a read one and never counted as overflow, and it stays unread (no read
-  time is invented for it). The quota
-  critical/recovery path is unchanged and records no events.
+  on the notification, `markEventsRead`), never with time; since the menu's
+  task list went (2026-10-30) nothing asks the user to read anything and it
+  is history only. Events age out after 180 days and the oldest go first at
+  the 10,000-event cap, read or not. The older rule (an unread event never
+  ages out, goes last at the cap and is counted in `unreadOverflow()`) is
+  kept for kinds a view asks the user to read, `Limits.kindsAwaitingRead`,
+  which is empty; an event its producer recorded for the history only
+  (`Limits.historyOnlyReasons`) would wait for no one even then. Pruning
+  never invents a read time. The quota critical/recovery path is unchanged
+  and records no events.
 - `@AppStorage` keys are a compatibility contract. Current keys include
   `menuBarItemsConfig` (plus per-slot `menuBarItemsConfig.<slot>` variants),
   `menuBarSlotsConfig`, `menuBarShowCaptions`, `refreshIntervalSeconds`,
@@ -86,11 +85,8 @@ usage presentation, cached state, or Claude live-session integration.
   `taskWaitingNotificationsEnabled`, all default on; read on every delivery
   by `AgentMeterNotificationPreferences`), `taskNotificationsShowSessionTitle`
   (default on since 2026-10-29, a stored false still wins; read when a task
-  event is built),
-  `taskNotificationsShowListInMenu` (`TaskEventListVisibility`, default on:
-  the popover's task list and the menu bar count), the overflow
-  acknowledgement (`taskEventsOverflowAcknowledgedCount` and
-  `taskEventsOverflowAcknowledgedDroppedAt`), `launchAtLogin`,
+  event is built), `taskNotificationsIncludeHeadlessRuns` (default off),
+  `launchAtLogin`,
   `statusHooksEnabled`, and `claudeOAuthSucceededOnce` (gates the one-time
   Keychain primer in the popover).
 - `MenuBarLayout` owns which fields each status item shows, in what order.
@@ -505,61 +501,80 @@ usage presentation, cached state, or Claude live-session integration.
   "Includes N subagents (tokens · $cost of the total)" over every subagent the
   session ran, listed or not.
 
-## Task notifications in the menu
+## Task outcomes: banners and session rows
 
-- `TaskEventFeed` keeps `AppViewModel.taskEvents` in step with the event log:
-  it reads on `NotificationManager.onEventsChanged` (one reload per 150 ms
-  burst), when the listing popover opens (another instance may have
-  written), and at launch. Never on a timer. `.loading` until the first
-  read, so "not read yet" never reads as "nothing happened"; the popover
-  header always says which of Loading / None yet (Off without the hooks) /
-  All read / N unread holds.
-- The section is one header row (chevron, bell, "Task notifications", the
-  state above) and opens the list on a click. `AppViewModel.taskEventsExpanded`
-  holds that for the popover's lifetime only: collapsed at first and again
-  when the popover closes (`resetTaskEventsPresentation`, from
-  `popoverDidClose`), so the list squeezes the quotas and sessions only
-  while the user asked for it; a banner tap that opens the popover on the
-  list (`TaskEventFeed.showList`) expands it first. Expanded: up to 5
-  unread rows ("Show N more"), "Read · latest 10" collapsed, and "Mark all
-  read" in the header while something is unread. The overflow notice shows
-  collapsed too.
-- "Show task list in the menu" off (`TaskEventListVisibility`) hides the
-  section and the menu bar count and nothing else: events are recorded,
-  banners posted per their own switches, read state and history kept, so
-  switching it back on shows everything as it stands. A banner tap still
-  does what a row click does (tab, app, or nothing) and reads the task, but
-  never opens the popover: there would be nothing to show in it.
-- One item per task (`<session>|<task>`, `TaskEventItem`): a wait and the
-  end replace each other on screen as their banners do, and the item shows
-  the latest status. The menu bar counts tasks, not events. A row reads
-  "Finished · 12m run" (status and the producer's detail: run time, error,
-  what a wait waits for) with its age, then "project · session title" (the
-  live row's title, else "Session abcd1234"); never prompt text. Reading an
-  item reads every event of the task; Mark all read covers the items the
-  user was shown, not what arrived since.
-- Status, unread and "for the user" are kept apart. The status is the event
-  kind and never changes. The UI says only read and unread (no "seen",
-  "handled", "resolved", "dismiss"; `TaskEventListTests` scans the view
-  files): read says only that the user looked, never that a wait is over or
-  an unconfirmed task finished (an unconfirmed task read stays "Task status
-  unconfirmed"). Unread clears on a deliberate act about that task: a tap
-  on its banner (the feed reads the task's other listed events too), a
-  click on its row, the row's check mark, Mark all read. A click reads the
-  task whether or not anything came forward. That reverses the 2026-10-20
-  rule "a click that cannot reach the session reads nothing" (2026-10-29):
-  editor sessions are never reached, so every VS Code task needed a second,
-  manual mark, which the user found pointless, and the click already shows
-  the user looked. Closing a banner, opening the popover and time read
-  nothing. An event its producer recorded for the history only
-  (`TaskOutcomeAnnouncement.historyOnlyReasons`: before launch, a headless
-  run, under a minute, a report's turn, crons, interruptions) asks nobody to
-  read it: it
-  is never listed or counted, stays unread in the log, and the log keeps and
-  drops it like a read event (`Limits.historyOnlyReasons`). A kind whose
-  banner is switched off in Settings is still listed and counted: the
-  switches are about banners only, and Settings says so. Pending events are
-  not counted, so the badge does not flicker while an event settles.
+Since 2026-10-30 macOS notifications tell the user that a task ended or
+needs them, the session rows show how each session's latest turn ended, and
+`events.jsonl` keeps the history. The menu's task list ("Task
+notifications", N unread, Mark all read) and the menu bar's blue unread
+count are gone: they had grown to 80 unread that only clearing kept down,
+which the user did not want. The removal deleted nothing on disk: the
+events, their read times and the old Settings keys
+(`taskNotificationsShowListInMenu`,
+`taskEventsOverflowAcknowledgedCount`/`…DroppedAt`) stay and are no longer
+read. Events now age out after 180 days read or not (event store, above),
+so a rollback much later finds fewer; an older build lists every event
+since as unread.
+
+- The session's state and its latest turn's result are kept apart. The state
+  (Working / Waiting / Idle / Error, `ActiveAgent.displayStatus`) is what the
+  process, Claude Code's registry and the hooks say now, unchanged. The result
+  (`SessionTurnResult`: finished or failed) is the session's newest task
+  outcome event (`SessionTurnResults.newestBySession`, by `occurredAt`), only
+  `task_completed` or `task_failed`: a newer wait, interruption or
+  `task_unknown` belongs to a later turn and leaves nothing to show, and a
+  wait is never a result. A wait never outranks its own task's end: it is
+  stamped at its start plus the waiting delay and can land a few ms after
+  the `Stop`. Finished is a turn, never the session: the process
+  stays for the next prompt.
+- A result shows only while its turn is the session's latest: the turn
+  ledger's `lastPromptAt` (a person's prompt or a report's, which starts the
+  next turn) must not be after it ended (`SessionTurnResults.current`, in
+  whole milliseconds). `TaskOutcomeMonitor` hands each session's latest
+  prompt to the feed (`turnStarts`) after its first pass and whenever it
+  changes; the feed publishes nothing until it has both that and the log, so
+  a result the next prompt superseded never shows, at launch either. That is
+  what keeps a turn with no event of its own from inheriting the previous
+  Finished: one stopped with its own background shells (no event for the
+  10-minute uncertain window), one still being confirmed (2 s), or one that
+  ended unresolved. A session the ledger no longer knows keeps its result.
+  The ledger's `endedAt` is not read: it stays from a `SessionEnd` after the
+  session is resumed in a new process (the parked ledger issue), and only
+  `lastPromptAt` decides.
+- On a row (`ActiveAgent.turnMarker(in:)`), the state wins: working and
+  waiting show no result. `error` (the hook's `StopFailure`, red for
+  `errorAttentionWindow`, 12 h) is the failed turn itself: a red cross and
+  "last turn failed · 3m ago" (it read "needs attention"), timed by the
+  hook. An idle (or undated) row shows its session's result for
+  `ActiveAgent.turnResultWindow` (1 h) after the turn ended, measured at the
+  row's `observedAt` like its other ages: a green check and "last turn
+  finished · 3m ago", or a red cross and "last turn failed · 3m ago" for a
+  failure only the event saw (the registry's later idle stamp outranked the
+  hook's error). After the window the row reads plain "idle · 1h ago"
+  again; nothing is read, marked or dismissed. Every outcome counts,
+  whatever its banner did (switched off, under a minute, before launch, a
+  headless run): it did end that way. Only the row's own session id counts,
+  so a child process (`claude -p` from the session's Bash, its own session)
+  never marks its parent, and subagents report under the main session and
+  end with its turn.
+- The mark replaces the state's dot (`SessionStateGlyph`, a 9 pt slot so the
+  text lines up whichever it is), and its words replace the state's in the
+  subtitle; the model and effort before them truncate first so the state
+  stays readable. A collapsed group whose sessions are all idle shows the
+  header mark (a failure before a finish) and counts them ("3 · 1 finished
+  · 2.5M · $1.20"); a working or waiting group keeps its dot and count, and
+  an error group says "1 failed" (it said "1 error"). A finished turn opens
+  no group (only waiting and error do), and the order, the listing and the
+  counts read the rows alone, never a result. The tooltip adds "Last turn
+  finished at 10:42 AM · 12m run" (the event's detail line: run time, or the
+  error kind) under the state line, whose error state now reads "Failed".
+- Ended sessions get no row (rows are live processes only).
+- `TaskEventFeed` keeps `AppViewModel.sessionTurnResults` in step: it reads
+  the newest 500 task events on `NotificationManager.onEventsChanged` (one
+  reload per 150 ms burst), when a popover opens (another instance may have
+  written), and at launch; never on a timer. Not persisted: the log is the
+  record. The rows re-read their time on each full refresh (every refresh
+  interval while a popover is open, and when it opens).
 - Naming the session. When an
   event is recorded, `TaskSessionLabel.resolve` takes the live row's title
   (`ActiveAgentSession.displayTitle`, the row's own text), else the title in
@@ -587,22 +602,19 @@ usage presentation, cached state, or Claude live-session integration.
   place of "Claude Code"), or without a title (or with the switch off)
   "Finished · <project>" over "Session <short id>" (· "Headless run"); then
   the detail line. Failed, Needs input, Status unconfirmed, Interrupted
-  alike, status first so truncation keeps it. The list row names the session
-  by the live row's title, else the stored one, else the short id, plus
-  "Headless run". Titles in banners are on by default since 2026-10-29, the
+  alike, status first so truncation keeps it. Titles in banners are on by default since 2026-10-29, the
   user's choice, superseding the 2026-10-20 short-id default (a title
   without a custom name is Claude's summary of the first prompt, and banners
   reach the lock screen); with the switch off banners use project and short
-  id, and the list still shows titles (the title is kept with the event
-  either way). Only `interactive` / `claude-vscode` registry entries were
+  id (the title is kept with the event either way). Only `interactive` / `claude-vscode` registry entries were
   seen locally, the `claude -p` children included; the SDK entrypoint names
   follow Claude Code's, unverified here.
 - Headless runs. A task whose session Claude Code
   counts unattended is announced only with Settings › Alerts › "Notify about
   headless runs" on (`taskNotificationsIncludeHeadlessRuns`, default off).
   Off, every outcome of it (failures and waits included) is recorded with
-  `headlessRun`, a history-only reason: no banner, not listed or counted,
-  kept and aged out like a read event, never marked read. The switch is
+  `headlessRun`, a history-only reason: no banner, never marked read (a
+  live headless process's row still shows how its turn ended). The switch is
   read at each submit, so it applies from the next outcome. The signal is
   Claude Code's own: it sets `CLAUDE_CODE_SESSION_ATTENDED` ("1"/"0") in
   every command it runs, hooks included, and the helper stores it on the
@@ -626,27 +638,17 @@ usage presentation, cached state, or Claude live-session integration.
   (it would pass the child marker on); none seen here in 60 days of
   transcripts (726 `claude-vscode`, 3 `cli`, 1 `sdk-cli`), and Settings
   says to turn the switch on for such an editor. Builds without
-  `headlessRun` in `historyOnlyReasons` (before this one) list such events
-  as unread if they read the same `events.jsonl` (a rollback, a dev build
+  `headlessRun` in `historyOnlyReasons` (before 202610291821) list such
+  events as unread if they read the same `events.jsonl` (a rollback, a dev build
   beside the installed one); whichever app launched last also owns the
   shared helper, and an older helper writes no flag. No grouping of
   banners: past this rule the bursts left were independent sessions.
-- `task_unknown` reads "Task status unconfirmed" with
-  `TaskEventStatus.unconfirmedExplanation` ("Background tasks were still
-  running at the last check…"), never the stored detail line: 1b wrote
-  "N background shells still running", and the shell may have ended since
-  with no hook to say so. New events say "N background tasks running at the
-  last check". It is listed, never posted.
-- The unread count is a blue capsule after the fields of Claude's status
-  item, or of the first visible item while Claude's is hidden
-  (`StatusItemController.taskEventsSlot`); that item's popover lists the
-  tasks. It adds width only while something is unread (`badgeWidth` 0
-  otherwise), is capped at "99+", is not dimmed with stale quota, and uses
-  no quota cue color. The accessibility label appends the count.
-- `unreadOverflow()` shows as a notice in the list until the user
-  acknowledges that exact total (count and `lastDroppedAt`, kept in
-  defaults); a later drop shows only what was dropped since, and a total
-  below the acknowledged one (the log started over) shows all of it.
+- `task_unknown` (background tasks this task started were still running at
+  the last check) is recorded, never posted, and hides the session's older
+  result: completion can't be confirmed, so the row reads plain idle with
+  the last `Stop`'s background count, and its tooltip says what that count
+  is. Its stored detail ("N background tasks running at the last check";
+  1b wrote "N background shells still running") is never shown.
 - Clicks (`TaskSessionRouting`) bring forward only what already runs the
   session. Live processes come from the rows (with the row's start time
   checked against the kernel's) and from the registry read at click time
@@ -655,21 +657,14 @@ usage presentation, cached state, or Claude live-session integration.
   ambiguous. A terminal tab (iTerm2, Terminal, Ghostty) is selected by tty
   (it only selects a tab that exists). Any other app, editors included, is
   activated by the click and nothing more, which never creates a window.
-  Ended, unhosted and ambiguous sessions open nothing. A banner tap does
-  what a row click does. The row's tooltip names the outcome ("Brings Code
-  forward — AgentMeter can't pick the session's window there") from a route
-  looked up when the pointer first reaches a row of that session
-  (`TaskEventFeed.preview`, kept per session in
-  `AppViewModel.taskEventRoutes` until the popover closes; generic until
-  then); looking never activates or reads anything. When a click could not
-  do what it said, one short line sits under that row (`TaskEventNotice`:
-  "Session has ended", "Couldn't switch to the iTerm2 tab"), with no
-  buttons, until the next click (a banner tap that worked included) or the
-  popover closes; the row stays in place though it was read, and a banner
-  tap that brought nothing forward opens the popover on it. A click or a
-  lookup still running when the popover closes writes no line or route into
-  the next one (`AppViewModel.taskEventsPresentationGeneration`, bumped by
-  `resetTaskEventsPresentation`). The session row's click
+  A banner tap (`TaskEventFeed.handleNotificationResponse`) does that for
+  the event's session; when nothing came forward for a session that still
+  runs (unhosted, ambiguous, the tab or app refused) it opens Claude's
+  popover (`showSessions` → `StatusItemController.showClaudeSessions`), where
+  the session's row says what it is doing; nothing when Claude's status item
+  is hidden (another provider's popover lists none of its sessions) or the
+  session has ended. The tap is kept as the event's read time,
+  history only; closing a banner does nothing. The session row's click
   (`AgentAppActivator.focus`) is the same: the terminal tab, else the app.
   No URL is ever opened
   (`AgentAppActivatorTests.testNoSourceOpensAnEditorOrSessionURL`), so no
@@ -694,9 +689,9 @@ usage presentation, cached state, or Claude live-session integration.
   hidden `--open-url` with `--user-data-dir` reaches only that instance, the
   isolation route for an experiment; no experiment was run.
 - Settings › Alerts shows the three banner switches (default on; labelled as
-  banners, with the note that the menu still records, lists and counts the
-  task), the session-title switch (default on), "Show task list in the
-  menu" (default on), "Notify about headless runs" (default off) and what
+  banners, with the note that the outcome is kept either way and the
+  session's row shows how its last turn ended), the session-title switch
+  (default on), "Notify about headless runs" (default off) and what
   System Settings says (`AgentMeterNotificationSettings`: permission, alert
   style, lock screen, previews), read when the pane appears and when
   AgentMeter becomes active again. Temporary (banners: shown once, gone by
@@ -893,7 +888,7 @@ usage presentation, cached state, or Claude live-session integration.
   end replace each other. The text is the status, the session's title, the
   project, the short session id, run time and error kind; never a prompt,
   assistant text, error details or the task key. The title is named as in
-  "Task notifications in the menu" below.
+  "Task outcomes: banners and session rows" below.
   Ledgers untouched for 24 h whose session has no live process are swept
   hourly.
 - A payload attaches to a process by its recorded ancestry only, which is

@@ -939,7 +939,9 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
             // that the user has to act.
             return waitingReason?.activityText ?? (statusSource == .registry ? "waiting" : "waiting for input")
         case .error:
-            guard hasStaleError, let statusUpdatedAt else { return "needs attention" }
+            // Red while it is recent, gray after `errorAttentionWindow`; the
+            // words say what happened and when either way.
+            guard let statusUpdatedAt else { return "last turn failed" }
             return "last turn failed · \(relativeAge(since: statusUpdatedAt))"
         case .idle:
             // The turn ended with work still in flight (the last `Stop`'s
@@ -1024,6 +1026,12 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     /// Row subtitle. The provider is implied by the surrounding popover
     /// section, so only the less common Desktop origin is called out.
     var subtitleText: String {
+        [subtitleDetails, activityText].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// The subtitle before the state: where it runs, the model, the effort.
+    /// The row lets this part truncate first, so the state stays readable.
+    var subtitleDetails: String? {
         var parts: [String] = []
         if sourceLabel.hasSuffix("Desktop") { parts.append("Desktop") }
         // Which model a session is burning decides whether its spend is worth
@@ -1032,8 +1040,7 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
         if let model = ModelLabel.short(session?.model) { parts.append(model) }
         // Effort multiplies the model's cost, so it sits right after it.
         if let effort = SessionLabel.effort(session?.effort) { parts.append(effort) }
-        parts.append(activityText)
-        return parts.joined(separator: " · ")
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// "working now", or what a quiet session is still working through: when

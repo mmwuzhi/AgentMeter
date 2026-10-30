@@ -143,7 +143,7 @@ struct AgentMeterNotificationSettings: Sendable, Equatable {
         case .notDetermined:
             return "AgentMeter asks for permission the first time it has something to tell you."
         case .denied:
-            return "Notifications are off for AgentMeter. Turn on Allow notifications in System Settings › Notifications › AgentMeter; the menu bar still counts unread tasks meanwhile."
+            return "Notifications are off for AgentMeter. Turn on Allow notifications in System Settings › Notifications › AgentMeter; meanwhile the Sessions list still shows how each session's last turn ended."
         case .unknown:
             return nil
         case .authorized, .provisional, .ephemeral:

@@ -20,18 +20,20 @@ import os
 ///    processes can still both record one id within the same instant.
 ///  * When a write fails the change stays in memory, so dedup and read state
 ///    hold for this process; the next write rewrites the whole file.
-///  * Limits, applied at a compaction: read events older than `retention`
-///    go; unread ones stay however old. Past `maximumEvents` the oldest read
-///    events go first; only when unread events alone exceed it do the oldest
-///    unread ones go, counted in `unreadOverflow()` and logged, never
-///    silently. An unread event recorded for the history only
-///    (`Limits.historyOnlyReasons`) counts as read for these limits. Nothing
-///    here ever marks an event read on its own.
+///  * Limits, applied at a compaction: events older than `retention` go, and
+///    past `maximumEvents` the oldest go first. An unread event of a kind a
+///    view asks the user to read (`Limits.kindsAwaitingRead`) is the
+///    exception: it stays however old, and goes at the cap only when such
+///    events alone exceed it, counted in `unreadOverflow()` and logged, never
+///    silently; one recorded for the history only
+///    (`Limits.historyOnlyReasons`) counts as read even then. No view asks
+///    since the menu's task list was removed (2026-10-30). Nothing here ever
+///    marks an event read on its own.
 ///  * The first read of the log in a run marks events an earlier run left
 ///    `pending` as `interrupted`: terminal, never retried.
 actor AgentMeterEventStore {
     struct Limits: Sendable, Equatable {
-        /// Applies to read events only.
+        /// Applies to every event but an unread one in `kindsAwaitingRead`.
         var retention: TimeInterval = 180 * 86_400
         /// A hard ceiling on all events, read or not, so the file and memory
         /// stay bounded (about 400 B an event).
@@ -39,10 +41,17 @@ actor AgentMeterEventStore {
         /// A compaction runs once superseded lines (delivery and read
         /// updates, unreadable lines) outnumber both the live events and this.
         var minimumSupersededLines = 512
+        /// Kinds whose unread events wait for the user to read them: kept
+        /// past `retention`, last to go at the cap, counted as overflow when
+        /// they do (`AgentMeterEventLogState.pruning`). Empty since the
+        /// menu's task list, the only view that asked anyone to read an
+        /// event, was removed (2026-10-30): a task event read or not now ages
+        /// out like any other, and the read times stay as history.
+        var kindsAwaitingRead: Set<AgentMeterEventKind> = []
         /// Suppression reasons of events their producer recorded for the
-        /// history only: nothing asks the user to read them, so unread they
-        /// age out and yield to the cap like read events, and never count as
-        /// overflow (`AgentMeterEventLogState.pruning`).
+        /// history only: nothing asks the user to read them, so even of a
+        /// kind in `kindsAwaitingRead`, unread they age out and yield to the
+        /// cap like read events, and never count as overflow.
         var historyOnlyReasons: Set<String> = TaskOutcomeAnnouncement.historyOnlyReasons
 
         static let standard = Limits()
@@ -326,6 +335,7 @@ actor AgentMeterEventStore {
 
     private func compactIfDue() {
         let pruning = state.pruning(now: clock(), retention: limits.retention, maximumEvents: limits.maximumEvents,
+                                    awaitingRead: limits.kindsAwaitingRead,
                                     historyOnlyReasons: limits.historyOnlyReasons)
         let superseded = state.supersededLines > max(state.liveLines, limits.minimumSupersededLines)
         guard !pruning.isEmpty || superseded else { return }

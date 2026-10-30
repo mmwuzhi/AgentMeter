@@ -13,9 +13,6 @@ enum MenuViewScope: Equatable {
 struct MenuView: View {
     @Bindable var model: AppViewModel
     var scope: MenuViewScope
-    /// Set on the popover of the status item that carries the unread count
-    /// (`StatusItemController.taskEventsSlot`); that popover lists the tasks.
-    var taskEvents: TaskEventFeed? = nil
     var onRefresh: () -> Void
     /// Closes the popover and shows Settings (`SettingsOpener`). Not a
     /// `SettingsLink`: that neither activates the app nor brings an open
@@ -23,8 +20,6 @@ struct MenuView: View {
     var onSettings: () -> Void
     var onQuit: () -> Void
     @State private var sectionsHeight: CGFloat = 0
-    @AppStorage("statusHooksEnabled") private var statusHooksEnabled = false
-    @AppStorage(TaskEventListVisibility.key) private var showsTaskList = TaskEventListVisibility.defaultValue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -49,16 +44,6 @@ struct MenuView: View {
 
     private var sections: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let taskEvents, showsTaskList {
-                TaskEventsSection(
-                    state: model.taskEvents,
-                    isExpanded: $model.taskEventsExpanded,
-                    notice: model.taskEventNotice,
-                    hooksEnabled: statusHooksEnabled,
-                    sessionTitles: sessionTitles,
-                    routes: model.taskEventRoutes,
-                    actions: TaskEventActions(feed: taskEvents))
-            }
             ForEach(visibleProviders, id: \.self) { p in
                 let providerState = PopoverOrder.state(p, model)
                 ProviderSection(
@@ -80,16 +65,6 @@ struct MenuView: View {
             }
         }
         .padding(12)
-    }
-
-    /// Live sessions' titles, for naming tasks in the list.
-    private var sessionTitles: [String: String] {
-        var titles: [String: String] = [:]
-        for agent in model.activeAgents {
-            guard let session = agent.session, let title = session.displayTitle else { continue }
-            titles[session.id] = titles[session.id] ?? title
-        }
-        return titles
     }
 
     private func resetCreditItems(for provider: Provider) -> [ResetCreditItem] {
@@ -303,14 +278,14 @@ private struct ActiveAgentGroupRow: View {
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.tertiary)
                         .frame(width: 8)
-                    Circle().fill(statusColor(group.topStatus, provider: group.provider))
-                        .frame(width: 7, height: 7)
+                    SessionStateGlyph(status: group.topStatus, provider: group.provider,
+                                      marker: group.turnMarker(in: model.sessionTurnResults))
                     Text(group.projectName)
                         .font(.caption.weight(.semibold))
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 8)
-                    Text(expanded ? "\(group.agentCount)" : group.collapsedSummary)
+                    Text(expanded ? "\(group.agentCount)" : group.collapsedSummary(turnResults: model.sessionTurnResults))
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
@@ -348,7 +323,7 @@ private struct ActiveAgentNodeRows: View {
     }
 
     var body: some View {
-        ActiveAgentRow(agent: node.agent, showsProjectTitle: showsProjectTitle)
+        ActiveAgentRow(agent: node.agent, showsProjectTitle: showsProjectTitle, results: model.sessionTurnResults)
         if node.hasChildRows {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) {
@@ -369,7 +344,7 @@ private struct ActiveAgentNodeRows: View {
             .padding(.leading, 14)
             if showsChildren {
                 ForEach(node.children) { child in
-                    ActiveAgentRow(agent: child, showsProjectTitle: false)
+                    ActiveAgentRow(agent: child, showsProjectTitle: false, results: model.sessionTurnResults)
                         .padding(.leading, 14)
                 }
                 ForEach(node.subagents) { subagent in
@@ -418,7 +393,11 @@ private struct ActiveAgentRow: View {
     let agent: ActiveAgent
     /// False for rows under a group header, which already names the project.
     var showsProjectTitle = true
+    /// The sessions' latest turn results (`AppViewModel.sessionTurnResults`).
+    var results: [String: SessionTurnResult] = [:]
     @State private var hovering = false
+
+    private var marker: SessionTurnMarker? { agent.turnMarker(in: results) }
 
     var body: some View {
         Button {
@@ -437,14 +416,15 @@ private struct ActiveAgentRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help(ActiveAgentTooltip.text(for: agent))
+        .help(ActiveAgentTooltip.text(for: agent, marker: marker,
+                                      detail: agent.session.flatMap { results[$0.id] }.flatMap { ActiveAgentTooltip.detail(of: $0, for: marker) }))
     }
 
     private var rowContent: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Circle()
-                .fill(statusColor(agent.displayStatus, provider: agent.provider))
-                .frame(width: 7, height: 7)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            // The subtitle says the state in words; the glyph would say it twice.
+            SessionStateGlyph(status: agent.displayStatus, provider: agent.provider, marker: marker)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     Text(showsProjectTitle ? agent.displayTitle : agent.inGroupTitle)
@@ -457,10 +437,22 @@ private struct ActiveAgentRow: View {
                 }
                 .lineLimit(1)
                 .truncationMode(.middle)
-                Text(agent.subtitleText)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                // The state keeps its words; the model and effort before it
+                // truncate first.
+                HStack(spacing: 0) {
+                    if let details = agent.subtitleDetails {
+                        Text(details)
+                    }
+                    Text((agent.subtitleDetails == nil ? "" : " · ") + agent.activityText(marker: marker))
+                        .layoutPriority(1)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                // One line for VoiceOver, not two parts joined by a comma.
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel([agent.subtitleDetails, agent.activityText(marker: marker)]
+                    .compactMap { $0 }.joined(separator: " · "))
             }
             Spacer(minLength: 8)
             if let usage = agent.usageDisplayText {
@@ -482,6 +474,8 @@ enum ActiveAgentTooltip {
     /// the same moment the listing and the order use; left out when unknown).
     static func text(
         for agent: ActiveAgent,
+        marker: SessionTurnMarker? = nil,
+        detail: String? = nil,
         locale: Locale = .autoupdatingCurrent,
         timeZone: TimeZone = .autoupdatingCurrent
     ) -> String {
@@ -490,6 +484,9 @@ enum ActiveAgentTooltip {
 
         var head = [title ?? agent.displayTitle]
         head.append(stateLine(for: agent, locale: locale, timeZone: timeZone))
+        if let marker {
+            head.append(turnLine(marker, detail: detail, observedAt: agent.observedAt, locale: locale, timeZone: timeZone))
+        }
         // The gray row's "idle · 2 subagents" is the count the last `Stop`
         // reported; the tooltip says what the count is a count of.
         if agent.displayStatus == .idle, let pending = agent.backgroundTaskText {
@@ -536,12 +533,38 @@ enum ActiveAgentTooltip {
 
     static let clickHint = "Click to bring its app forward (in iTerm2, Terminal or Ghostty, its tab)"
 
+    /// "Last turn finished at 10:42 AM · 12m run": the row's mark, with the
+    /// moment and what the outcome's event said (run time, error kind). A
+    /// turn, never the session: the session stays open for the next one.
+    static func turnLine(_ marker: SessionTurnMarker, detail: String?, observedAt: Date,
+                         locale: Locale, timeZone: TimeZone) -> String {
+        let (words, at): (String, Date?) = switch marker {
+        case let .finished(at): ("Last turn finished", at)
+        case let .failed(at): ("Last turn failed", at)
+        }
+        var line = words
+        if let at { line += " at \(exactTime(at, relativeTo: observedAt, locale: locale, timeZone: timeZone))" }
+        if let detail { line += " · \(detail)" }
+        return line
+    }
+
+    /// The result's detail when it is the turn the mark is about: the same
+    /// outcome, ended at the same moment (a hook-reported failure is marked
+    /// with the hook's time, which the event may not share).
+    static func detail(of result: SessionTurnResult, for marker: SessionTurnMarker?) -> String? {
+        switch marker {
+        case let .finished(at) where result.outcome == .finished && result.endedAt == at: result.detail
+        case .failed where result.outcome == .failed: result.detail
+        default: nil
+        }
+    }
+
     /// "Idle · Last activity: 8d ago (Oct 21, 2:05 PM)". The exact moment joins
     /// once the relative age is an hour or more, where "8d" stops saying when.
     static func stateLine(for agent: ActiveAgent, locale: Locale, timeZone: TimeZone) -> String {
         let state = switch agent.displayStatus {
         case .waiting: agent.waitingReason?.tooltipLead ?? (agent.statusSource == .registry ? "Waiting" : "Waiting for your input")
-        case .error: "Needs attention"
+        case .error: "Failed"
         case .working: "Working"
         case .idle where agent.hasStaleError: "Last turn failed"
         case .idle: "Idle"
@@ -588,6 +611,48 @@ enum ActiveAgentTooltip {
         if let effort = SessionLabel.effort(subagent.effort) { identity.append(effort) }
         lines.append(identity.joined(separator: " · "))
         return lines.joined(separator: "\n")
+    }
+}
+
+/// A row's or a group's state mark: the state's dot, or in its place the
+/// latest turn's check (finished) or cross (failed). One fixed width, so the
+/// text after it lines up whichever it is.
+private struct SessionStateGlyph: View {
+    let status: AgentStatusState?
+    let provider: Provider
+    var marker: SessionTurnMarker?
+
+    var body: some View {
+        Group {
+            switch marker {
+            case .finished:
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+            case .failed:
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+            case nil:
+                Circle().fill(statusColor(status, provider: provider)).frame(width: 7, height: 7)
+            }
+        }
+        .font(.system(size: 9, weight: .semibold))
+        .frame(width: 9, height: 9)
+        // The dot's bottom on the text's baseline, as before the marks.
+        .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
+        .accessibilityLabel(Self.accessibilityLabel(status: status, marker: marker))
+    }
+
+    static func accessibilityLabel(status: AgentStatusState?, marker: SessionTurnMarker?) -> String {
+        switch marker {
+        case .finished: "Last turn finished"
+        case .failed: "Last turn failed"
+        case nil:
+            switch status {
+            case .working: "Working"
+            case .waiting: "Waiting"
+            case .idle: "Idle"
+            case .error: "Failed"
+            case nil: "Open"
+            }
+        }
     }
 }
 

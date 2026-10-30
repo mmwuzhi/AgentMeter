@@ -4,7 +4,7 @@ import AppKit
 /// activation as the fallback. Editor windows are never switched with a URL:
 /// `vscode://file/<folder>` replaces the last active window's workspace when
 /// no window holds exactly that single folder, ending the sessions in it
-/// (docs/agent/ui-state.md, "Task notifications in the menu").
+/// (docs/agent/ui-state.md, "Task outcomes: banners and session rows").
 enum AgentAppActivator {
     @MainActor
     @discardableResult

@@ -3,9 +3,9 @@ import AppKit
 import UserNotifications
 import XCTest
 
-/// Settings › Alerts for task notifications, the system settings it reports,
-/// and the menu bar's unread count. Nothing here reads or changes the real
-/// notification settings or the user's defaults.
+/// Settings › Alerts for task notifications and the system settings it
+/// reports. Nothing here reads or changes the real notification settings or
+/// the user's defaults.
 @MainActor
 final class TaskNotificationSettingsTests: XCTestCase {
     typealias Settings = AgentMeterNotificationSettings
@@ -35,20 +35,6 @@ final class TaskNotificationSettingsTests: XCTestCase {
         XCTAssertFalse(read.notifies(.taskWaiting))
         XCTAssertTrue(read.notifies(.taskCompleted))
         XCTAssertFalse(read.notifies(.taskUnknown), "an unconfirmed task is never posted")
-    }
-
-    func testTheTaskListIsShownByDefaultAndTheSwitchIsRead() throws {
-        let suite = "agentmeter.tests.list.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        XCTAssertEqual(TaskEventListVisibility.key, "taskNotificationsShowListInMenu")
-        XCTAssertTrue(TaskEventListVisibility.isShown(in: defaults), "on by default")
-        defaults.set("no", forKey: TaskEventListVisibility.key)
-        XCTAssertTrue(TaskEventListVisibility.isShown(in: defaults), "wrong type keeps the default")
-        defaults.set(false, forKey: TaskEventListVisibility.key)
-        XCTAssertFalse(TaskEventListVisibility.isShown(in: defaults))
-        XCTAssertEqual(AgentMeterNotificationPreferences(defaults: defaults), AgentMeterNotificationPreferences(),
-                       "hiding the list leaves every banner switch as it was")
     }
 
     // MARK: - System settings, reported never changed
@@ -142,56 +128,5 @@ final class TaskNotificationSettingsTests: XCTestCase {
         })
         XCTAssertEqual(task.hiddenPreviewsBodyPlaceholder, "Claude Code task update")
         XCTAssertTrue(task.actions.isEmpty)
-    }
-
-    // MARK: - Menu bar count
-
-    func testTheCountAddsWidthOnlyWhileThereIsSomethingUnread() {
-        let elements: [MenuBarElement] = [.icon(.provider(.claude))]
-        let plain = MenuBarContentView.width(elements: elements, showCaptions: true)
-        XCTAssertEqual(MenuBarContentView.width(elements: elements, showCaptions: true, unreadBadge: 0), plain,
-                       "nothing unread: the item keeps its exact width")
-        let one = MenuBarContentView.width(elements: elements, showCaptions: true, unreadBadge: 1)
-        XCTAssertEqual(one, plain + MenuBarContentView.badgeGap + MenuBarContentView.badgeHeight, "a one-digit count is round")
-        let many = MenuBarContentView.width(elements: elements, showCaptions: true, unreadBadge: 250)
-        XCTAssertGreaterThan(many, one)
-        XCTAssertEqual(MenuBarContentView.badgeText(9), "9")
-        XCTAssertEqual(MenuBarContentView.badgeText(100), "99+")
-        XCTAssertEqual(MenuBarContentView.badgeWidth(100), MenuBarContentView.badgeWidth(5_000), "capped, so it never grows")
-        XCTAssertEqual(MenuBarContentView.unreadSummary(0), "")
-        XCTAssertEqual(MenuBarContentView.unreadSummary(1), ", 1 unread task notification")
-        XCTAssertEqual(MenuBarContentView.unreadSummary(3), ", 3 unread task notifications")
-    }
-
-    func testTheCountSitsOnClaudesItemOrTheFirstVisibleOne() {
-        XCTAssertEqual(StatusItemController.taskEventsSlot(visible: [.codex, .claude]), .claude)
-        XCTAssertEqual(StatusItemController.taskEventsSlot(visible: [.codex, .copilot]), .codex,
-                       "Claude's item hidden: the count must not vanish with it")
-        XCTAssertNil(StatusItemController.taskEventsSlot(visible: []))
-    }
-
-    func testTheCountShowsOnlyOnTheListsItemAndOnlyWhileTheListIsShown() {
-        let unread = TaskEventsState.loaded(TaskEventsSnapshot.make(
-            unreadEvents: [listEvent("a", task: "a"), listEvent("b", task: "b")], recentEvents: [], overflow: nil))
-        XCTAssertEqual(StatusItemController.unreadBadge(unread, carriesList: true, listShown: true), 2)
-        XCTAssertEqual(StatusItemController.unreadBadge(unread, carriesList: false, listShown: true), 0)
-        XCTAssertEqual(StatusItemController.unreadBadge(unread, carriesList: true, listShown: false), 0,
-                       "hidden with the list")
-        XCTAssertEqual(StatusItemController.unreadBadge(.loading, carriesList: true, listShown: true), 0)
-    }
-
-    func testTheCountIsDrawnInsideTheDeclaredWidth() throws {
-        let view = MenuBarContentView()
-        let elements: [MenuBarElement] = [.icon(.provider(.claude))]
-        view.apply(elements: elements, showCaptions: true, fillsByUsed: false)
-        view.unreadBadge = 7
-        let width = MenuBarContentView.width(elements: elements, showCaptions: true, unreadBadge: 7)
-        view.frame = NSRect(x: 0, y: 0, width: width, height: 22)
-        let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-        view.cacheDisplay(in: view.bounds, to: rep)
-        // The capsule's blue reaches the last column and nothing is cut.
-        let edge = try XCTUnwrap(rep.colorAt(x: rep.pixelsWide - 3, y: rep.pixelsHigh / 2)?.usingColorSpace(.sRGB))
-        XCTAssertGreaterThan(edge.blueComponent, 0.6)
-        XCTAssertLessThan(edge.redComponent, 0.4)
     }
 }

@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let feed = TaskEventFeed(manager: NotificationManager.shared, model: model)
         taskEvents = feed
         statusController = StatusItemController(model: model, coordinator: coordinator, taskEvents: feed)
-        feed.showList = { [weak self] in self?.statusController.showTaskEvents() }
+        feed.showSessions = { [weak self] in self?.statusController.showClaudeSessions() }
         NotificationManager.shared.activate()
         NotificationManager.shared.onOpenProvider = { [weak self] provider in
             self?.statusController.showPopover(for: provider)
@@ -68,21 +68,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         feed.scheduleReload()
         coordinator.start()
-        startTaskOutcomes(launchedAt: launchedAt)
+        startTaskOutcomes(launchedAt: launchedAt, feed: feed)
     }
 
     /// Session task outcomes (Completed / Failed / Waiting / Interrupted)
     /// from the hook helper's turn ledgers, through the shared event path.
     /// Off the main thread except for naming the session from the latest
     /// rows and handing the event to `NotificationManager`, one outcome at a
-    /// time in the order they were found (`TaskOutcomeQueue`).
-    private func startTaskOutcomes(launchedAt: Date) {
+    /// time in the order they were found (`TaskOutcomeQueue`). The sessions'
+    /// latest prompts go to the feed, which hides a result the next turn
+    /// superseded.
+    private func startTaskOutcomes(launchedAt: Date, feed: TaskEventFeed) {
         let model = model
         let queue = TaskOutcomeQueue { outcome in
             await TaskOutcomeAnnouncement.announce(outcome, rows: model.activeAgents, manager: .shared,
                                                    launchedAt: launchedAt)
         }
-        let monitor = TaskOutcomeMonitor { queue.enqueue($0) }
+        let monitor = TaskOutcomeMonitor(turnStarts: { [weak feed] starts in
+            // In order: the main queue keeps the monitor's sequence.
+            DispatchQueue.main.async { MainActor.assumeIsolated { feed?.turnStartsChanged(starts) } }
+        }, deliver: { queue.enqueue($0) })
         monitor.start()
         taskOutcomeQueue = queue
         taskOutcomes = monitor

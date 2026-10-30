@@ -254,24 +254,26 @@ struct AgentMeterEventLogState: Sendable {
         var isEmpty: Bool { ids.isEmpty }
     }
 
-    /// What falls outside the limits at `now`. Time removes read events only:
-    /// a read event older than `retention` goes, an unread one stays however
-    /// old it is. Past `maximumEvents`, the oldest read events go first; only
-    /// when unread events alone exceed it do the oldest unread ones go, and
-    /// those are counted in `unreadOverflow`.
+    /// What falls outside the limits at `now`. An event older than
+    /// `retention` goes, and past `maximumEvents` the oldest go first.
     ///
-    /// An unread event its producer recorded for the history only (its
-    /// delivery suppressed with one of `historyOnlyReasons`) waits for no
-    /// one: it is kept and dropped like a read event, and never counted as
-    /// overflow. It stays unread; nothing invents a time the user read it.
+    /// Only an unread event of a kind some view asks the user to read
+    /// (`awaitingRead`) waits for that read: it stays however old it is, and
+    /// goes at the cap only when such events alone exceed it, oldest first,
+    /// counted in `unreadOverflow`. An unread event its producer recorded for
+    /// the history only (its delivery suppressed with one of
+    /// `historyOnlyReasons`) waits for no one even then. Nothing is marked
+    /// read by this; an event stays unread when it ages out.
     func pruning(now: Date, retention: TimeInterval, maximumEvents: Int,
+                 awaitingRead: Set<AgentMeterEventKind> = [],
                  historyOnlyReasons: Set<String> = []) -> Pruning {
         let horizon = now.addingTimeInterval(-retention)
         var drop: [String] = []
         var read: [AgentMeterEvent] = []
         var unread: [AgentMeterEvent] = []
         for event in events.values {
-            if event.isUnread, !Self.isHistoryOnly(event, reasons: historyOnlyReasons) {
+            if event.isUnread, awaitingRead.contains(event.kind),
+               !Self.isHistoryOnly(event, reasons: historyOnlyReasons) {
                 unread.append(event)
             } else if event.occurredAt < horizon {
                 drop.append(event.id)

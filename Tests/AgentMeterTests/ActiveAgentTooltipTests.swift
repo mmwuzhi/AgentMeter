@@ -194,7 +194,7 @@ final class ActiveAgentTooltipTests: XCTestCase {
         XCTAssertEqual(state(agent(status: .waiting, source: .hook, stateAge: 90)),
                        "Waiting for your input · Last activity: 1m ago")
         XCTAssertEqual(state(agent(status: .error, source: .hook, stateAge: 3_000)),
-                       "Needs attention · Last activity: 50m ago")
+                       "Failed · Last activity: 50m ago")
         XCTAssertEqual(state(agent(status: nil)), "Open")
     }
 

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Which event kinds become a system notification. Every event is recorded
-/// either way (Dashboard history, unread marks); a kind turned off only skips
+/// either way (the history, the session rows' latest turn); a kind turned off only skips
 /// the banner, with `disabledByUser` as the reason.
 ///
 /// The keys are `UserDefaults` booleans, read on every delivery, so a change
@@ -23,8 +23,8 @@ import Foundation
 /// next one; events already recorded keep their text.
 ///
 /// `notifiesHeadlessRuns` decides whether a headless run's outcomes are
-/// announced like a person's session's (banner by the switches above, listed
-/// and counted in the menu) or kept for the history only
+/// announced like a person's session's (banner by the switches above) or
+/// kept for the history only
 /// (`TaskOutcomeAnnouncement.Reason.headlessRun`). Off by default
 /// (2026-10-29): one session's batch script ran a `claude -p` per case and
 /// each one's end posted a banner. Read when an outcome is submitted, so it

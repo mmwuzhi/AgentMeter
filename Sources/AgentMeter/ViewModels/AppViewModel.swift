@@ -47,26 +47,11 @@ final class AppViewModel {
     /// Drives the popover primer shown before macOS's first Keychain prompt,
     /// so "choose Always Allow" guidance no longer lives only in the README.
     var claudeKeychainPrimerNeeded = !UserDefaults.standard.bool(forKey: "claudeOAuthSucceededOnce")
-    /// Task notifications as the menu lists them, from the event log
-    /// (`TaskEventFeed`). `.loading` until the log has been read once, so
-    /// "not read yet" never shows as "nothing happened".
-    var taskEvents: TaskEventsState = .loading
-    /// Whether the task list is open under its header. Not persisted:
-    /// collapsed at first and again whenever the popover closes, so the list
-    /// pushes the quotas and sessions down only while the user wants it; a
-    /// banner tap that opens the popover to show the list opens it expanded.
-    var taskEventsExpanded = false
-    /// What the last click on a task could not do, as a line under its row.
-    /// Not persisted; cleared by the next click and when the popover closes.
-    var taskEventNotice: TaskEventNotice?
-    /// Where a click on a task would go, by session id, for the rows'
-    /// tooltips (`TaskEventFeed.preview`). Not persisted; forgotten when the
-    /// popover closes, since sessions come and go.
-    var taskEventRoutes: [String: TaskSessionRoute] = [:]
-    /// Bumped each time the popover's task state is reset, so a click or a
-    /// lookup still running when the popover closed does not write its
-    /// result into the next one (`TaskEventFeed`).
-    @ObservationIgnored private(set) var taskEventsPresentationGeneration = 0
+    /// Each session's latest turn result by session id, for the session
+    /// rows' marks (`TaskEventFeed`, `SessionTurnResults.current`). Empty
+    /// until both the event log and the turn ledgers have been read once.
+    /// Not persisted: the event log is the record.
+    var sessionTurnResults: [String: SessionTurnResult] = [:]
 
     /// The app restores the last cached state and the spend ledger; a test
     /// passes what it wants restored (nil and `[]` for a model with nothing
@@ -145,15 +130,6 @@ final class AppViewModel {
 
     func pruneSessionDisclosure(keeping valid: Set<String>) {
         sessionDisclosure = sessionDisclosure.filter { valid.contains($0.key) }
-    }
-
-    /// The popover that lists the tasks closed: the list collapses, and the
-    /// last click's line and the looked-up routes go with it.
-    func resetTaskEventsPresentation() {
-        taskEventsPresentationGeneration &+= 1
-        taskEventsExpanded = false
-        taskEventNotice = nil
-        taskEventRoutes = [:]
     }
 
 }

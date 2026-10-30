@@ -114,6 +114,17 @@ final class ActiveAgentGroupingTests: XCTestCase {
         XCTAssertEqual(group.collapsedSummary, "2")
     }
 
+    func testCollapsedSummaryCallsAnErroredSessionFailed() {
+        // The state's raw value is "error"; the header says what happened.
+        let group = ActiveAgentGrouping.group([
+            agent(pid: 1, cwd: "/Users/me/alpha", status: .error),
+            agent(pid: 2, cwd: "/Users/me/alpha", status: .idle),
+        ])[0]
+
+        XCTAssertEqual(group.topStatus, .error)
+        XCTAssertEqual(group.collapsedSummary, "2 · 1 failed")
+    }
+
     func testGroupNeedsAttentionOnlyForWaitingOrError() {
         func group(_ status: AgentStatusState?) -> ActiveAgentGroup {
             ActiveAgentGrouping.group([agent(pid: 1, cwd: "/Users/me/alpha", status: status)])[0]

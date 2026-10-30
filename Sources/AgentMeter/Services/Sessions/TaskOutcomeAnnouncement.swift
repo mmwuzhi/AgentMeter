@@ -101,11 +101,13 @@ enum TaskOutcomeAnnouncement {
         static let headlessRun = "headlessRun"
     }
 
-    /// The reasons an outcome is recorded for the history only: nothing asks
-    /// the user to look at it, so the menu neither lists nor counts it, and
-    /// the log keeps and drops it like a read event without marking it read
-    /// (`TaskEventAttention`). `backgroundShellRunning` is not one of them:
-    /// an unconfirmed task is listed, just never posted.
+    /// The reasons an outcome is recorded for the history only, never as a
+    /// banner. The log keeps and drops such an event like a read one without
+    /// marking it read (`AgentMeterEventStore.Limits.historyOnlyReasons`).
+    /// `backgroundShellRunning` is not one of them: an unconfirmed task was
+    /// listed for the user to see (until 2026-10-30), just never posted.
+    /// The session rows read every outcome alike, whatever its reason
+    /// (`SessionTurnResults`).
     static let historyOnlyReasons: Set<String> = [
         Reason.beforeLaunch, Reason.reportOrigin, Reason.cronsArmed,
         Reason.belowMinimumDuration, Reason.notAnnounced, Reason.headlessRun,
@@ -147,7 +149,7 @@ enum TaskOutcomeAnnouncement {
     /// <short id>", or without a title "Finished · <project>" over "Session
     /// <short id>"; the second body line is the run time or what it waits
     /// for. A run a script started says "Headless run" (`TaskSessionLaunch`).
-    /// The resolved title is kept on the subject either way, for the menu.
+    /// The resolved title is kept on the subject either way, for the history.
     ///
     /// - Parameter showsSessionTitle: name the session by its title in the
     ///   banner. On by default since 2026-10-29 (the user's choice: a short id

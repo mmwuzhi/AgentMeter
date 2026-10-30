@@ -157,7 +157,7 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(attached?.activityText, "last turn failed · 4d ago")
     }
 
-    func testAFailedTurnNeedsAttentionForTwelveHoursThenGoesGray() {
+    func testAFailedTurnStaysRedForTwelveHoursThenGoesGray() {
         let now = Date(timeIntervalSince1970: 1_000_000)
         func agent(failedAgo age: TimeInterval?) -> ActiveAgent {
             ActiveAgent(provider: .claude, pid: 100, parentPID: 1, command: "claude",
@@ -167,7 +167,7 @@ final class ActiveAgentServiceTests: XCTestCase {
 
         let fresh = agent(failedAgo: 3_600)
         XCTAssertEqual(fresh.displayStatus, .error)
-        XCTAssertEqual(fresh.activityText, "needs attention")
+        XCTAssertEqual(fresh.activityText, "last turn failed · 1h ago", "fresh or stale, the words say what happened and when")
         XCTAssertEqual(agent(failedAgo: ActiveAgent.errorAttentionWindow).displayStatus, .error)
 
         let stale = agent(failedAgo: ActiveAgent.errorAttentionWindow + 1)
@@ -177,7 +177,7 @@ final class ActiveAgentServiceTests: XCTestCase {
 
         // A state built without a write time keeps its color.
         XCTAssertEqual(agent(failedAgo: nil).displayStatus, .error)
-        XCTAssertEqual(agent(failedAgo: nil).activityText, "needs attention")
+        XCTAssertEqual(agent(failedAgo: nil).activityText, "last turn failed", "no stamp, no age")
     }
 
     func testStatusPayloadFromOlderPIDLifetimeIsIgnored() {

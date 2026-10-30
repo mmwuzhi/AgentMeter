@@ -35,14 +35,15 @@ For cross-cutting changes, read every applicable reference before editing.
   awaited (quit alone waits, about 1.5 s at most, for it to close); read nothing
   from it in the UI yet
 - `Sources/AgentMeter/Services/Events` — `AgentMeterEvent` and
-  `AgentMeterEventStore` (`events.jsonl`): dedup, delivery outcome and read
-  state of what the shared event path (`NotificationManager+Events.swift`)
+  `AgentMeterEventStore` (`events.jsonl`): dedup, delivery outcome and
+  history of what the shared event path (`NotificationManager+Events.swift`)
   announces
 - `Sources/AgentMeter/Services/Sessions` — the first event producer: Claude
   task outcomes (Completed / Failed / Waiting / Interrupted) from the hook
   helper's turn ledgers (`agent-status/turns/`), the registry and the payloads;
-  and what the menu does with them: `TaskEventFeed` (unread list, menu bar
-  count, handled, overflow) and `TaskSessionRouting` (where a click goes)
+  and what the app does with them: `TaskEventFeed` (each session's latest
+  turn result for the session rows, `SessionTurnResult`; banner taps) and
+  `TaskSessionRouting` (where a tap goes)
 - `Sources/AgentStatusCore` / `Sources/AgentMeterHook` — Claude status helper
 - `Tests/AgentMeterTests` — XCTest suite
 - `Scripts` / `.github/workflows/release.yml` — bundle and release tooling

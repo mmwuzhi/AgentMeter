@@ -112,7 +112,9 @@ struct TaskOutcomeTracker {
 /// rename), and on a timer while something awaits time or the registry
 /// (Claude Code rewrites its registry files in place, which a directory
 /// watch does not see). With nothing pending it wakes every `idleInterval`.
-/// All work runs on one private utility queue; outcomes go to `deliver`.
+/// All work runs on one private utility queue; outcomes go to `deliver`, and
+/// each session's latest prompt (`TaskLedgerTask.lastPromptAt`, the current
+/// turn's start) to `turnStarts`, after the first pass and whenever it changed.
 final class TaskOutcomeMonitor: @unchecked Sendable {
     struct Environment: Sendable {
         var ledgerDirectory: URL
@@ -154,6 +156,8 @@ final class TaskOutcomeMonitor: @unchecked Sendable {
 
     private let environment: Environment
     private let deliver: @Sendable ([TaskOutcome]) -> Void
+    private let turnStarts: @Sendable ([String: Date]) -> Void
+    private var publishedTurnStarts: [String: Date]?
     private let queue = DispatchQueue(label: "agentmeter.task-outcomes", qos: .utility)
     private var tracker: TaskOutcomeTracker
     private var watcher: DispatchSourceFileSystemObject?
@@ -165,9 +169,11 @@ final class TaskOutcomeMonitor: @unchecked Sendable {
     init(
         environment: Environment = .live(),
         timing: TaskOutcomeDetector.Timing = .standard,
+        turnStarts: @escaping @Sendable ([String: Date]) -> Void = { _ in },
         deliver: @escaping @Sendable ([TaskOutcome]) -> Void
     ) {
         self.environment = environment
+        self.turnStarts = turnStarts
         self.deliver = deliver
         self.tracker = TaskOutcomeTracker(timing: timing)
     }
@@ -208,6 +214,11 @@ final class TaskOutcomeMonitor: @unchecked Sendable {
             environment.sweepLedgers(now.addingTimeInterval(-Self.ledgerRetention), Set(registry.keys))
         }
         let ledgers = environment.readLedgers()
+        let starts = Self.turnStarts(ledgers)
+        if starts != publishedTurnStarts {
+            publishedTurnStarts = starts
+            turnStarts(starts)
+        }
         let payloads = ledgers.isEmpty ? [:] : environment.readPayloads()
         let result = tracker.evaluate(
             ledgers: ledgers, registry: registry, payloads: payloads, now: now,
@@ -296,6 +307,16 @@ final class TaskOutcomeMonitor: @unchecked Sendable {
         where modifiedAt < cutoff && !liveSessions.contains(ledger.sessionID) {
             TaskLedgerStore.remove(sessionID: ledger.sessionID, in: directory)
         }
+    }
+
+    /// Each session's latest prompt, from its ledger's task.
+    static func turnStarts(_ ledgers: [TaskLedger]) -> [String: Date] {
+        var starts: [String: Date] = [:]
+        for ledger in ledgers {
+            guard let start = ledger.task?.lastPromptAt else { continue }
+            starts[ledger.sessionID] = max(starts[ledger.sessionID] ?? start, start)
+        }
+        return starts
     }
 
     static func payloadsBySession(_ payloads: [AgentStatusPayload]) -> [String: AgentStatusPayload] {

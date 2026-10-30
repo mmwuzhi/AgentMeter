@@ -39,6 +39,13 @@ final class AgentMeterEventStoreTests: XCTestCase {
                              clock: clock.function)
     }
 
+    /// The kinds a view that asked the user to read events would opt in with:
+    /// an unread event of one of them is kept past `retention` and goes last
+    /// at the cap. No view asks since the menu's task list was removed
+    /// (2026-10-30), so `.standard` is empty; these tests keep the mechanism
+    /// covered.
+    private static let awaitingTaskKinds: Set<AgentMeterEventKind> = [.taskCompleted, .taskFailed, .taskWaiting, .taskUnknown]
+
     private func lines(_ dir: URL) throws -> [String] {
         let text = try String(contentsOf: dir.appendingPathComponent(AgentMeterEventStore.fileName), encoding: .utf8)
         return text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
@@ -473,7 +480,7 @@ final class AgentMeterEventStoreTests: XCTestCase {
 
     // MARK: - Limits and compaction
 
-    func testOldEventsArePrunedAtLoadAndTheFileRewritten() async throws {
+    func testOldEventsArePrunedAtLoadAndAnUnreadOneAwaitingReadStays() async throws {
         let dir = historyTempDirectory()
         let clock = EventTestClock()
         let first = store(dir, clock: clock)
@@ -484,20 +491,21 @@ final class AgentMeterEventStoreTests: XCTestCase {
         await first.record(makeTaskEvent("new", at: clock.now))
         clock.advance(81 * 86_400)
 
-        let restarted = store(dir, clock: clock)
+        let awaiting = AgentMeterEventStore.Limits(kindsAwaitingRead: Self.awaitingTaskKinds)
+        let restarted = store(dir, clock: clock, limits: awaiting)
         let ids = await restarted.events().map(\.id)
-        XCTAssertEqual(ids, ["new", "oldUnread"], "a read event ages out, an unread one never does")
+        XCTAssertEqual(ids, ["new", "oldUnread"], "a read event ages out, an unread one of a kind awaiting read never does")
         XCTAssertEqual(try lines(dir).count, 2)
 
         // Years later it is still there, until it is read.
         clock.advance(3 * 365 * 86_400)
-        let years = await store(dir, clock: clock).events().map(\.id)
+        let years = await store(dir, clock: clock, limits: awaiting).events().map(\.id)
         XCTAssertEqual(years, ["new", "oldUnread"])
         let overflow = await restarted.unreadOverflow()
         XCTAssertNil(overflow)
     }
 
-    func testTheCapDropsReadEventsBeforeAnyUnread() async throws {
+    func testTheCapDropsReadEventsBeforeAnyUnreadOneAwaitingRead() async throws {
         let dir = historyTempDirectory()
         let clock = EventTestClock()
         let writer = store(dir, clock: clock)
@@ -507,7 +515,8 @@ final class AgentMeterEventStoreTests: XCTestCase {
         }
         await writer.markRead(ids: ["e1", "e3", "e4"])
 
-        let limits = AgentMeterEventStore.Limits(retention: 180 * 86_400, maximumEvents: 3, minimumSupersededLines: 512)
+        let limits = AgentMeterEventStore.Limits(retention: 180 * 86_400, maximumEvents: 3, minimumSupersededLines: 512,
+                                                 kindsAwaitingRead: Self.awaitingTaskKinds)
         let capped = store(dir, clock: clock, limits: limits)
         let ids = await capped.events().map(\.id)
         XCTAssertEqual(ids, ["e4", "e2", "e0"], "the two oldest read events went; the oldest event, unread, stayed")
@@ -517,7 +526,7 @@ final class AgentMeterEventStoreTests: XCTestCase {
         XCTAssertEqual(restarted, ids)
     }
 
-    func testUnreadEventsAloneOverTheCapDropTheOldestAndSayHowMany() async throws {
+    func testUnreadEventsAwaitingReadAloneOverTheCapDropTheOldestAndSayHowMany() async throws {
         let dir = historyTempDirectory()
         let clock = EventTestClock()
         let writer = store(dir, clock: clock)
@@ -529,7 +538,8 @@ final class AgentMeterEventStoreTests: XCTestCase {
             clock.advance(1)
         }
 
-        let limits = AgentMeterEventStore.Limits(retention: 180 * 86_400, maximumEvents: 3, minimumSupersededLines: 512)
+        let limits = AgentMeterEventStore.Limits(retention: 180 * 86_400, maximumEvents: 3, minimumSupersededLines: 512,
+                                                 kindsAwaitingRead: Self.awaitingTaskKinds)
         let logged = EventLogLines()
         let capped = AgentMeterEventStore(fileURL: dir.appendingPathComponent(AgentMeterEventStore.fileName),
                                           limits: limits, clock: clock.function, log: { logged.append($0) })
@@ -557,6 +567,155 @@ final class AgentMeterEventStoreTests: XCTestCase {
         XCTAssertEqual(stats.unreadOverflow, 3)
     }
 
+    // MARK: - Unread events with the standard limits (no view awaits a read)
+
+    func testAnUnreadTaskEventAgesOutLikeAReadOneAndPruningNeverMarksAnythingRead() async throws {
+        let dir = historyTempDirectory()
+        let clock = EventTestClock()
+        let first = store(dir, clock: clock)
+        // Every task kind, unread: none of them is protected by default.
+        for (id, kind) in [("oldCompleted", AgentMeterEventKind.taskCompleted), ("oldFailed", .taskFailed),
+                           ("oldWaiting", .taskWaiting), ("oldUnconfirmed", .taskUnknown)] {
+            await first.record(makeTaskEvent(id, kind: kind, at: clock.now))
+        }
+        await first.record(makeTaskEvent("oldRead", at: clock.now))
+        await first.markRead(ids: ["oldRead"])
+        clock.advance(100 * 86_400)
+        await first.record(makeTaskEvent("newUnread", at: clock.now))
+        await first.record(makeTaskEvent("newRead", at: clock.now))
+        await first.markRead(ids: ["newRead"])
+        let readAt = await first.event(id: "newRead")?.readAt
+        XCTAssertNotNil(readAt)
+        clock.advance(81 * 86_400)
+
+        // Past retention (181 days): read or not, the old ones are gone.
+        let restarted = store(dir, clock: clock)
+        let ids = await restarted.events().map(\.id)
+        XCTAssertEqual(Set(ids), ["newUnread", "newRead"], "an unread event ages out like a read one")
+        XCTAssertEqual(try lines(dir).count, 2, "the file was rewritten without them")
+
+        // Pruning decided nothing about reading: what stayed keeps its state.
+        let unread = await restarted.event(id: "newUnread")
+        XCTAssertNotNil(unread)
+        XCTAssertNil(unread?.readAt, "still unread")
+        let read = await restarted.event(id: "newRead")
+        XCTAssertEqual(read?.readAt, readAt, "the read time is as it was recorded")
+        let unreadCount = await restarted.unreadCount()
+        XCTAssertEqual(unreadCount, 1)
+        let overflow = await restarted.unreadOverflow()
+        XCTAssertNil(overflow, "aging out is not overflow")
+        let text = try String(contentsOf: dir.appendingPathComponent(AgentMeterEventStore.fileName), encoding: .utf8)
+        XCTAssertFalse(text.contains("\"op\":\"read\""), "nothing was written as read")
+    }
+
+    func testAtTheCapTheOldestEventsGoWhateverTheirReadStateAndNothingIsOverflow() async throws {
+        let dir = historyTempDirectory()
+        let clock = EventTestClock()
+        let writer = store(dir, clock: clock)
+        for i in 0..<5 {
+            await writer.record(makeTaskEvent("e\(i)", at: clock.now))
+            clock.advance(1)
+        }
+        await writer.markRead(ids: ["e1", "e3"])
+
+        let limits = AgentMeterEventStore.Limits(retention: 180 * 86_400, maximumEvents: 3, minimumSupersededLines: 512)
+        let logged = EventLogLines()
+        let capped = AgentMeterEventStore(fileURL: dir.appendingPathComponent(AgentMeterEventStore.fileName),
+                                          limits: limits, clock: clock.function, log: { logged.append($0) })
+        let ids = await capped.events().map(\.id)
+        XCTAssertEqual(ids, ["e4", "e3", "e2"], "the two oldest went, e0 unread and e1 read alike")
+        var overflow = await capped.unreadOverflow()
+        XCTAssertNil(overflow, "no unread event is protected, so none is counted as dropped")
+        XCTAssertFalse(logged.lines.contains { $0.contains("unread events only") })
+        let e3 = await capped.event(id: "e3")
+        XCTAssertNotNil(e3?.readAt, "what stayed keeps its read state")
+        let e4 = await capped.event(id: "e4")
+        XCTAssertNil(e4?.readAt)
+
+        let restarted = store(dir, clock: clock, limits: limits)
+        let again = await restarted.events().map(\.id)
+        XCTAssertEqual(again, ids)
+        overflow = await restarted.unreadOverflow()
+        XCTAssertNil(overflow)
+        let stats = await restarted.statistics()
+        XCTAssertEqual(stats.unreadOverflow, 0)
+    }
+
+    /// The mechanism itself, pure: only an unread event of a kind in
+    /// `awaitingRead` outlives `retention`, and only history-only ones among
+    /// them are exempt again.
+    func testOnlyAnUnreadEventOfAKindAwaitingReadOutlivesRetention() {
+        let now = Date(timeIntervalSince1970: 1_792_458_306)
+        let old = now.addingTimeInterval(-181 * 86_400)
+        var state = AgentMeterEventLogState()
+        state.apply(.event(makeTaskEvent("completed", at: old)))
+        state.apply(.event(makeTaskEvent("failed", kind: .taskFailed, at: old)))
+        state.apply(.event(makeTaskEvent("short", at: old)))
+        state.apply(.delivery(id: "short", delivery: .suppressed(TaskOutcomeAnnouncement.Reason.belowMinimumDuration, at: old)))
+        state.apply(.event(makeTaskEvent("read", at: old)))
+        state.apply(.read(ids: ["read"], at: old))
+
+        func dropped(_ awaitingRead: Set<AgentMeterEventKind>? = nil) -> Set<String> {
+            let pruning = awaitingRead.map {
+                state.pruning(now: now, retention: 180 * 86_400, maximumEvents: 100, awaitingRead: $0,
+                              historyOnlyReasons: TaskOutcomeAnnouncement.historyOnlyReasons)
+            } ?? state.pruning(now: now, retention: 180 * 86_400, maximumEvents: 100)
+            return Set(pruning.ids)
+        }
+        XCTAssertEqual(dropped(), ["completed", "failed", "short", "read"], "the default awaits nothing")
+        XCTAssertEqual(dropped([.taskCompleted]), ["failed", "short", "read"], "only the awaited kind stays")
+        XCTAssertEqual(dropped([.taskCompleted, .taskFailed]), ["short", "read"],
+                       "a history-only event waits for no one, even of an awaited kind")
+        XCTAssertTrue(AgentMeterEventStore.Limits.standard.kindsAwaitingRead.isEmpty)
+    }
+
+    /// The store's limits and the producer decide the same: an event
+    /// suppressed for one of its record-only reasons is history only.
+    func testHistoryOnlyIsReadOffTheSuppressionReasonAlone() {
+        typealias Reason = TaskOutcomeAnnouncement.Reason
+        typealias Suppression = AgentMeterEventDelivery.Suppression
+        let decided = Date(timeIntervalSince1970: 1_792_458_306)
+        let reasons = TaskOutcomeAnnouncement.historyOnlyReasons
+        func historyOnly(_ delivery: AgentMeterEventDelivery, kind: AgentMeterEventKind = .taskCompleted) -> Bool {
+            var event = makeTaskEvent("x", kind: kind, at: decided)
+            event.delivery = delivery
+            return AgentMeterEventLogState.isHistoryOnly(event, reasons: reasons)
+        }
+        XCTAssertTrue(historyOnly(.suppressed(Reason.belowMinimumDuration, at: decided)))
+        XCTAssertTrue(historyOnly(.suppressed(Reason.notAnnounced, at: decided), kind: .taskInterrupted))
+        XCTAssertFalse(historyOnly(.suppressed(Suppression.disabledByUser, at: decided)), "a banner switched off is not history-only")
+        XCTAssertFalse(historyOnly(.suppressed(Reason.backgroundShellRunning, at: decided), kind: .taskUnknown))
+        XCTAssertFalse(historyOnly(.pending))
+        XCTAssertFalse(historyOnly(.posted(at: decided)))
+        XCTAssertEqual(AgentMeterEventStore.Limits.standard.historyOnlyReasons, reasons, "the log and the producer agree")
+    }
+
+    /// Logs written while the menu's list existed may hold an overflow line:
+    /// it still loads, is reported as before, and survives a rewrite.
+    func testAnOverflowLineFromAnEarlierBuildStillLoadsAndSurvivesARewrite() async throws {
+        let dir = historyTempDirectory()
+        let clock = EventTestClock()
+        let url = dir.appendingPathComponent(AgentMeterEventStore.fileName)
+        let overflow = AgentMeterUnreadOverflow(count: 7, throughDiscoveredAt: Date(timeIntervalSince1970: 1_000),
+                                                lastDroppedAt: Date(timeIntervalSince1970: 2_000))
+        var data = try AgentMeterEventLogCodec.encode(.event(makeTaskEvent("a", at: clock.now)))
+        data.append(try AgentMeterEventLogCodec.encode(.unreadOverflow(overflow)))
+        try data.write(to: url)
+
+        let limits = AgentMeterEventStore.Limits(retention: 180 * 86_400, maximumEvents: 1, minimumSupersededLines: 0)
+        let writer = store(dir, clock: clock, limits: limits)
+        let loaded = await writer.unreadOverflow()
+        XCTAssertEqual(loaded, overflow)
+        // A second event over the cap rewrites the file; the total stays.
+        clock.advance(1)
+        await writer.record(makeTaskEvent("b", at: clock.now))
+        let restarted = store(dir, clock: clock, limits: limits)
+        let ids = await restarted.events().map(\.id)
+        XCTAssertEqual(ids, ["b"])
+        let kept = await restarted.unreadOverflow()
+        XCTAssertEqual(kept, overflow, "the old total is neither lost nor added to")
+    }
+
     // MARK: - History-only events (recorded for the history, never read)
 
     private func recordSettled(_ store: AgentMeterEventStore, _ id: String, reason: String?, clock: EventTestClock) async {
@@ -576,9 +735,10 @@ final class AgentMeterEventStoreTests: XCTestCase {
         XCTAssertNil(short?.readAt, "no read time is invented")
 
         clock.advance(181 * 86_400)
-        let ids = await store(dir, clock: clock).events().map(\.id)
+        let awaiting = AgentMeterEventStore.Limits(kindsAwaitingRead: Self.awaitingTaskKinds)
+        let ids = await store(dir, clock: clock, limits: awaiting).events().map(\.id)
         XCTAssertEqual(Set(ids), ["unconfirmed", "bannerOff", "posted"],
-                       "the history-only event aged out; the ones waiting for the user never do")
+                       "the history-only event aged out; the ones awaiting a read never do")
     }
 
     func testAtTheCapHistoryOnlyEventsGoBeforeUnreadOnesAndAreNotOverflow() async throws {
@@ -590,12 +750,13 @@ final class AgentMeterEventStoreTests: XCTestCase {
                                 clock: clock)
             clock.advance(1)
         }
-        let limits = AgentMeterEventStore.Limits(retention: 180 * 86_400, maximumEvents: 3, minimumSupersededLines: 512)
+        let limits = AgentMeterEventStore.Limits(retention: 180 * 86_400, maximumEvents: 3, minimumSupersededLines: 512,
+                                                 kindsAwaitingRead: Self.awaitingTaskKinds)
         let capped = store(dir, clock: clock, limits: limits)
         let ids = await capped.events().map(\.id)
         XCTAssertEqual(ids, ["e4", "e2", "e0"], "the two history-only events went first, though unread")
         let overflow = await capped.unreadOverflow()
-        XCTAssertNil(overflow, "nothing waiting for the user was dropped")
+        XCTAssertNil(overflow, "nothing awaiting a read was dropped")
     }
 
     func testSupersededLinesAreCompactedAwayWithoutChangingTheEvents() async throws {

@@ -101,10 +101,10 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
     }
 
     /// Through the real event path: no banner, kept unread in the history
-    /// (nothing marks it read), left out of the menu and its count; the
-    /// switch, read on each submit, brings the next one back.
+    /// (nothing marks it read), recorded as history-only; the switch, read on
+    /// each submit, brings the next one back.
     @MainActor
-    func testAHeadlessRunIsKeptButNeitherPostedNorListed() async throws {
+    func testAHeadlessRunIsKeptButNotPosted() async throws {
         let suite = "agentmeter.tests.headless.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -118,7 +118,7 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
                                                    defaults: defaults, now: { clock.now }, transcriptTitle: { _, _ in nil })
         }
         // Three sessions, as the replay harness's runs are: each its own
-        // session and task, so the menu would list each as its own item.
+        // session and task.
         func separate(_ outcome: TaskOutcome, session: String, task: String) -> TaskOutcome {
             var outcome = outcome
             outcome.sessionID = session
@@ -143,12 +143,16 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
         XCTAssertNil(kept.readAt, "not marked read")
         XCTAssertEqual(kept.delivery, .suppressed(TaskOutcomeAnnouncement.Reason.headlessRun, at: clock.now))
         XCTAssertEqual(kept.subject.sessionKind, "headless")
-        XCTAssertFalse(TaskEventAttention.needsAttention(kept))
+        let historyOnlyReasons = TaskOutcomeAnnouncement.historyOnlyReasons
+        XCTAssertTrue(AgentMeterEventLogState.isHistoryOnly(kept, reasons: historyOnlyReasons),
+                      "recorded for the history, never as a banner")
         let failed = await store.event(id: failure.id)
         XCTAssertEqual(failed?.delivery.reason, TaskOutcomeAnnouncement.Reason.headlessRun)
-        let unread = await store.events(matching: AgentMeterEventFilter(kinds: TaskEventStatus.kinds, unreadOnly: true))
-        let snapshot = TaskEventsSnapshot.make(unreadEvents: unread, recentEvents: unread, overflow: nil)
-        XCTAssertEqual(snapshot.unreadCount, 1, "the menu counts the person's task only")
+        let announcedEvent = await store.event(id: person.id)
+        let announced = try XCTUnwrap(announcedEvent)
+        XCTAssertFalse(AgentMeterEventLogState.isHistoryOnly(announced, reasons: historyOnlyReasons),
+                       "the person's session is announced, not history-only")
+        XCTAssertEqual(announced.delivery, .posted(at: clock.now))
 
         defaults.set(true, forKey: AgentMeterNotificationPreferences.notifiesHeadlessRunsKey)
         let next = separate(run, session: "1f868e99-0000-0000-0000-000000000004", task: "t4")
@@ -156,6 +160,18 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
         XCTAssertEqual(center.posted.count, 2, "switched on: the next headless end is posted")
         await announce(run)
         XCTAssertEqual(center.posted.count, 2, "an id already recorded is never announced again")
+    }
+
+    /// What the producer records for the history only, never as a banner:
+    /// the event log keeps and drops these like read events. An unconfirmed
+    /// task (`backgroundShellRunning`) is not one of them.
+    func testTheHistoryOnlyReasonsAreTheProducersRecordOnlyReasonsButUnconfirmed() {
+        typealias Reason = TaskOutcomeAnnouncement.Reason
+        XCTAssertEqual(TaskOutcomeAnnouncement.historyOnlyReasons,
+                       [Reason.beforeLaunch, Reason.reportOrigin, Reason.cronsArmed, Reason.belowMinimumDuration,
+                        Reason.notAnnounced, Reason.headlessRun])
+        XCTAssertFalse(TaskOutcomeAnnouncement.historyOnlyReasons.contains(Reason.backgroundShellRunning))
+        XCTAssertEqual(AgentMeterEventStore.Limits.standard.historyOnlyReasons, TaskOutcomeAnnouncement.historyOnlyReasons)
     }
 
     // MARK: Event
@@ -179,7 +195,7 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
         XCTAssertEqual(event.occurredAt, launchedAt)
 
         // Switched off: project and short id in the banner, the title still
-        // kept for the menu's list.
+        // kept in the history.
         let off = try XCTUnwrap(TaskOutcomeAnnouncement.event(for: outcome(.completed, ran: 754, shells: 1),
                                                                label: label, discoveredAt: launchedAt, showsSessionTitle: false))
         XCTAssertEqual(off.content.title, "Finished · AgentMeter")

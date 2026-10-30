@@ -337,7 +337,7 @@ final class NotificationManagerEventDeliveryTests: XCTestCase {
         await manager.handleEventResponse(eventID: "a", actionIdentifier: UNNotificationDefaultActionIdentifier)
         XCTAssertEqual(handed, 1)
         var readAt = await store.event(id: "a")?.readAt
-        XCTAssertNil(readAt, "the handler could not get there: it stays unread for the menu to explain")
+        XCTAssertNil(readAt, "the handler could not get there: it stays unread")
 
         manager.onEventResponse = nil
         await manager.handleEventResponse(eventID: "a", actionIdentifier: UNNotificationDefaultActionIdentifier)
