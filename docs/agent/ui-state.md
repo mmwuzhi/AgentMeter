@@ -666,13 +666,73 @@ since as unread.
   the session's row says what it is doing; nothing when Claude's status item
   is hidden (another provider's popover lists none of its sessions) or the
   session has ended. The tap is kept as the event's read time,
-  history only; closing a banner does nothing. The session row's click
-  (`AgentAppActivator.focus`) is the same: the terminal tab, else the app.
-  No URL is ever opened
+  history only; closing a banner does nothing. No URL is ever opened
   (`AgentAppActivatorTests.testNoSourceOpensAnEditorOrSessionURL`), so no
   click can open or resume a session.
-- Why no editor window is switched, kept for a future safe way to name the
-  window (all as of VS Code 1.142.0 and Claude Code 2.1.301, 2026-10-20):
+- The session row's click (`AgentAppActivator.focus`, 2026-10-30) brings
+  forward the terminal tab; for a session the Claude Code extension runs in
+  VS Code (or Insiders, Cursor: same window code, not tried), that session's
+  editor window; else the app. The window is reached by sending its folder
+  as `<scheme>://file/<folder>?windowId=_blank` (`EditorApp.folderURL`) to
+  that copy of the editor (`NSWorkspace.open(_:withApplicationAt:)`): VS
+  Code focuses the window that has exactly that folder open, restoring it
+  when minimized and bringing the app forward, and only with no such window
+  opens a new one; `_blank` keeps it from loading the folder into the last
+  active window, which the URL without it does, and makes
+  `window.openFoldersInNewWindow` irrelevant (`out/mainImpl.js` of 1.144.0;
+  tried live on temporary windows). With
+  `security.promptForLocalFileProtocolHandling` left at its default, VS
+  Code asks before each one; this user has it off. The folder itself is
+  not handed over (`open-file`): that made macOS ask for AgentMeter's
+  access to Desktop for a folder there, and the clicks made while it asked
+  arrived together and were merged by VS Code into one new "Untitled
+  (Workspace)" window (2026-10-30, live). A `.code-workspace` window never
+  matches a folder, and a folder sent for a one-folder `.code-workspace`
+  window opened a second window beside it (tried live). So
+  `EditorWindowLocator` names the folder only when, at click time: the
+  session (or the session whose `Bash` started a child row) is a child of
+  an extension host, a child of the editor's main process, and has no
+  terminal; that host listens on the port of exactly one live
+  `~/.claude/ide/<port>.lock` (live: a child of the editor listens on its
+  port; the lock's `pid` is the main process, the same for every window;
+  its auth token is never decoded) with exactly one folder, one the URL
+  carries as itself (no `:`, a line number to VS Code; not named like a
+  workspace file); no other live lock reports exactly that folder; and the
+  editor's `storage.json` `windowsState`, written after that extension host
+  started, lists the folder as a folder window and no workspace window
+  whose file names exactly that folder (an unreadable one, or one in a
+  folder macOS guards — Desktop, Documents, Downloads, iCloud Drive,
+  `~/Library/CloudStorage`, `/Volumes` — which is never read, counts as
+  naming it). VS Code writes `windowsState` when one of its windows loses
+  focus and at quit, never when a window opens or closes, so it can list
+  closed windows; written after the host started, it lists the session's
+  window as it is now (moving between folder and workspace restarts the
+  host), and that window is the folder window unless a listed workspace
+  names the folder. Folders compare as VS Code does on macOS: lexically,
+  ignoring case, never resolving `/tmp` to `/private/tmp`. Nothing read at
+  a click is in a guarded folder. Anything else sends nothing: the row says
+  why under itself (`EditorWindowMiss.explanation`), with a "Bring <app>
+  forward" button; so do a process gone or a PID reused since the refresh,
+  a nil host and more than one copy of the editor running. A window that
+  closes in the instant between the checks and the URL gets a new window.
+  The conversation's tab is not chosen; see below. The notice
+  (`AppViewModel.sessionRowNotice`) is cleared when a popover opens or
+  closes, and only the latest click's result lands (`sessionRowClicks`).
+  Banner taps still only activate an editor.
+- Why the editor session's tab is not chosen (VS Code 1.144.0, Claude Code
+  2.1.312, read 2026-10-30): `vscode://anthropic.claude-code/open?session=`
+  goes to the last focused window (`URLHandlerRouter`; only a numeric
+  `windowId=` query names another, and that id is not published anywhere
+  but log folder names). The receiving window reveals the session's tab
+  only when it holds one; otherwise it opens a new tab, and a session not in
+  that window's project starts a new empty conversation with its own
+  process, with no error. Until the user ticks "do not ask again", VS Code
+  first asks "Allow 'Claude Code' extension to open this URI?" (read in the
+  source; a `/open` sent to a temporary window on 2026-10-30 never reached
+  the extension, which fits a dialog that was left unanswered and could not
+  be seen without screen capture).
+- Why no editor window was switched before 2026-10-30, kept for the record
+  (all as of VS Code 1.142.0 and Claude Code 2.1.301, 2026-10-20):
   `vscode://anthropic.claude-code/open?session=` is handed to the active
   window, and a window that does not own the session opens a panel bound to
   it, a second process resuming it. `vscode://file/<folder>` focuses only a

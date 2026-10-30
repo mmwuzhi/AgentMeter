@@ -52,6 +52,11 @@ final class AppViewModel {
     /// until both the event log and the turn ledgers have been read once.
     /// Not persisted: the event log is the record.
     var sessionTurnResults: [String: SessionTurnResult] = [:]
+    /// What the last session row click said when it brought nothing forward
+    /// (`AgentAppActivator.focus`). Cleared whenever a popover opens or closes.
+    var sessionRowNotice: SessionRowNotice?
+    /// Counts session row clicks, so only the latest click's result lands.
+    var sessionRowClicks = 0
 
     /// The app restores the last cached state and the spend ledger; a test
     /// passes what it wants restored (nil and `[]` for a model with nothing

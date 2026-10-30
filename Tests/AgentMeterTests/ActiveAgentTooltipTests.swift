@@ -72,7 +72,7 @@ final class ActiveAgentTooltipTests: XCTestCase {
         Model fable 5.1 (claude-fable-5-1) · Effort xhigh
 
         PID #501 · Session 019fe5b6-6554-7661-8c45-cc6611229c37
-        Click to bring its app forward (in iTerm2, Terminal or Ghostty, its tab)
+        Click to bring forward its tab in iTerm2, Terminal or Ghostty, its window in VS Code or Cursor, else its app
         """)
     }
 
@@ -86,7 +86,7 @@ final class ActiveAgentTooltipTests: XCTestCase {
         Branch main
 
         PID #501 · Session 019fe5b6-6554-7661-8c45-cc6611229c37
-        Click to bring its app forward (in iTerm2, Terminal or Ghostty, its tab)
+        Click to bring forward its tab in iTerm2, Terminal or Ghostty, its window in VS Code or Cursor, else its app
         """)
     }
 
@@ -176,7 +176,7 @@ final class ActiveAgentTooltipTests: XCTestCase {
     func testWithoutASessionOnlyWhatIsKnownIsShown() {
         let row = agent(pid: 42, status: .working, stateAge: nil)
 
-        XCTAssertEqual(tooltip(row), "project\nWorking\n\nPID #42\nClick to bring its app forward (in iTerm2, Terminal or Ghostty, its tab)")
+        XCTAssertEqual(tooltip(row), "project\nWorking\n\nPID #42\nClick to bring forward its tab in iTerm2, Terminal or Ghostty, its window in VS Code or Cursor, else its app")
     }
 
     // MARK: States

@@ -16,8 +16,8 @@ import Foundation
 //    `vscode://file/<folder>` replaces the last active window's workspace
 //    whenever no window holds exactly that single folder, which nothing
 //    AgentMeter can read rules out (a one-folder `.code-workspace`, a window
-//    closing meanwhile). docs/agent/ui-state.md keeps what was found, for a
-//    future safe way to name the window.
+//    closing meanwhile). A session row's click names the window with
+//    `EditorWindowLocator`; a tap here does not (docs/agent/ui-state.md).
 //  * Anything uncertain (no live process, two processes claiming the
 //    session, a failed focus) brings nothing forward: a line under the
 //    task's row says why.

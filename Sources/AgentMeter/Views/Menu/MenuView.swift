@@ -1,4 +1,5 @@
 import AgentStatusCore
+import AppKit
 import SwiftUI
 
 /// Root content of the menubar popover.
@@ -356,6 +357,30 @@ private struct ActiveAgentNodeRows: View {
     }
 }
 
+/// Why a row's click brought nothing forward, under the row, with the app
+/// itself one more click away when there is one.
+private struct SessionRowNoticeView: View {
+    let notice: SessionRowNotice
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(notice.text)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let pid = notice.appPID, let value = pid_t(exactly: pid), let name = notice.appName {
+                Button("Bring \(name) forward") {
+                    _ = NSRunningApplication(processIdentifier: value)?.activate()
+                }
+                .buttonStyle(.link)
+                .font(.caption2)
+            }
+        }
+        // Under the title, past the state glyph (9 pt) and the row's spacing.
+        .padding(.leading, 15)
+    }
+}
+
 /// One transcript-derived subagent under its session. Same shape as
 /// `ActiveAgentRow`, but not a button: there is no process of its own to
 /// focus, and the parent row directly above already jumps to the terminal
@@ -396,12 +421,29 @@ private struct ActiveAgentRow: View {
     /// The sessions' latest turn results (`AppViewModel.sessionTurnResults`).
     var results: [String: SessionTurnResult] = [:]
     @State private var hovering = false
+    @Environment(AppViewModel.self) private var model
 
     private var marker: SessionTurnMarker? { agent.turnMarker(in: results) }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            row
+            if let notice = model.sessionRowNotice, notice.pid == agent.pid {
+                SessionRowNoticeView(notice: notice)
+            }
+        }
+    }
+
+    private var row: some View {
         Button {
-            AgentAppActivator.focus(agent)
+            model.sessionRowNotice = nil
+            model.sessionRowClicks += 1
+            let click = model.sessionRowClicks
+            let agent = agent
+            Task { @MainActor in
+                let notice = await AgentAppActivator.focus(agent)
+                if model.sessionRowClicks == click { model.sessionRowNotice = notice }
+            }
         } label: {
             rowContent
                 .padding(.horizontal, 6)
@@ -521,8 +563,8 @@ enum ActiveAgentTooltip {
         var identity = ["PID #\(agent.pid)"]
         // Whole, for `--resume`; provider text, so only an id fit to be a file name.
         if let session, ActiveAgentService.isSafeSessionFilename(session.id) { identity.append("Session \(session.id)") }
-        // What `AgentAppActivator.focus` really does: a terminal's own tab where
-        // it can pick one, otherwise only the app; it never picks an editor window.
+        // What `AgentAppActivator.focus` really does: a terminal's own tab, an
+        // editor session's window (never its conversation tab), else the app.
         let tail = [identity.joined(separator: " · "), ActiveAgentTooltip.clickHint]
 
         return [head, details, tail]
@@ -531,7 +573,7 @@ enum ActiveAgentTooltip {
             .joined(separator: "\n\n")
     }
 
-    static let clickHint = "Click to bring its app forward (in iTerm2, Terminal or Ghostty, its tab)"
+    static let clickHint = "Click to bring forward its tab in iTerm2, Terminal or Ghostty, its window in VS Code or Cursor, else its app"
 
     /// "Last turn finished at 10:42 AM · 12m run": the row's mark, with the
     /// moment and what the outcome's event said (run time, error kind). A

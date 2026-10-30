@@ -42,8 +42,9 @@ For cross-cutting changes, read every applicable reference before editing.
   task outcomes (Completed / Failed / Waiting / Interrupted) from the hook
   helper's turn ledgers (`agent-status/turns/`), the registry and the payloads;
   and what the app does with them: `TaskEventFeed` (each session's latest
-  turn result for the session rows, `SessionTurnResult`; banner taps) and
-  `TaskSessionRouting` (where a tap goes)
+  turn result for the session rows, `SessionTurnResult`; banner taps),
+  `TaskSessionRouting` (where a tap goes) and `EditorWindowLocator` (which
+  editor window a session row's click brings forward)
 - `Sources/AgentStatusCore` / `Sources/AgentMeterHook` — Claude status helper
 - `Tests/AgentMeterTests` — XCTest suite
 - `Scripts` / `.github/workflows/release.yml` — bundle and release tooling

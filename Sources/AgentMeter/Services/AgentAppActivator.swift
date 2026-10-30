@@ -1,20 +1,91 @@
 import AppKit
 
-/// Brings the exact terminal tab hosting an agent forward, with whole-app
-/// activation as the fallback. Editor windows are never switched with a URL:
-/// `vscode://file/<folder>` replaces the last active window's workspace when
-/// no window holds exactly that single folder, ending the sessions in it
-/// (docs/agent/ui-state.md, "Task outcomes: banners and session rows").
+/// What a session row's click says when it brought nothing forward. Shown
+/// under the row until the popover closes, with a button for the app when
+/// there is one.
+struct SessionRowNotice: Sendable, Equatable {
+    let pid: Int
+    let text: String
+    var appPID: Int? = nil
+    var appName: String? = nil
+
+    init(pid: Int, text: String, appPID: Int? = nil, appName: String? = nil) {
+        self.pid = pid
+        self.text = Self.oneLine(text, limit: 300)
+        self.appPID = appPID
+        self.appName = appName.map { Self.oneLine($0, limit: 40) }
+    }
+
+    /// App names and system errors are shown as given, so as one bounded line.
+    static func oneLine(_ text: String, limit: Int) -> String {
+        let scalars = text.unicodeScalars.map { CharacterSet.controlCharacters.contains($0) ? " " : Character($0) }
+        return String(String(scalars).split(separator: " ").joined(separator: " ").prefix(limit))
+    }
+}
+
+/// Brings forward what hosts an agent: the exact terminal tab, else the
+/// editor window of a session the Claude Code extension runs
+/// (`EditorWindowLocator`), else the whole app. The one URL opened is that
+/// window's folder with `windowId=_blank` (`EditorApp.folderURL`): without
+/// it, `vscode://file/<folder>` replaces the last active window's workspace
+/// when no window holds exactly that single folder, ending the sessions in
+/// it (docs/agent/ui-state.md, "Task outcomes: banners and session rows").
 enum AgentAppActivator {
+
+    /// A session row's click. Nil when something came forward; otherwise what
+    /// the row should say, and nothing was activated.
     @MainActor
-    @discardableResult
-    static func focus(_ agent: ActiveAgent) -> Bool {
+    static func focus(_ agent: ActiveAgent, locator: EditorWindowLocator = .live) async -> SessionRowNotice? {
+        // The row is from the last refresh: a PID reused since is another process.
+        let started = agent.observedAt.addingTimeInterval(-agent.elapsedSeconds)
+        guard let start = TaskOutcomeMonitor.processStartDate(agent.pid),
+              abs(start.timeIntervalSince(started)) <= TaskSessionLookup.rowStartTolerance else {
+            return SessionRowNotice(pid: agent.pid, text: "This session has ended.")
+        }
         let host = hostApp(forPID: agent.pid)
         if let tty = agent.tty,
            focusTerminalTab(bundleID: host?.bundleIdentifier, tty: tty, cwd: agent.cwd) {
-            return true
+            return nil
         }
-        return host?.activate() ?? false
+        guard let host else {
+            return SessionRowNotice(pid: agent.pid, text: "It runs in nothing AgentMeter can bring forward.")
+        }
+        let editor = EditorApp.named(bundleID: host.bundleIdentifier)
+        // VS Code calls itself "Code"; the notice's text says "VS Code".
+        let name = editor?.name ?? host.localizedName ?? host.bundleIdentifier ?? "Its app"
+        let notice = { (text: String) in
+            SessionRowNotice(pid: agent.pid, text: text, appPID: Int(host.processIdentifier), appName: name)
+        }
+        guard let editor else {
+            return host.activate() ? nil : notice("\(name) did not come forward.")
+        }
+        // The folder would go to one copy, maybe not the one running the session.
+        guard NSRunningApplication.runningApplications(withBundleIdentifier: editor.bundleID).count == 1 else {
+            return notice("More than one copy of \(editor.name) is running, so AgentMeter can't tell which window runs it.")
+        }
+        let pid = agent.pid
+        let editorPID = Int(host.processIdentifier)
+        let target = await Task.detached(priority: .userInitiated) {
+            locator.target(sessionPID: pid, editorPID: editorPID, editor: editor)
+        }.value
+        switch target {
+        case let .unnamed(miss):
+            return notice(miss.explanation(editor: editor.name))
+        case let .folder(path):
+            // To this copy of the editor, whichever app handles the scheme.
+            guard let appURL = host.bundleURL, let url = editor.folderURL(path) else {
+                return notice(EditorWindowMiss.unusualFolder(folder: path).explanation(editor: editor.name))
+            }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            configuration.addsToRecentItems = false
+            do {
+                _ = try await NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: configuration)
+                return nil
+            } catch {
+                return notice("\(editor.name) did not take \(EditorWindowMiss.folderName(path)): \(error.localizedDescription)")
+            }
+        }
     }
 
     @MainActor

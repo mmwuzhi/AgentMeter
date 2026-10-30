@@ -305,6 +305,7 @@ private final class StatusItemSlotController: NSObject {
         // The popover opens on the button's screen; record its height so the
         // popover caps itself to that screen, not whichever one is "main".
         model.popoverScreenVisibleHeight = button.window?.screen?.visibleFrame.height
+        model.sessionRowNotice = nil
         closeOthers(slot)
         coordinator.setActiveAgentsVisible(true)
         coordinator.refresh(
@@ -321,6 +322,7 @@ private final class StatusItemSlotController: NSObject {
 
 extension StatusItemSlotController: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
+        model.sessionRowNotice = nil
         coordinator.setActiveAgentsVisible(false)
     }
 }
