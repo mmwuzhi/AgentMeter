@@ -76,9 +76,40 @@ signing failure fails the script, and it ends with
   runtime denies Apple Events without it.
 - Local and rc builds are not notarized. On macOS 15+ the right-click Open
   bypass is gone: open the app once, then System Settings › Privacy & Security
-  › Open Anyway. `xattr -dr com.apple.quarantine` still works. No Developer ID
-  identity or notarization credentials exist on the dev Mac; the Developer ID
-  and notarization path is untested.
+  › Open Anyway. Do not tell other people to clear quarantine with `xattr`:
+  that skips Gatekeeper instead of passing it. No Developer ID identity or
+  notarization credentials exist on the dev Mac; the Developer ID and
+  notarization path is untested.
+
+## Hook helper and Gatekeeper
+
+- Claude Code runs a copy of `Contents/Helpers/agentmeter-hook` in the app's
+  support directory, not the bundle's file. The app installs it only after a
+  strict signature check of the bundled helper (same team as the app when it
+  has one) and writes it from those bytes, so a download's quarantine is not
+  carried onto it (`HookHelperTrust`, `ClaudeHookInstaller.refreshManagedCLI`).
+- What was measured (2026-10-30, macOS 26, in scratch): a quarantined copy of
+  a non-notarized helper, run from zsh, sh or node the way Claude Code runs
+  hooks, raises "Not Opened" and hangs until killed; a copy without
+  quarantine runs. Removing the attribute from a copy that already had an
+  unanswered dialog did not unblock it — the likely cause is the pending
+  assessment for that file, not a lasting verdict; not established.
+- Local and rc builds: the copy runs on the user's Open Anyway for the app
+  and the signature check, without a Gatekeeper assessment of its own. That
+  is a limitation of those builds, not a distribution Gatekeeper approved.
+- A release for other people needs: Developer ID Application signing with the
+  hardened runtime and a secure timestamp on every item (helper included),
+  notarization of the app (which covers the helper inside it), stapling, and
+  an acceptance run on a clean Mac or a separate macOS user: download the
+  DMG, open the app without Open Anyway, enable the hooks, run a real Claude
+  Code session, and confirm no Gatekeeper prompt and that the copy's
+  signature verifies as Developer ID. Before that release, decide whether to
+  keep the copy or point the hooks at the helper inside the bundle (Apple's
+  preferred layout, but the path changes when the app moves and under app
+  translocation).
+- Tests that can raise Gatekeeper, TCC or other permission prompts are not
+  run on the developer's working desktop without a plan the user approved
+  first; prefer a separate macOS user or another Mac.
 
 ## Release automation
 

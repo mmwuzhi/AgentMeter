@@ -72,8 +72,7 @@ make clean
 ```
 
 Local builds are signed with your own certificate (ad-hoc without one) and are not notarized.
-To move one to another Mac, clear quarantine:
-`xattr -dr com.apple.quarantine /Applications/AgentMeter.app`.
+On another Mac, macOS blocks the first launch; open it there the way the Install section below describes.
 
 ### Signing and the Keychain prompt
 
@@ -88,11 +87,8 @@ the DMG, and drag `AgentMeter.app` into `/Applications`.
 Because the current release is ad-hoc signed and not notarized, macOS blocks
 the first launch. Open the app once, then go to **System Settings › Privacy &
 Security** and click **Open Anyway** (on macOS 15 and later right-click **Open**
-no longer works). Or clear quarantine:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/AgentMeter.app
-```
+no longer works). Builds that are not notarized have not been checked by Apple;
+open one only if you trust where it came from.
 
 ## GitHub Releases
 

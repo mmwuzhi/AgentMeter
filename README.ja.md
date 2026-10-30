@@ -46,11 +46,7 @@ make dmg          # dist/AgentMeter-<version>.dmg を作成
 make clean
 ```
 
-ローカルビルドは自分の証明書で署名され（なければad-hoc）、notarizeされていません。別のMacに移す場合はquarantineを解除してください。
-
-```bash
-xattr -dr com.apple.quarantine /Applications/AgentMeter.app
-```
+ローカルビルドは自分の証明書で署名され（なければad-hoc）、notarizeされていません。別のMacでは初回起動がブロックされるため、下の「インストール」の手順で開いてください。
 
 ### 署名とKeychainプロンプト
 
@@ -60,11 +56,7 @@ xattr -dr com.apple.quarantine /Applications/AgentMeter.app
 
 [GitHub Releases](https://github.com/mmwuzhi/AgentMeter/releases/latest)から最新の `AgentMeter-<version>.dmg` をダウンロードし、DMGを開いて `AgentMeter.app` を `/Applications` にドラッグします。
 
-現在のリリースはad-hoc署名でnotarizeされていないため、初回起動時にmacOSがブロックします。一度アプリを開いてから、**システム設定 › プライバシーとセキュリティ**で**このまま開く**（Open Anyway）をクリックしてください（macOS 15以降では右クリックの**開く**は使えません）。またはquarantineを解除します。
-
-```bash
-xattr -dr com.apple.quarantine /Applications/AgentMeter.app
-```
+現在のリリースはad-hoc署名でnotarizeされていないため、初回起動時にmacOSがブロックします。一度アプリを開いてから、**システム設定 › プライバシーとセキュリティ**で**このまま開く**（Open Anyway）をクリックしてください（macOS 15以降では右クリックの**開く**は使えません）。notarizeされていないビルドはAppleの確認を受けていないので、入手元を信頼できる場合にだけ開いてください。
 
 ## GitHub Releases
 

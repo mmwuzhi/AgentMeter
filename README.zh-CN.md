@@ -45,11 +45,7 @@ make dmg          # 打包 dist/AgentMeter-<version>.dmg
 make clean
 ```
 
-本地构建用你自己的证书签名（没有证书则 ad-hoc），没有 notarize。如果移动到另一台 Mac，清除 quarantine：
-
-```bash
-xattr -dr com.apple.quarantine /Applications/AgentMeter.app
-```
+本地构建用你自己的证书签名（没有证书则 ad-hoc），没有 notarize。在另一台 Mac 上第一次启动会被拦截，按下面「安装」一节的步骤打开。
 
 ### 签名与 Keychain 弹窗
 
@@ -59,11 +55,7 @@ xattr -dr com.apple.quarantine /Applications/AgentMeter.app
 
 从 [GitHub Releases](https://github.com/mmwuzhi/AgentMeter/releases/latest) 下载最新的 `AgentMeter-<version>.dmg`，打开 DMG，把 `AgentMeter.app` 拖到 `/Applications`。
 
-因为当前版本是 ad-hoc 签名且没有 notarize，macOS 第一次启动时会拦截。先打开一次应用，再到**系统设置 › 隐私与安全性**点击**仍要打开**（Open Anyway）；macOS 15 及以后右键**打开**已经不能绕过。或者清除 quarantine：
-
-```bash
-xattr -dr com.apple.quarantine /Applications/AgentMeter.app
-```
+因为当前版本是 ad-hoc 签名且没有 notarize，macOS 第一次启动时会拦截。先打开一次应用，再到**系统设置 › 隐私与安全性**点击**仍要打开**（Open Anyway）；macOS 15 及以后右键**打开**已经不能绕过。没有 notarize 的构建没有经过 Apple 检查，只在信任来源时打开。
 
 ## GitHub Releases
 
