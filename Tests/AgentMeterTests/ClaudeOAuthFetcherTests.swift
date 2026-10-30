@@ -145,8 +145,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
 
     func testParseSnapshotWithNoWindowsAndKnownPlanDoesNotThrow() throws {
         let snapshot = try ClaudeOAuthFetcher.parseSnapshot(
-            from: ["plan_type": "enterprise"],
-            captureDebugResponse: false
+            from: ["plan_type": "enterprise"]
         )
 
         XCTAssertTrue(snapshot.windows.isEmpty)
@@ -184,8 +183,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
             from: [
                 "plan_type": "enterprise",
                 "cinder_cove": ["utilization": 100, "resets_at": "2025-01-15T12:00:00Z"],
-            ],
-            captureDebugResponse: false
+            ]
         )
 
         XCTAssertTrue(snapshot.windows.isEmpty)
@@ -210,8 +208,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
                     "currency": "USD",
                     "decimal_places": 2,
                 ],
-            ],
-            captureDebugResponse: false
+            ]
         )
 
         XCTAssertEqual(snapshot.extraUsageSpentUSD ?? 0, 357.36, accuracy: 0.001)
@@ -238,8 +235,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
                 "plan_type": "enterprise",
                 "amber_ladder": ["utilization": 0, "limit_dollars": 25000] as [String: Any],
                 "tangelo": NSNull()
-            ],
-            captureDebugResponse: false
+            ]
         )
 
         XCTAssertTrue(snapshot.windows.isEmpty)
@@ -264,8 +260,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
                 "five_hour": ["utilization": 45.0, "resets_at": "2025-01-03T10:00:00.123456+00:00"],
                 "seven_day": ["utilization": 87.0, "resets_at": "2025-01-07T12:00:00.123457+00:00"]
             ],
-            credentialPlan: "team",
-            captureDebugResponse: false
+            credentialPlan: "team"
         )
 
         XCTAssertEqual(snapshot.planType, "team")
@@ -280,8 +275,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
             from: [
                 "five_hour": ["utilization": 45.0, "resets_at": "2025-01-03T10:00:00.123456+00:00"],
                 "seven_day": ["utilization": 87.0, "resets_at": "2025-01-07T12:00:00.123457+00:00"]
-            ],
-            captureDebugResponse: false
+            ]
         )
 
         XCTAssertEqual(snapshot.planType, "pro")
@@ -296,8 +290,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
                 "seven_day": ["utilization": 87.0, "resets_at": "2025-01-07T12:00:00.123457+00:00"]
             ],
             credentialPlan: "team",
-            credentialRateLimitTier: "default_claude_max_5x",
-            captureDebugResponse: false
+            credentialRateLimitTier: "default_claude_max_5x"
         )
 
         XCTAssertEqual(snapshot.rateLimitTier, "default_claude_max_5x")
@@ -309,8 +302,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
                 "five_hour": ["utilization": 45.0, "resets_at": "2025-01-03T10:00:00.123456+00:00"],
                 "seven_day": ["utilization": 87.0, "resets_at": "2025-01-07T12:00:00.123457+00:00"]
             ],
-            credentialPlan: "team",
-            captureDebugResponse: false
+            credentialPlan: "team"
         )
 
         XCTAssertNil(snapshot.rateLimitTier)
@@ -387,8 +379,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
                     ["kind": "weekly_all", "percent": 12,
                      "resets_at": "2025-01-07T12:00:00.123457+00:00"]
                 ]
-            ],
-            captureDebugResponse: false
+            ]
         )
 
         XCTAssertEqual(snapshot.windows.map(\.id), ["five_hour", "seven_day"])
@@ -408,8 +399,7 @@ final class ClaudeOAuthFetcherTests: XCTestCase {
                      "scope": ["model": ["id": NSNull(), "display_name": NSNull()]]] as [String: Any],
                     ["kind": "weekly_scoped", "percent": 64] as [String: Any]
                 ]
-            ],
-            captureDebugResponse: false
+            ]
         )
 
         XCTAssertTrue(snapshot.windows.isEmpty)

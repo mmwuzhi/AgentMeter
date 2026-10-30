@@ -23,7 +23,7 @@ final class ClaudeOAuthDetailParseTests: XCTestCase {
     }
 
     private func parse(_ json: String, file: StaticString = #filePath, line: UInt = #line) throws -> QuotaSnapshot {
-        try ClaudeOAuthFetcher.parseSnapshot(from: body(json, file: file, line: line), captureDebugResponse: false)
+        try ClaudeOAuthFetcher.parseSnapshot(from: body(json, file: file, line: line))
     }
 
     private func window(_ id: String, in snapshot: QuotaSnapshot, file: StaticString = #filePath, line: UInt = #line) throws -> QuotaWindow {

@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LoginItem.reconcile()
 
         AgentStatusStore.sweepStale(olderThan: ActiveAgent.stalePayloadAge)
+        DebugCapture.standard.cleanUpAtLaunch()
         if UserDefaults.standard.bool(forKey: "statusHooksEnabled") {
             _ = ClaudeHookInstaller.installManagedCLI()
             _ = try? ClaudeHookInstaller.install()

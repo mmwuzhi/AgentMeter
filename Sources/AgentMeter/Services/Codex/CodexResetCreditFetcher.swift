@@ -11,8 +11,8 @@ import Foundation
 /// per-credit grant/expiry timestamps, only (sometimes) a bare count — that gap is
 /// why this hits ChatGPT's backend directly instead of extending that call. Field
 /// names below are inferred from third-party reverse engineering, not an official
-/// spec, so parsing is defensive (multiple key aliases) and an unparsable body is
-/// captured to disk for diagnosing drift, mirroring `ClaudeOAuthFetcher`.
+/// spec, so parsing is defensive (multiple key aliases) and an unparsable body can
+/// be captured for diagnosing drift (`DebugCapture`, off by default).
 enum CodexResetCreditFetcher {
     static let url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
     /// Mimics the Codex CLI's own outbound requests so this doesn't stand out as a
@@ -43,7 +43,7 @@ enum CodexResetCreditFetcher {
 
         guard let obj = try? JSONSerialization.jsonObject(with: data),
               let credits = parseCredits(obj) else {
-            captureRawResponseForDebugging(data)
+            captureUnparsable(data)
             throw FetchError.badResponse
         }
         return credits
@@ -98,16 +98,9 @@ enum CodexResetCreditFetcher {
         return nil
     }
 
-    /// Best-effort capture of an unparsable response body, so the real field names
-    /// can be confirmed later instead of guessed. Same Application Support
-    /// convention as `ClaudeOAuthFetcher`/`StateCache`; write failures are ignored.
-    private static let maxDebugCaptureBytes = 256 * 1024
-    private static func captureRawResponseForDebugging(_ data: Data) {
-        guard data.count <= maxDebugCaptureBytes else { return }
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AgentMeter", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("debug-codex-reset-credits.json")
-        try? data.write(to: url)
+    /// An unparsable body goes to `DebugCapture` (off unless switched on), so the
+    /// real field names can be confirmed later instead of guessed.
+    static func captureUnparsable(_ data: Data, using capture: DebugCapture = .standard) {
+        capture.record(responseBody: data, as: .codexResetCredits)
     }
 }

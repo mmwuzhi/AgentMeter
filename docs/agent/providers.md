@@ -32,9 +32,8 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   grant/expiry timestamps.
 - `CodexResetCreditFetcher.parseCredits` must remain defensive: support the
   known aliases and wrapped/bare-array shapes, treat the response as untrusted,
-  and cap it at `CodexResetCreditTracker.maxStoredCredits` (20). Dump an
-  unparsable body to
-  `~/Library/Application Support/AgentMeter/debug-codex-reset-credits.json`;
+  and cap it at `CodexResetCreditTracker.maxStoredCredits` (20). Hand an
+  unparsable body to `DebugCapture` (off by default, see Debug captures);
   never guess fields.
 - Real reset-credit records override `CodexResetCreditTracker`'s local
   observation fallback. The fallback only estimates a 30-day expiry from when
@@ -338,9 +337,8 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   `autoreleasepool`; a cooperative-pool thread drains none on its own, and the
   chunks then pile up to the size of the whole file.
 - An OAuth response with no quota windows is a legitimate spend-based plan
-  shape, not a parse failure. Preserve the neutral empty-windows state and dump
-  the raw response (capped at 256 KB) to
-  `~/Library/Application Support/AgentMeter/debug-claude-oauth-usage.json`.
+  shape, not a parse failure. Preserve the neutral empty-windows state and hand
+  the response to `DebugCapture` (off by default, see Debug captures).
 - The confirmed one-time Claude Code + Cowork credit currently uses the opaque
   `cinder_cove` key. Keep it routed through `add(...)` with
   `isOneTimeCredit: true`; if the codename changes, fall back to the empty
@@ -362,8 +360,7 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
   over grants still before `ends_at` and capped at 20 grants. A null or missing
   block is a real "no resets"; a malformed block — including a `grants` that is
   neither an array nor null, which Claude Code would read as none — keeps the
-  previous state and dumps only the block to
-  `~/Library/Application Support/AgentMeter/debug-claude-reset-grants.json`.
+  previous state and hands only the block to `DebugCapture`.
 - The reset read runs only after that cycle's OAuth quota read succeeded, with
   `ClaudeCredentials.cachedToken()` (never a Keychain read of its own), every
   20 minutes on its own clock; a cycle that sent no reset request does not
@@ -390,6 +387,45 @@ must be preserved in `QuotaSnapshot.source` so the UI can distinguish `live`,
 - Copilot is flat-rate here: `usage` remains empty and
   `MenuBarLayout` exposes no `s:copilot` spend item.
 - `copilot_internal` is undocumented and must be parsed defensively.
+
+## Debug captures
+
+`DebugCapture` is the only code that writes a raw provider response to disk,
+and it writes nothing unless the `debugCaptureResponses` UserDefaults boolean
+is set (`defaults write com.shu.agentmeter debugCaptureResponses -bool true`;
+read when a capture is attempted, no UI). It is for confirming the field names
+of an undocumented endpoint: a window-less `/api/oauth/usage` body
+(`ClaudeOAuthFetcher`), an unparsable `cedar_ember` block
+(`ClaudeResetGrantFetcher`, the block only) or an unparsable reset-credit body
+(`CodexResetCreditFetcher`).
+
+- Files: `~/Library/Application Support/AgentMeter/debug/<endpoint>.json`
+  (`claude-oauth-usage`, `claude-reset-grants`, `codex-reset-credits`), one per
+  endpoint and overwritten, so at most three. The directory is 0700 (an
+  existing looser one is tightened); each file is created 0600 as a temporary
+  file and renamed (`AtomicFile.replace`), never 0644 at any moment. Bodies
+  over 256 KB are not kept; a body that is not a JSON object or array leaves
+  only its size.
+- Only the response body is written, never a request, header or credential.
+  `DebugCapture.redact` replaces fields named like a token, secret, password,
+  authorization, cookie, API key, credential or signature, an email, phone or
+  user name, and account / organization / user / member / customer /
+  subscription / seat / tenant / workspace / team / device / owner ids and
+  uuids; `id`, `name` and `display_name` inside an `account`, `organization`,
+  `user` and similar object; and, in any string, bearer tokens, JWTs, `sk-` /
+  `pk-` / `rk-` / `gh?_` keys, emails, UUIDs and runs of 40 or more
+  base64/hex characters. Field names, nulls, numbers and dates stay, spend and
+  credit-limit amounts included (they are what a capture is read for), so
+  protection of those is the opt-in, the permissions and the retention. Keep
+  `redact` in step when a response gains a field that names the account.
+- Retention: a capture older than 7 days is deleted by the next capture and at
+  every launch (`DebugCapture.cleanUpAtLaunch`, from `AppDelegate`), switch or
+  not.
+- Builds before this wrote the same bodies unredacted, by default, 0644, as
+  `debug-claude-oauth-usage.json`, `debug-claude-reset-grants.json` and
+  `debug-codex-reset-credits.json` in `Application Support/AgentMeter` itself.
+  A launch with the switch off removes exactly those three names
+  (`unlink`: a directory of that name stays) and nothing else.
 
 ## Provider status
 

@@ -83,7 +83,7 @@ enum ClaudeResetGrantFetcher {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               !obj.isEmpty else { throw FetchError.badResponse }
         guard let state = parseState(from: obj) else {
-            captureRawBlockForDebugging(obj["cedar_ember"])
+            captureUnparsable(obj["cedar_ember"])
             throw FetchError.badResponse
         }
         return state
@@ -156,18 +156,10 @@ enum ClaudeResetGrantFetcher {
         return CFGetTypeID(number) == CFBooleanGetTypeID()
     }
 
-    /// Writes only the status block, never the rest of the body, so the field
-    /// names can be confirmed instead of guessed. Same Application Support
-    /// convention as the other debug captures; failures are ignored.
-    private static let maxDebugCaptureBytes = 256 * 1024
-    private static func captureRawBlockForDebugging(_ block: Any?) {
-        let wrapper: [String: Any] = ["cedar_ember": block ?? NSNull()]
-        guard JSONSerialization.isValidJSONObject(wrapper),
-              let data = try? JSONSerialization.data(withJSONObject: wrapper, options: [.prettyPrinted, .sortedKeys]),
-              data.count <= maxDebugCaptureBytes else { return }
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AgentMeter", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? data.write(to: dir.appendingPathComponent("debug-claude-reset-grants.json"))
+    /// Hands `DebugCapture` (off unless switched on) only the status block,
+    /// never the rest of the body, so the field names can be confirmed instead
+    /// of guessed.
+    static func captureUnparsable(_ block: Any?, using capture: DebugCapture = .standard) {
+        capture.record(["cedar_ember": block ?? NSNull()] as [String: Any], as: .claudeResetGrants)
     }
 }

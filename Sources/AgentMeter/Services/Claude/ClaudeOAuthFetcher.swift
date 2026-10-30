@@ -57,7 +57,7 @@ enum ClaudeOAuthFetcher {
         from obj: [String: Any],
         credentialPlan: String? = nil,
         credentialRateLimitTier: String? = nil,
-        captureDebugResponse: Bool = true
+        debugCapture: DebugCapture = .standard
     ) throws -> QuotaSnapshot {
         guard !obj.isEmpty else { throw URLError(.cannotParseResponse) }
 
@@ -110,9 +110,7 @@ enum ClaudeOAuthFetcher {
 
         var note: String?
         if windows.isEmpty {
-            if captureDebugResponse {
-                captureRawResponseForDebugging(obj)
-            }
+            debugCapture.record(obj, as: .claudeOAuthUsage)
             note = "\(plan?.capitalized ?? "This") plan has no session-based quota limits"
         }
 
@@ -327,24 +325,6 @@ enum ClaudeOAuthFetcher {
         }
         return string
     }
-
-    /// Best-effort capture of a window-less `/api/oauth/usage` body, so the real field
-    /// names for spend-limit/credit-based plans (e.g. Enterprise) can be confirmed later
-    /// instead of guessed. Follows the same Application Support/AgentMeter convention as
-    /// `StateCache`/`PricingService`; write failures are silently ignored.
-    private static func captureRawResponseForDebugging(_ obj: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]),
-              data.count <= maxDebugCaptureBytes else { return }
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AgentMeter", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("debug-claude-oauth-usage.json")
-        try? data.write(to: url)
-    }
-
-    /// A legitimate usage payload is a few KB. Refuses to write anything larger instead
-    /// of persisting an oversized body verbatim (e.g. from a misbehaving proxy).
-    private static let maxDebugCaptureBytes = 256 * 1024
 
     /// Resolves the plan badge in this order:
     ///

@@ -200,7 +200,7 @@ final class QuotaWindowDetailTests: XCTestCase {
         {"five_hour":{"utilization":74,"resets_at":"2025-01-03T10:00:00.123456+00:00"},
          "limits":[{"kind":"session","percent":74,"is_active":true,"severity":"warning"}]}
         """.utf8)) as? [String: Any])
-        let parsed = try ClaudeOAuthFetcher.parseSnapshot(from: body, captureDebugResponse: false)
+        let parsed = try ClaudeOAuthFetcher.parseSnapshot(from: body)
 
         let decoded = try JSONDecoder().decode(QuotaSnapshot.self, from: JSONEncoder().encode(parsed))
         let rebuilt = decoded.withResetCreditsExpiresAt(Self.reset)
