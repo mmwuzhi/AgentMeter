@@ -302,38 +302,80 @@ final class DebugCaptureTests: XCTestCase {
         ])
     }
 
-    func testLaunchWithCapturingOffRemovesExactlyTheLegacyFiles() throws {
+    private func writeLegacy(_ name: String, _ contents: String = "{\"spend\": 1}", mode: mode_t = 0o644) throws -> URL {
+        let url = root.appendingPathComponent(name)
+        try Data(contents.utf8).write(to: url)
+        XCTAssertEqual(chmod(url.path, mode), 0)
+        return url
+    }
+
+    /// The user asked that nothing an earlier build wrote be deleted on
+    /// upgrade: the legacy captures stay, owner-only.
+    func testLaunchKeepsTheLegacyFilesAndMakesThemOwnerOnly() throws {
         let decoys = ["debug-claude-oauth-usage.json.bak", "debug-other.json", "last-state.json", "pricing.json",
                       "history.sqlite"]
         for name in DebugCapture.legacyFileNames + decoys {
-            try Data("{}".utf8).write(to: root.appendingPathComponent(name))
+            _ = try writeLegacy(name, "\(name) contents")
         }
-        // A directory with a legacy name is refused, not deleted with what is in it.
+        // A directory with a legacy name is left as it is, contents and mode.
         let directory = root.appendingPathComponent("debug-codex-reset-credits.json")
         try FileManager.default.removeItem(at: directory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        XCTAssertEqual(chmod(directory.path, 0o755), 0)
         try Data("keep".utf8).write(to: directory.appendingPathComponent("inside.txt"))
-        try FileManager.default.createDirectory(at: debugDirectory, withIntermediateDirectories: true)
-        try Data("{}".utf8).write(to: debugDirectory.appendingPathComponent("claude-oauth-usage.json"))
 
         capture(enabled: false).cleanUpAtLaunch()
 
-        let remaining = names(root)
-        XCTAssertEqual(remaining, (decoys + ["debug", "debug-codex-reset-credits.json"]).sorted())
+        XCTAssertEqual(names(root), (DebugCapture.legacyFileNames + decoys).sorted())
+        for name in DebugCapture.legacyFileNames where name != "debug-codex-reset-credits.json" {
+            let url = root.appendingPathComponent(name)
+            XCTAssertEqual(try permissions(url), 0o600, name)
+            XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "\(name) contents", "kept as it was")
+        }
+        for name in decoys {
+            XCTAssertEqual(try permissions(root.appendingPathComponent(name)), 0o644, "\(name) is not ours to change")
+        }
+        XCTAssertEqual(try permissions(directory), 0o755)
         XCTAssertEqual(names(directory), ["inside.txt"])
-        XCTAssertEqual(names(debugDirectory), ["claude-oauth-usage.json"])
     }
 
-    /// Review finding: the legacy files are unredacted and 0644, so they go
-    /// even for someone capturing today.
-    func testLaunchWithCapturingOnAlsoRemovesTheLegacyFiles() throws {
-        for name in DebugCapture.legacyFileNames {
-            try Data("{}".utf8).write(to: root.appendingPathComponent(name))
-        }
-
+    func testLaunchWithCapturingOnAlsoTightensAndKeeps() throws {
+        let url = try writeLegacy("debug-claude-oauth-usage.json")
         capture(enabled: true).cleanUpAtLaunch()
+        XCTAssertEqual(try permissions(url), 0o600)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
 
-        XCTAssertEqual(names(root), [])
+    func testLegacySymlinkIsNeverFollowed() throws {
+        let elsewhere = FileManager.default.temporaryDirectory
+            .appendingPathComponent("debug-capture-elsewhere-\(UUID().uuidString).json")
+        try Data("someone else's".utf8).write(to: elsewhere)
+        defer { try? FileManager.default.removeItem(at: elsewhere) }
+        XCTAssertEqual(chmod(elsewhere.path, 0o644), 0)
+        let link = root.appendingPathComponent("debug-claude-reset-grants.json")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: elsewhere.path)
+
+        XCTAssertEqual(DebugCapture.tightenLegacyFiles(in: root), [])
+        XCTAssertEqual(try permissions(elsewhere), 0o644)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), elsewhere.path)
+    }
+
+    func testHardLinkedLegacyFileIsLeftAlone() throws {
+        let url = try writeLegacy("debug-codex-reset-credits.json")
+        let other = root.appendingPathComponent("elsewhere.json")
+        try FileManager.default.linkItem(at: url, to: other)
+        XCTAssertEqual(DebugCapture.tightenLegacyFiles(in: root), [])
+        XCTAssertEqual(try permissions(other), 0o644)
+    }
+
+    func testPrivateLegacyFileAndFIFOAreLeftAlone() throws {
+        let privateFile = try writeLegacy("debug-claude-oauth-usage.json", mode: 0o400)
+        let fifo = root.appendingPathComponent("debug-claude-reset-grants.json")
+        XCTAssertEqual(mkfifo(fifo.path, 0o644), 0)
+        XCTAssertEqual(chmod(fifo.path, 0o644), 0, "whatever the umask")
+        XCTAssertEqual(DebugCapture.tightenLegacyFiles(in: root), [], "nothing to change, and no hang on the FIFO")
+        XCTAssertEqual(try permissions(privateFile), 0o400)
+        XCTAssertEqual(try permissions(fifo), 0o644)
     }
 
     func testLegacyCleanupToleratesMissingFiles() {

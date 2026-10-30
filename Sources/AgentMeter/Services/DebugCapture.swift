@@ -15,8 +15,9 @@ import Foundation
 /// directory holds at most three; one older than `retention` is deleted by
 /// the next capture and at launch. Earlier builds wrote the same bodies
 /// unredacted, by default, 0644, into the folder above; `cleanUpAtLaunch`
-/// removes those files by name, whether capturing is on or not. Best effort
-/// throughout: a failure is ignored.
+/// keeps those files (they may be evidence someone wants) but makes them
+/// owner-only, whether capturing is on or not. Best effort throughout: a
+/// failure is ignored.
 ///
 /// Money amounts (`extra_usage`, credit counts) are kept: the capture exists
 /// to read them. The opt-in, the permissions and the retention are what
@@ -37,7 +38,7 @@ struct DebugCapture {
     /// is not kept.
     static let maxBytes = 256 * 1024
     /// What earlier builds left in `Application Support/AgentMeter`. Exactly
-    /// these names are removed, nothing matched by pattern.
+    /// these names are tightened, nothing matched by pattern.
     static let legacyFileNames = [
         "debug-claude-oauth-usage.json",
         "debug-claude-reset-grants.json",
@@ -87,12 +88,11 @@ struct DebugCapture {
     }
 
     /// Launch housekeeping. Drops captures past `retention` whatever the
-    /// switch says, and with capturing off removes what earlier builds left.
+    /// switch says, and makes what earlier builds left owner-only. Nothing an
+    /// earlier build wrote is deleted without the user.
     func cleanUpAtLaunch() {
         Self.sweep(directory, now: now())
-        // Unredacted and world-readable: never worth keeping, even for
-        // someone who captures today.
-        Self.removeLegacyFiles(in: supportDirectory)
+        Self.tightenLegacyFiles(in: supportDirectory)
     }
 
     /// Deletes the regular `.json` captures and `.tmp` leftovers of a crashed
@@ -110,12 +110,27 @@ struct DebugCapture {
         }
     }
 
-    /// `unlink`, not `removeItem`: a directory or anything else of that name
-    /// is refused instead of deleted, and a symlink goes without its target.
-    static func removeLegacyFiles(in supportDirectory: URL) {
+    /// Makes each legacy capture 0600 when it is safe to: opened without
+    /// following a symbolic link (or blocking on a FIFO), and changed only
+    /// when it is a regular file this user owns with no other hard link and
+    /// any group or other permission bit. An ACL entry granting others
+    /// access is left as it is; `~/Library` is 0700 anyway. Returns the
+    /// names it changed.
+    @discardableResult
+    static func tightenLegacyFiles(in supportDirectory: URL) -> [String] {
+        var tightened: [String] = []
         for name in legacyFileNames {
-            unlink(supportDirectory.appendingPathComponent(name).path)
+            let fd = open(supportDirectory.appendingPathComponent(name).path,
+                          O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
+            guard fd >= 0 else { continue }
+            defer { close(fd) }
+            var status = stat()
+            guard fstat(fd, &status) == 0, status.st_mode & S_IFMT == S_IFREG,
+                  status.st_uid == getuid(), status.st_nlink == 1,
+                  status.st_mode & 0o077 != 0 else { continue }
+            if fchmod(fd, 0o600) == 0 { tightened.append(name) }
         }
+        return tightened
     }
 
     private func prepareDirectory() -> Bool {

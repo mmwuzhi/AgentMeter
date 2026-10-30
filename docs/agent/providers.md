@@ -424,8 +424,12 @@ of an undocumented endpoint: a window-less `/api/oauth/usage` body
 - Builds before this wrote the same bodies unredacted, by default, 0644, as
   `debug-claude-oauth-usage.json`, `debug-claude-reset-grants.json` and
   `debug-codex-reset-credits.json` in `Application Support/AgentMeter` itself.
-  A launch with the switch off removes exactly those three names
-  (`unlink`: a directory of that name stays) and nothing else.
+  Every launch keeps them and makes exactly those three names 0600
+  (`DebugCapture.tightenLegacyFiles`): opened with `O_NOFOLLOW | O_NONBLOCK`,
+  changed only when the file is regular, owned by this user, has no other
+  hard link and has any group or other permission bit (an ACL entry is left
+  as it is; `~/Library` is 0700). Nothing else is touched, and nothing an
+  earlier build wrote is deleted without the user.
 
 ## Provider status
 
