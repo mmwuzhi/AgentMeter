@@ -93,7 +93,10 @@ struct AgentMeterEventContent: Hashable, Sendable, Codable {
     /// banner instead of stacking (`agentmeter.task.<sid>.<taskKey>` for
     /// tasks). Nil: `agentmeter.event.<id>`, one banner per event.
     var notificationIdentifier: String?
-    /// Groups banners in Notification Center (tasks: per project).
+    /// What builds before 2026-10-30 grouped banners by in Notification
+    /// Center (tasks: per project). Kept so the events they stored read and
+    /// write back unchanged; nothing sets it now and delivery ignores it, so
+    /// every banner shares the app's one group.
     var threadIdentifier: String?
 
     init(title: String, body: String, notificationIdentifier: String? = nil, threadIdentifier: String? = nil) {

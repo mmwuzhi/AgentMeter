@@ -144,7 +144,10 @@ extension NotificationManager {
         case .rule: content.categoryIdentifier = ruleCategoryIdentifier
         case .other: break
         }
-        if let thread = event.content.threadIdentifier { content.threadIdentifier = thread }
+        // No thread, as quota alerts have none: Notification Center's
+        // Automatic grouping then keeps every AgentMeter banner in the app's
+        // one group (a thread per project split them into stacks, each with
+        // its own header). By App and Off in System Settings still apply.
         // The id is enough: a tap looks the event up in the store.
         content.userInfo = [eventIDUserInfoKey: event.id, eventKindUserInfoKey: event.kind.rawValue]
         let identifier = event.content.notificationIdentifier ?? "agentmeter.event.\(event.id)"

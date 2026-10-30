@@ -29,7 +29,7 @@ final class NotificationManagerEventDeliveryTests: XCTestCase {
 
     // MARK: - Posting and dedup
 
-    func testANewEventIsRecordedThenPostedOnceWithItsCategoryThreadAndIdentity() async {
+    func testANewEventIsRecordedThenPostedOnceWithItsCategoryAndIdentity() async {
         let clock = EventTestClock()
         let center = AuthorizationCenterStub(result: .success(true), status: .authorized)
         let store = AgentMeterEventStore.inMemory(clock: clock.function)
@@ -45,7 +45,9 @@ final class NotificationManagerEventDeliveryTests: XCTestCase {
         XCTAssertEqual(request.content.title, "project finished")
         XCTAssertEqual(request.content.body, "session · 3m")
         XCTAssertEqual(request.content.categoryIdentifier, NotificationManager.taskCategoryIdentifier)
-        XCTAssertEqual(request.content.threadIdentifier, "agentmeter.task./tmp/project")
+        // Stored with a per-project thread, as builds before 2026-10-30 did:
+        // posted in the app's one group all the same.
+        XCTAssertEqual(request.content.threadIdentifier, "")
         XCTAssertEqual(request.content.userInfo[NotificationManager.eventIDUserInfoKey] as? String, event.id)
         XCTAssertEqual(request.content.userInfo.count, 2, "the id and kind only: a tap looks the rest up")
 

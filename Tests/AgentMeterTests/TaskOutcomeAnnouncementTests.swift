@@ -171,7 +171,7 @@ final class TaskOutcomeAnnouncementTests: XCTestCase {
         XCTAssertEqual(event.content.title, "Finished · Phase 1b notifications", "sanitized single line")
         XCTAssertEqual(event.content.body, "AgentMeter · Claude Code · ffafe0d9\n12m run · 1 background shell still running")
         XCTAssertEqual(event.content.notificationIdentifier, "agentmeter.task.ffafe0d9-1111-2222-3333-444455556666.017d120c")
-        XCTAssertEqual(event.content.threadIdentifier, "agentmeter.task./Users/u/work/agentmeter")
+        XCTAssertNil(event.content.threadIdentifier, "one Notification Center group for the app")
         XCTAssertEqual(event.subject, AgentMeterEventSubject(
             provider: "claude", sessionID: "ffafe0d9-1111-2222-3333-444455556666", taskKey: "017d120c",
             projectPath: "/Users/u/work/agentmeter", sessionTitle: "Phase 1b notifications"))

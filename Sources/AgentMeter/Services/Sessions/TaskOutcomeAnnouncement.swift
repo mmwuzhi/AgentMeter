@@ -219,8 +219,7 @@ enum TaskOutcomeAnnouncement {
                 title: title,
                 body: "\(identity)\n\(detail)",
                 // One banner per task: a wait, then the end, replace each other.
-                notificationIdentifier: "agentmeter.task.\(outcome.sessionID).\(outcome.taskKey)",
-                threadIdentifier: "agentmeter.task.\(outcome.cwd ?? outcome.sessionID)"),
+                notificationIdentifier: "agentmeter.task.\(outcome.sessionID).\(outcome.taskKey)"),
             producerVersion: TaskOutcomeDetector.producerVersion)
     }
 
