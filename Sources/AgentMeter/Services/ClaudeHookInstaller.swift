@@ -9,9 +9,22 @@ enum ClaudeHookInstaller {
             .appendingPathComponent(".claude/settings.json", isDirectory: false)
     }
 
-    static var managedCLIURL: URL {
+    static var supportDirectoryURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AgentMeter/bin/agentmeter-hook", isDirectory: false)
+            .appendingPathComponent("AgentMeter", isDirectory: true)
+    }
+
+    static var managedCLIURL: URL {
+        supportDirectoryURL.appendingPathComponent("bin/agentmeter-hook", isDirectory: false)
+    }
+
+    /// The settings file the hooks go into, with its backups in AgentMeter's
+    /// own support directory.
+    static var settingsFile: ClaudeSettingsFile {
+        ClaudeSettingsFile(
+            url: settingsURL,
+            backupDirectory: supportDirectoryURL.appendingPathComponent("settings-backups", isDirectory: true)
+        )
     }
 
     static var bundledCLIURL: URL? {
@@ -34,6 +47,9 @@ enum ClaudeHookInstaller {
         case ownedByNewerInstance
         /// No bundled copy (a bare `swift run`).
         case noBundledCopy
+        /// The bundled copy's signature did not check out
+        /// (`HookHelperTrust.isTrusted`); nothing was installed.
+        case untrusted
         case failed
     }
 
@@ -47,7 +63,7 @@ enum ClaudeHookInstaller {
             return destination
         case .noBundledCopy:
             return FileManager.default.fileExists(atPath: destination.path) ? destination : nil
-        case .failed:
+        case .failed, .untrusted:
             // An existing helper may speak an older hook-input protocol. Do not
             // install new commands against it when refreshing from the bundled
             // copy failed.
@@ -60,10 +76,13 @@ enum ClaudeHookInstaller {
     /// file, so only the newest running build may write it: any copy of the
     /// app used to install its own at launch, and a stale one opened from a
     /// backup folder silenced every task notification (`HookHelperGuard`).
+    /// Only a helper whose signature checks out is installed, written from
+    /// its bytes (`HookHelperTrust` says what that does and does not prove).
     static func refreshManagedCLI(
         at destination: URL = managedCLIURL,
         from bundled: URL? = bundledCLIURL,
-        ownsHelper: () -> Bool = HookHelperOwnership.thisInstanceOwnsHelper
+        ownsHelper: () -> Bool = HookHelperOwnership.thisInstanceOwnsHelper,
+        isTrusted: (URL) -> Bool = { HookHelperTrust.isTrusted($0) }
     ) -> ManagedCLIRefresh {
         guard let bundled else { return .noBundledCopy }
         guard ownsHelper() else { return .ownedByNewerInstance }
@@ -73,55 +92,61 @@ enum ClaudeHookInstaller {
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
+            let sourceData = try Data(contentsOf: bundled)
             let currentData = try? Data(contentsOf: destination)
-            if let sourceData = try? Data(contentsOf: bundled), let currentData, sourceData == currentData {
+            if sourceData == currentData {
                 try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
                 return .current
             }
-            let temporary = destination.deletingLastPathComponent()
-                .appendingPathComponent("agentmeter-hook.\(UUID().uuidString).tmp")
-            defer { try? fileManager.removeItem(at: temporary) }
-            try fileManager.copyItem(at: bundled, to: temporary)
-            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temporary.path)
-            if fileManager.fileExists(atPath: destination.path) {
-                _ = try fileManager.replaceItemAt(destination, withItemAt: temporary)
-            } else {
-                try fileManager.moveItem(at: temporary, to: destination)
-            }
+            guard isTrusted(bundled) else { return .untrusted }
+            // The verified bytes, not a copy of the file and its attributes.
+            try AtomicFile.replace(destination, with: sourceData, permissions: 0o755)
+            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
             return .installed(replacedOther: currentData != nil)
         } catch {
             return .failed
         }
     }
 
-    static func isInstalled() -> Bool {
-        guard let document = try? readSettings() else { return false }
+    static func isInstalled(in file: ClaudeSettingsFile = settingsFile) -> Bool {
+        guard let document = try? file.read() else { return false }
         return hookCommands(in: document.root).contains(where: isManagedCommand)
     }
 
+    /// Hooks only ever run the installed copy: never the bundle's own file,
+    /// which still carries a download's quarantine, and never when the copy
+    /// could not be refreshed or its signature did not check out.
     @discardableResult
-    static func install() throws -> Bool {
-        guard let cliURL = installManagedCLI() ?? bundledCLIURL else {
-            throw InstallError.helperUnavailable
-        }
-        let document = try readSettings()
+    static func install(
+        managedCLI: () -> URL? = { installManagedCLI() },
+        into file: ClaudeSettingsFile = settingsFile
+    ) throws -> Bool {
+        guard let cliURL = managedCLI() else { throw InstallError.helperUnavailable }
+        return try installHooks(running: cliURL, in: file)
+    }
+
+    /// Merges the hook commands for `cli` into `file`; writes only when that
+    /// changes it.
+    @discardableResult
+    static func installHooks(running cli: URL, in file: ClaudeSettingsFile) throws -> Bool {
+        let document = try file.read()
         try validateHooks(in: document.root)
         let (merged, changed) = mergedHooks(
             into: document.root,
-            cliQuoted: shellQuoted(cliURL.path)
+            cliQuoted: shellQuoted(cli.path)
         )
         guard changed else { return false }
-        try writeSettings(merged, replacing: document)
+        try file.write(merged, replacing: document)
         return true
     }
 
     @discardableResult
-    static func remove() throws -> Bool {
-        let document = try readSettings()
+    static func remove(from file: ClaudeSettingsFile = settingsFile) throws -> Bool {
+        let document = try file.read()
         try validateHooks(in: document.root)
         let (cleaned, changed) = removedHooks(from: document.root)
         guard changed else { return false }
-        try writeSettings(cleaned, replacing: document)
+        try file.write(cleaned, replacing: document)
         return true
     }
 
@@ -252,57 +277,6 @@ enum ClaudeHookInstaller {
         }
     }
 
-    private struct SettingsDocument {
-        let root: [String: Any]
-        let originalData: Data?
-    }
-
-    private static func readSettings() throws -> SettingsDocument {
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: settingsURL.path) else {
-            return SettingsDocument(root: [:], originalData: nil)
-        }
-        let data = try Data(contentsOf: settingsURL)
-        guard !data.isEmpty,
-              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw InstallError.invalidSettings
-        }
-        return SettingsDocument(root: root, originalData: data)
-    }
-
-    private static func writeSettings(
-        _ root: [String: Any],
-        replacing document: SettingsDocument
-    ) throws {
-        let fileManager = FileManager.default
-        if let originalData = document.originalData {
-            guard (try? Data(contentsOf: settingsURL)) == originalData else {
-                throw InstallError.settingsChanged
-            }
-        } else if fileManager.fileExists(atPath: settingsURL.path) {
-            throw InstallError.settingsChanged
-        }
-
-        let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
-        var permissions: Any?
-        if document.originalData != nil {
-            permissions = try? fileManager.attributesOfItem(atPath: settingsURL.path)[.posixPermissions]
-            let backup = settingsURL.deletingLastPathComponent()
-                .appendingPathComponent("settings.json.agentmeter-bak-\(UUID().uuidString)")
-            try fileManager.copyItem(at: settingsURL, to: backup)
-        } else {
-            try fileManager.createDirectory(
-                at: settingsURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-        }
-        try data.write(to: settingsURL, options: .atomic)
-        try? fileManager.setAttributes(
-            [.posixPermissions: permissions ?? 0o600],
-            ofItemAtPath: settingsURL.path
-        )
-    }
-
     private static func canonicalJSON(_ root: [String: Any]) -> Data? {
         try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
     }
@@ -310,16 +284,13 @@ enum ClaudeHookInstaller {
     enum InstallError: LocalizedError {
         case helperUnavailable
         case invalidSettings
-        case settingsChanged
 
         var errorDescription: String? {
             switch self {
             case .helperUnavailable:
-                return "the bundled hook helper is unavailable"
+                return "the bundled hook helper is unavailable or its signature didn't check out"
             case .invalidSettings:
                 return "the existing Claude settings file is not valid hook JSON"
-            case .settingsChanged:
-                return "Claude settings changed while AgentMeter was updating them; try again"
             }
         }
     }

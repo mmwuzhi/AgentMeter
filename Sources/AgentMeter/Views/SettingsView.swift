@@ -420,11 +420,19 @@ private struct GeneralSettings: View {
     private func applyHooks(_ enabled: Bool) {
         do {
             if enabled {
-                guard ClaudeHookInstaller.installManagedCLI() != nil else {
+                guard let helper = ClaudeHookInstaller.installManagedCLI() else {
                     throw ClaudeHookInstaller.InstallError.helperUnavailable
                 }
                 _ = try ClaudeHookInstaller.install()
-                hookMessage = "Installed. Restart running Claude Code sessions so they load the hooks."
+                let installed = "Installed. Restart running Claude Code sessions so they load the hooks."
+                hookMessage = installed
+                // The file being in place is not the helper running: macOS
+                // may still refuse it (`HookHelperTrust`).
+                Task {
+                    let probe = await Task.detached { HookHelperTrust.probe(helper) }.value
+                    guard hookMessage == installed, case .failed(let reason) = probe else { return }
+                    hookMessage = "Installed, but the hook helper didn't run (\(reason)), so sessions can't report status."
+                }
             } else {
                 _ = try ClaudeHookInstaller.remove()
                 hookMessage = "Removed AgentMeter hooks from settings.json."

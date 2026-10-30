@@ -855,6 +855,29 @@ since as unread.
   remove only commands whose executable basename is exactly
   `agentmeter-hook`; never delete or replace a whole matcher group that may
   contain user commands.
+- `ClaudeSettingsFile` does the reading and writing. A symlinked
+  `settings.json` is written through: the regular file it leads to is
+  replaced atomically in its own directory, keeping its mode, ACL and
+  extended attributes, so the link survives (2026-07-13: a hook install wrote
+  a plain file over the developer's dotfile link). A dangling or looping
+  link, a link to anything but a regular file, a hard-linked file and a
+  file or directory the user cannot write are refused, never replaced.
+  Nothing is written when the hooks are already as they should be. The
+  replaced bytes go to `settings-backups/` in AgentMeter's support directory
+  (0700 directory, 0600 files, a new copy only when they differ from the
+  newest one, newest 5 kept) — never next to the settings file. Older
+  builds left `settings.json.agentmeter-bak-*` files next to it; they are
+  the user's to delete.
+- Only a helper whose signature passes strict validation, and that is signed
+  by this app's team when the app has one, is installed
+  (`HookHelperTrust`); the copy is written from its bytes, so a download's
+  `com.apple.quarantine` is not carried onto it. That is sound for a
+  notarized Developer ID build; for local and rc builds the copy runs on the
+  user's Open Anyway for the app plus this check, without a Gatekeeper
+  assessment of its own — a limitation, not a Gatekeeper-approved path
+  (docs/agent/release.md). Nothing strips or works around a quarantine on an
+  existing file. Enabling the hooks in Settings runs the copy's `path`
+  command and says so when macOS refuses it.
 - Hook metadata comes from the official stdin JSON contract (`session_id`,
   `cwd`, and event fields), not guessed environment variables.
 - `Stop` fires when the main agent's turn ends even while background subagents

@@ -27,8 +27,10 @@ enum AtomicFile {
 
     /// Writes `data` to a temporary file next to `url`, created with
     /// `permissions`, flushes it, and renames it over `url`: a reader sees
-    /// the old file or the new one, never a mix.
-    static func replace(_ url: URL, with data: Data, permissions: mode_t = 0o600) throws {
+    /// the old file or the new one, never a mix. With `metadataFrom`, the
+    /// temporary file first takes that file's mode, ACL and extended
+    /// attributes (when it can), so a file someone else owns keeps them.
+    static func replace(_ url: URL, with data: Data, permissions: mode_t = 0o600, metadataFrom source: URL? = nil) throws {
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let temporary = directory.appendingPathComponent(".\(url.lastPathComponent).\(getpid()).\(UUID().uuidString).tmp")
@@ -42,6 +44,13 @@ enum AtomicFile {
             defer { close(fd) }
             try writeAll(fd, data)
             guard fsync(fd) == 0 else { throw Failure(operation: "fsync", code: errno) }
+        }
+        if let source {
+            let flags = copyfile_flags_t(COPYFILE_SECURITY | COPYFILE_XATTR)
+            if copyfile(source.path, temporary.path, nil, flags) != 0,
+               let mode = try? FileManager.default.attributesOfItem(atPath: source.path)[.posixPermissions] {
+                try? FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: temporary.path)
+            }
         }
         guard rename(temporary.path, url.path) == 0 else { throw Failure(operation: "rename", code: errno) }
         renamed = true
