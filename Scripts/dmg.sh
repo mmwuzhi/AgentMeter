@@ -8,8 +8,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 APP="$ROOT/dist/AgentMeter.app"
-VERSION="${MARKETING_VERSION:-0.4.2}"
-DMG="$ROOT/dist/AgentMeter-$VERSION.dmg"
+VERSION="${MARKETING_VERSION:-$(tr -d '[:space:]' < "$ROOT/VERSION")}"
+# An rc image is named so it is never taken for a release one.
+SUFFIX=""
+if [ "${UPDATE_CHANNEL:-release}" = "rc" ]; then SUFFIX="-rc"; fi
+DMG="$ROOT/dist/AgentMeter-$VERSION$SUFFIX.dmg"
 
 [ -d "$APP" ] || { echo "Build the app first: make app"; exit 1; }
 rm -f "$DMG"

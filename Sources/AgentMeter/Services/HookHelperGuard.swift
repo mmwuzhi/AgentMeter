@@ -38,9 +38,10 @@ enum HookHelperOwnership {
         return aLaunched != bLaunched ? aLaunched < bLaunched : a.pid < b.pid
     }
 
-    /// A local build is numbered by its time (`date +%Y%m%d%H%M`,
-    /// `Scripts/bundle.sh`), a release by its CI run (`github.run_number`):
-    /// a number from one says nothing about one from the other.
+    /// Builds are numbered by their time (`Scripts/build-number.sh`, 12
+    /// digits) since 0.9.0, local and CI alike; a release before it was
+    /// numbered by its CI run (`github.run_number`, v0.8.2 is 19): a number
+    /// from one says nothing about one from the other.
     static func compareBuilds(_ a: String?, _ b: String?) -> ComparisonResult {
         if let a, let b, isTimeNumbered(a) != isTimeNumbered(b) { return .orderedSame }
         return (a ?? "").compare(b ?? "", options: .numeric)

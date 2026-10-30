@@ -56,8 +56,18 @@ jobs:
             exit 1
           fi
 
+          file_version="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$version" != "$file_version" ]]; then
+            echo "Release version $version differs from VERSION ($file_version)" >&2
+            exit 1
+          fi
+
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Compute build number
+        id: build
+        run: echo "number=$(bash Scripts/build-number.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Install dmgbuild
         run: pipx install dmgbuild
@@ -65,7 +75,7 @@ jobs:
       - name: Build DMG
         run: |
           MARKETING_VERSION="${{ steps.version.outputs.version }}" \
-          BUILD_VERSION="${{ github.run_number }}" \
+          BUILD_VERSION="${{ steps.build.outputs.number }}" \
           make dmg
 
       - name: Verify package contents
@@ -89,10 +99,41 @@ jobs:
             echo "Unexpected CFBundleShortVersionString: $short_version" >&2
             exit 1
           fi
-          if [[ "$build_version" != "${{ github.run_number }}" ]]; then
+          if [[ "$build_version" != "${{ steps.build.outputs.number }}" ]]; then
             echo "Unexpected CFBundleVersion: $build_version" >&2
             exit 1
           fi
+          if [[ ! "$build_version" =~ ^[0-9]{12}$ ]]; then
+            echo "CFBundleVersion must be 12 digits (YYYYMMDDHHMM), got: $build_version" >&2
+            exit 1
+          fi
+
+          # Sparkle only offers an update whose build number is greater than the
+          # installed one, so it must exceed what the published feed already has.
+          appcast="$(mktemp)"
+          status="$(curl -sSL --retry 3 --retry-delay 2 -o "$appcast" -w '%{http_code}' \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/appcast.xml")"
+          case "$status" in
+            200)
+              published="$(grep -oE '(<sparkle:version>|sparkle:version=")[0-9]+' "$appcast" \
+                | grep -oE '[0-9]+$' | sort -n | tail -n 1 || true)"
+              if [[ -z "$published" ]]; then
+                echo "::notice::The published appcast has no sparkle:version; skipping the build number comparison."
+              elif (( 10#$build_version <= 10#$published )); then
+                echo "CFBundleVersion $build_version is not greater than the published sparkle:version $published" >&2
+                exit 1
+              else
+                echo "CFBundleVersion $build_version > published sparkle:version $published"
+              fi
+              ;;
+            404)
+              echo "::notice::No published appcast found; skipping the build number comparison."
+              ;;
+            *)
+              echo "Could not fetch the published appcast (HTTP $status)" >&2
+              exit 1
+              ;;
+          esac
 
           codesign --verify --deep --strict "$app"
           hdiutil imageinfo "$dmg" >/dev/null
