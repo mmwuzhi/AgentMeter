@@ -9,8 +9,8 @@ import Foundation
 /// the regular file the link leads to, replaced atomically inside that file's
 /// own directory, so the link stays a link. A link that leads nowhere, loops,
 /// or leads to anything but a regular file is refused, never overwritten, and
-/// so is a file AgentMeter could not replace without splitting hard links or
-/// against its permissions.
+/// so is a write AgentMeter could not make without splitting hard links or
+/// against the file's permissions.
 ///
 /// The bytes a write replaces are kept in AgentMeter's own support directory
 /// (`backupDirectory`), never next to the settings file where they would
@@ -69,7 +69,7 @@ struct ClaudeSettingsFile {
     var backupsKept = 5
 
     func read() throws -> Document {
-        guard let target = try existingTarget() else {
+        guard let target = try existingTarget(forWriting: false) else {
             return Document(root: [:], originalData: nil)
         }
         let data = try Data(contentsOf: target)
@@ -82,16 +82,19 @@ struct ClaudeSettingsFile {
 
     func write(_ root: [String: Any], replacing document: Document) throws {
         let fileManager = FileManager.default
-        let target = try existingTarget()
+        let target = try existingTarget(forWriting: true)
         // Claude Code writes this file too; never write over a change made
-        // after it was read.
-        if let originalData = document.originalData {
-            guard let target, (try? Data(contentsOf: target)) == originalData else {
+        // after it was read. Checked here and again right before the rename.
+        let unchanged = {
+            if let originalData = document.originalData {
+                guard let target, (try? Data(contentsOf: target)) == originalData else {
+                    throw Failure.changedMeanwhile
+                }
+            } else if target != nil {
                 throw Failure.changedMeanwhile
             }
-        } else if target != nil {
-            throw Failure.changedMeanwhile
         }
+        try unchanged()
 
         let destination = target ?? url
         let directory = destination.deletingLastPathComponent()
@@ -118,17 +121,21 @@ struct ClaudeSettingsFile {
         }
 
         do {
-            // Into the target's own directory, so the rename never touches a link.
-            try AtomicFile.replace(destination, with: data, permissions: 0o600, metadataFrom: target)
+            // Into the target's own directory, so the rename never touches a
+            // link; never over a file that appeared after the read.
+            try AtomicFile.replace(destination, with: data, permissions: 0o600, metadataFrom: target,
+                                   onlyIfAbsent: target == nil, beforeRename: unchanged)
         } catch let failure as AtomicFile.Failure {
+            if failure.operation == "rename", failure.code == EEXIST { throw Failure.changedMeanwhile }
             throw Failure.writeFailed(path: destination.path,
                                       reason: "\(failure.operation): \(String(cString: strerror(failure.code)))")
         }
     }
 
     /// The regular file a read or write must use: `url` itself, or what its
-    /// symbolic links lead to. Nil when nothing is there yet.
-    func existingTarget() throws -> URL? {
+    /// symbolic links lead to. Nil when nothing is there yet. Only a write
+    /// refuses a hard-linked file, so reading and `isInstalled` still work.
+    func existingTarget(forWriting: Bool) throws -> URL? {
         var info = stat()
         guard lstat(url.path, &info) == 0 else {
             if errno == ENOENT { return nil }
@@ -150,7 +157,7 @@ struct ClaudeSettingsFile {
             }
         }
         guard info.st_mode & S_IFMT == S_IFREG else { throw Failure.notARegularFile }
-        guard info.st_nlink <= 1 else { throw Failure.multipleHardLinks }
+        guard !forWriting || info.st_nlink <= 1 else { throw Failure.multipleHardLinks }
         return target
     }
 
@@ -159,7 +166,9 @@ struct ClaudeSettingsFile {
     }
 
     /// Keeps `data` unless the newest backup already holds it, then drops
-    /// all but the newest `backupsKept`. Names sort by time.
+    /// the oldest so `backupsKept` remain — never the one just written, even
+    /// when a clock that once ran ahead sorts older names after it. Names
+    /// sort by time, to the nanosecond.
     private func backUp(_ data: Data) throws {
         let fileManager = FileManager.default
         do {
@@ -168,18 +177,21 @@ struct ClaudeSettingsFile {
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
-            var backups = existingBackups()
+            let backups = existingBackups()
             if let newest = backups.last, (try? Data(contentsOf: newest)) == data { return }
+            var now = timespec()
+            clock_gettime(CLOCK_REALTIME, &now)
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.timeZone = TimeZone(identifier: "UTC")
-            formatter.dateFormat = "yyyyMMdd'T'HHmmss.SSS'Z'"
-            let name = Self.backupPrefix + formatter.string(from: Date())
-                + "-" + UUID().uuidString.prefix(8) + ".json"
+            formatter.dateFormat = "yyyyMMdd'T'HHmmss"
+            let stamp = formatter.string(from: Date(timeIntervalSince1970: TimeInterval(now.tv_sec)))
+                + String(format: ".%09ldZ", now.tv_nsec)
+            let name = Self.backupPrefix + stamp + "-" + UUID().uuidString.prefix(8) + ".json"
             let backup = backupDirectory.appendingPathComponent(name)
             try AtomicFile.replace(backup, with: data)
-            backups.append(backup)
-            for stale in backups.dropLast(max(backupsKept, 1)) {
+            let others = backups.filter { $0.lastPathComponent != name }
+            for stale in others.dropLast(max(backupsKept - 1, 0)) {
                 try? fileManager.removeItem(at: stale)
             }
         } catch let failure as AtomicFile.Failure {

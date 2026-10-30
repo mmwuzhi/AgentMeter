@@ -107,6 +107,16 @@ jobs:
             echo "CFBundleVersion must be 12 digits (YYYYMMDDHHMM), got: $build_version" >&2
             exit 1
           fi
+          # A release build updates itself: no rc channel key, a feed URL.
+          if /usr/libexec/PlistBuddy -c 'Print :AgentMeterUpdateChannel' "$app/Contents/Info.plist" >/dev/null 2>&1; then
+            echo "The release app carries AgentMeterUpdateChannel; it must be a release-channel build" >&2
+            exit 1
+          fi
+          feed_url="$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$app/Contents/Info.plist" 2>/dev/null || true)"
+          if [[ "$feed_url" != https://* ]]; then
+            echo "The release app has no https SUFeedURL: '$feed_url'" >&2
+            exit 1
+          fi
 
           # Sparkle only offers an update whose build number is greater than the
           # installed one, so it must exceed what the published feed already has.

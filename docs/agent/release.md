@@ -19,7 +19,11 @@ DMG creation, versions, or the GitHub release workflow.
   table and shows 0 either way.
 - `Scripts/dmg.sh` uses `dmgbuild` for the styled installer and falls back to
   plain `hdiutil`. Release images are `AgentMeter-<version>.dmg`; an rc build
-  (`UPDATE_CHANNEL=rc`) makes `AgentMeter-<version>-rc.dmg`. Never publish an rc
+  (`UPDATE_CHANNEL=rc`) makes `AgentMeter-<version>-rc.dmg`. The suffix comes
+  from the packaged app's `AgentMeterUpdateChannel`, and `dmg.sh` fails when
+  `UPDATE_CHANNEL` says otherwise, so an rc app can never be packaged under a
+  release name. The CI verify step also fails a release app that carries the
+  channel key or lacks an https `SUFeedURL`. Never publish an rc
   image. `Scripts/appcast.sh` leaves `*-rc.dmg` out of `make appcast` (it says
   so), refuses a `SPARKLE_VERSION` that names one, and exits non-zero when only
   rc images exist.

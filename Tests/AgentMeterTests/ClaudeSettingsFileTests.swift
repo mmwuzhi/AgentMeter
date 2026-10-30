@@ -29,6 +29,7 @@ final class ClaudeSettingsFileTests: XCTestCase {
         // Undo the permission tests before cleaning up.
         _ = chmod(dotfiles.path, 0o755)
         _ = chmod(claudeDirectory.path, 0o755)
+        if FileManager.default.fileExists(atPath: settings.path) { try? chmodACL(["-N"], on: settings) }
         try? FileManager.default.removeItem(at: root)
     }
 
@@ -58,6 +59,16 @@ final class ClaudeSettingsFileTests: XCTestCase {
 
     private func mode(_ url: URL) throws -> Int {
         try XCTUnwrap(FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int)
+    }
+
+    /// `/bin/chmod` with an ACL argument (`+a "…"` or `-N`).
+    private func chmodACL(_ arguments: [String], on url: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        process.arguments = arguments + [url.path]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
     }
 
     private func names(in directory: URL) -> [String] {
@@ -156,9 +167,10 @@ final class ClaudeSettingsFileTests: XCTestCase {
         XCTAssertEqual(linkDestination(settings), target.path)
     }
 
-    func testHardLinkedFileIsRefused() throws {
+    func testHardLinkedFileIsReadButNeverReplaced() throws {
         try original.write(to: settings)
         try FileManager.default.linkItem(at: settings, to: dotfiles.appendingPathComponent("hard.json"))
+        XCTAssertEqual(try file.read().originalData, original, "reading and isInstalled still work")
         XCTAssertThrowsError(try ClaudeHookInstaller.installHooks(running: cli, in: file)) { error in
             XCTAssertEqual(error as? ClaudeSettingsFile.Failure, .multipleHardLinks)
         }
@@ -176,6 +188,59 @@ final class ClaudeSettingsFileTests: XCTestCase {
         XCTAssertEqual(names(in: claudeDirectory), ["settings.json"])
         let text = try String(contentsOf: settings, encoding: .utf8)
         XCTAssertTrue(text.contains("http://proxy.example:8080"), "slashes are not escaped")
+    }
+
+    /// Review finding: the replacement took the old file's timestamps too,
+    /// so a watcher comparing modification times could miss the write.
+    func testRewriteLooksChangedAndKeepsModeAndExtendedAttributes() throws {
+        try original.write(to: settings)
+        XCTAssertEqual(chmod(settings.path, 0o640), 0)
+        let old = Date(timeIntervalSince1970: 1_600_000_000)
+        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: settings.path)
+        let tag = Array("kept".utf8)
+        XCTAssertEqual(setxattr(settings.path, "com.example.tag", tag, tag.count, 0, 0), 0)
+
+        XCTAssertTrue(try ClaudeHookInstaller.installHooks(running: cli, in: file))
+        let attributes = try FileManager.default.attributesOfItem(atPath: settings.path)
+        let modified = try XCTUnwrap(attributes[.modificationDate] as? Date)
+        XCTAssertGreaterThan(modified, Date().addingTimeInterval(-60))
+        XCTAssertEqual(try mode(settings), 0o640)
+        XCTAssertGreaterThanOrEqual(getxattr(settings.path, "com.example.tag", nil, 0, 0, 0), 0)
+    }
+
+    /// Review finding: a "deny delete" ACL copied onto the temporary file
+    /// made the failed rename leave it behind, one more each launch.
+    func testRefusedRenameLeavesNoTemporaryFileEvenWithADenyDeleteACL() throws {
+        try original.write(to: settings)
+        try chmodACL(["+a", "everyone deny delete"], on: settings)
+
+        XCTAssertThrowsError(try ClaudeHookInstaller.installHooks(running: cli, in: file)) { error in
+            guard case .writeFailed = error as? ClaudeSettingsFile.Failure else {
+                return XCTFail("unexpected \(error)")
+            }
+        }
+        XCTAssertEqual(names(in: claudeDirectory), ["settings.json"])
+        XCTAssertEqual(try Data(contentsOf: settings), original)
+    }
+
+    func testReplaceNeverOverwritesAFileThatAppearedMeanwhile() throws {
+        let url = claudeDirectory.appendingPathComponent("state.json")
+        let theirs = Data("theirs".utf8)
+        XCTAssertThrowsError(try AtomicFile.replace(url, with: Data("mine".utf8), onlyIfAbsent: true,
+                                                    beforeRename: { try theirs.write(to: url) })) { error in
+            XCTAssertEqual((error as? AtomicFile.Failure)?.code, EEXIST)
+        }
+        XCTAssertEqual(try Data(contentsOf: url), theirs)
+        XCTAssertEqual(names(in: claudeDirectory), ["state.json"])
+    }
+
+    func testReplaceStoppedRightBeforeTheRenameLeavesEverythingAsItWas() throws {
+        try original.write(to: settings)
+        struct Stop: Error {}
+        XCTAssertThrowsError(try AtomicFile.replace(settings, with: Data("mine".utf8), metadataFrom: settings,
+                                                    beforeRename: { throw Stop() }))
+        XCTAssertEqual(try Data(contentsOf: settings), original)
+        XCTAssertEqual(names(in: claudeDirectory), ["settings.json"])
     }
 
     func testMissingFileIsCreatedPrivateWithoutABackup() throws {
@@ -248,6 +313,22 @@ final class ClaudeSettingsFileTests: XCTestCase {
         try original.write(to: settings)
         XCTAssertTrue(try ClaudeHookInstaller.installHooks(running: cli, in: file))
         XCTAssertEqual(file.existingBackups().count, 1)
+    }
+
+    /// Review finding: a clock that once ran ahead left a name that sorts
+    /// after every new one, and the backup just written was pruned at once.
+    func testTheBackupJustWrittenIsNeverPruned() throws {
+        var limited = file
+        limited.backupsKept = 2
+        try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
+        let future = backups.appendingPathComponent("settings.json.29991231T000000.000000000Z-ffffffff.json")
+        try Data("{\"theme\": \"future\"}".utf8).write(to: future)
+        try original.write(to: settings)
+
+        XCTAssertTrue(try ClaudeHookInstaller.installHooks(running: cli, in: limited))
+        let kept = limited.existingBackups()
+        XCTAssertEqual(kept.count, 2)
+        XCTAssertTrue(try kept.contains { try Data(contentsOf: $0) == original }, "the new backup is kept")
     }
 
     func testOnlyTheNewestBackupsAreKept() throws {

@@ -15,7 +15,8 @@ import Foundation
 /// directory holds at most three; one older than `retention` is deleted by
 /// the next capture and at launch. Earlier builds wrote the same bodies
 /// unredacted, by default, 0644, into the folder above; `cleanUpAtLaunch`
-/// removes those files by name. Best effort throughout: a failure is ignored.
+/// removes those files by name, whether capturing is on or not. Best effort
+/// throughout: a failure is ignored.
 ///
 /// Money amounts (`extra_usage`, credit counts) are kept: the capture exists
 /// to read them. The opt-in, the permissions and the retention are what
@@ -89,7 +90,9 @@ struct DebugCapture {
     /// switch says, and with capturing off removes what earlier builds left.
     func cleanUpAtLaunch() {
         Self.sweep(directory, now: now())
-        if !isEnabled { Self.removeLegacyFiles(in: supportDirectory) }
+        // Unredacted and world-readable: never worth keeping, even for
+        // someone who captures today.
+        Self.removeLegacyFiles(in: supportDirectory)
     }
 
     /// Deletes the regular `.json` captures and `.tmp` leftovers of a crashed

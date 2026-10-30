@@ -858,10 +858,14 @@ since as unread.
 - `ClaudeSettingsFile` does the reading and writing. A symlinked
   `settings.json` is written through: the regular file it leads to is
   replaced atomically in its own directory, keeping its mode, ACL and
-  extended attributes, so the link survives (2026-07-13: a hook install wrote
-  a plain file over the developer's dotfile link). A dangling or looping
-  link, a link to anything but a regular file, a hard-linked file and a
-  file or directory the user cannot write are refused, never replaced.
+  extended attributes but not its timestamps (a change must look like one),
+  so the link survives (2026-07-13: a hook install wrote a plain file over
+  the developer's dotfile link). The file is compared with what was read
+  again right before the rename, and a file that did not exist is only ever
+  created, never replaced, so a write by Claude Code in between is not lost.
+  A dangling or looping link, a link to anything but a regular file and a
+  file or directory the user cannot write are refused, never replaced; a
+  hard-linked file can be read but is not rewritten.
   Nothing is written when the hooks are already as they should be. The
   replaced bytes go to `settings-backups/` in AgentMeter's support directory
   (0700 directory, 0600 files, a new copy only when they differ from the

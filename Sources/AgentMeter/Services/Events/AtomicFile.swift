@@ -27,10 +27,25 @@ enum AtomicFile {
 
     /// Writes `data` to a temporary file next to `url`, created with
     /// `permissions`, flushes it, and renames it over `url`: a reader sees
-    /// the old file or the new one, never a mix. With `metadataFrom`, the
-    /// temporary file first takes that file's mode, ACL and extended
-    /// attributes (when it can), so a file someone else owns keeps them.
-    static func replace(_ url: URL, with data: Data, permissions: mode_t = 0o600, metadataFrom source: URL? = nil) throws {
+    /// the old file or the new one, never a mix.
+    ///
+    /// - `metadataFrom`: the temporary file first takes that file's mode, ACL
+    ///   and extended attributes (when it can), so a file someone else keeps
+    ///   keeps them. Never its timestamps: the new contents must look changed.
+    /// - `onlyIfAbsent`: the rename fails with `EEXIST` instead of replacing a
+    ///   file that appeared meanwhile.
+    /// - `beforeRename`: runs last, right before the rename; throwing stops it.
+    ///
+    /// A temporary file left by a failure is removed, ACL cleared first (a
+    /// copied or inherited "deny delete" would otherwise keep it).
+    static func replace(
+        _ url: URL,
+        with data: Data,
+        permissions: mode_t = 0o600,
+        metadataFrom source: URL? = nil,
+        onlyIfAbsent: Bool = false,
+        beforeRename: (() throws -> Void)? = nil
+    ) throws {
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let temporary = directory.appendingPathComponent(".\(url.lastPathComponent).\(getpid()).\(UUID().uuidString).tmp")
@@ -38,7 +53,13 @@ enum AtomicFile {
         guard fd >= 0 else { throw Failure(operation: "open", code: errno) }
         var renamed = false
         defer {
-            if !renamed { unlink(temporary.path) }
+            if !renamed {
+                if let empty = acl_init(0) {
+                    acl_set_file(temporary.path, ACL_TYPE_EXTENDED, empty)
+                    acl_free(UnsafeMutableRawPointer(empty))
+                }
+                unlink(temporary.path)
+            }
         }
         do {
             defer { close(fd) }
@@ -46,13 +67,17 @@ enum AtomicFile {
             guard fsync(fd) == 0 else { throw Failure(operation: "fsync", code: errno) }
         }
         if let source {
-            let flags = copyfile_flags_t(COPYFILE_SECURITY | COPYFILE_XATTR)
-            if copyfile(source.path, temporary.path, nil, flags) != 0,
-               let mode = try? FileManager.default.attributesOfItem(atPath: source.path)[.posixPermissions] {
-                try? FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: temporary.path)
+            var status = stat()
+            if stat(source.path, &status) == 0 {
+                chmod(temporary.path, status.st_mode & 0o7777)
             }
+            _ = copyfile(source.path, temporary.path, nil, copyfile_flags_t(COPYFILE_ACL | COPYFILE_XATTR))
         }
-        guard rename(temporary.path, url.path) == 0 else { throw Failure(operation: "rename", code: errno) }
+        try beforeRename?()
+        let moved = onlyIfAbsent
+            ? renamex_np(temporary.path, url.path, UInt32(RENAME_EXCL))
+            : rename(temporary.path, url.path)
+        guard moved == 0 else { throw Failure(operation: "rename", code: errno) }
         renamed = true
     }
 

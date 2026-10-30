@@ -324,14 +324,16 @@ final class DebugCaptureTests: XCTestCase {
         XCTAssertEqual(names(debugDirectory), ["claude-oauth-usage.json"])
     }
 
-    func testLaunchWithCapturingOnLeavesTheLegacyFilesAlone() throws {
+    /// Review finding: the legacy files are unredacted and 0644, so they go
+    /// even for someone capturing today.
+    func testLaunchWithCapturingOnAlsoRemovesTheLegacyFiles() throws {
         for name in DebugCapture.legacyFileNames {
             try Data("{}".utf8).write(to: root.appendingPathComponent(name))
         }
 
         capture(enabled: true).cleanUpAtLaunch()
 
-        XCTAssertEqual(names(root), DebugCapture.legacyFileNames.sorted())
+        XCTAssertEqual(names(root), [])
     }
 
     func testLegacyCleanupToleratesMissingFiles() {

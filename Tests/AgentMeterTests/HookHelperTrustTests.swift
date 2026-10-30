@@ -92,7 +92,7 @@ final class HookHelperTrustTests: XCTestCase {
         let copy = directory.appendingPathComponent("true")
         try FileManager.default.copyItem(at: URL(fileURLWithPath: "/usr/bin/true"), to: copy)
         XCTAssertTrue(HookHelperTrust.isTrusted(copy, team: nil), "Apple's signature is valid on a copy")
-        XCTAssertFalse(HookHelperTrust.isTrusted(copy, team: "ZZZZZZZZZZ"), "not signed by that team")
+        XCTAssertFalse(HookHelperTrust.isTrusted(copy, team: "ABCDE12345"), "not signed by that team")
 
         var bytes = try Data(contentsOf: copy)
         let offset = try sliceOffset(of: bytes) + 0x200
