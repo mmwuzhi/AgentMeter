@@ -690,20 +690,23 @@ since as unread.
   window's extension host, and run in realpath(first folder). The CLI's
   hidden `--open-url` with `--user-data-dir` reaches only that instance, the
   isolation route for an experiment; no experiment was run.
-- Settings › Alerts shows the three banner switches (default on; labelled as
-  banners, with the note that the outcome is kept either way and the
-  session's row shows how its last turn ended), the session-title switch
-  (default on), "Notify about headless runs" (default off) and what
+- Settings › Alerts keeps one short line per setting, with details in hover
+  help. It shows the three banner switches (default on; labelled as
+  banners, with the note that the session's row shows how its last turn
+  ended either way), the session-title switch (default on; may appear on the
+  Lock Screen), "Notify about headless runs" (default off) and what
   System Settings says (`AgentMeterNotificationSettings`: permission, alert
   style, lock screen, previews), read when the pane appears and when
   AgentMeter becomes active again. Temporary (banners: shown once, gone by
   themselves, kept in Notification Center) and Persistent (alerts: on
   screen until clicked or closed) are the user's choice per app in System
   Settings; `UNNotificationSettings.alertStyle` is read-only and no request
-  option or interruption level makes a notification stay. The pane explains
-  both, shows the current one and links to AgentMeter's page there
+  option or interruption level makes a notification stay. The pane shows
+  the current one and links to AgentMeter's page there
   (`x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=`,
-  the extension's own URL scheme; undocumented by Apple). Temporary is the
+  the extension's own URL scheme; undocumented by Apple). The pane says only
+  where the style is changed; the two styles are named in the row's help.
+  Temporary is the
   default (no `NSUserNotificationAlertStyle` in Info.plist), so only "no
   notifications on screen" and "not allowed" get guidance. AgentMeter never
   changes them and never imitates a persistent notification. With previews hidden, a task banner reads as the

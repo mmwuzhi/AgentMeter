@@ -57,22 +57,22 @@ final class TaskNotificationSettingsTests: XCTestCase {
         let persistent = Settings(authorization: .authorized, alertStyle: .alert, lockScreen: .enabled, previews: .always)
         XCTAssertEqual(persistent.alertStyleText, "Persistent (alerts)")
         XCTAssertNil(persistent.guidance, "already stays until acted on")
-        XCTAssertTrue(persistent.privacyNote?.contains("When unlocked") == true)
+        XCTAssertTrue(persistent.privacyNote?.contains("When Unlocked") == true)
 
         let quiet = Settings(authorization: .authorized, alertStyle: .none)
-        XCTAssertTrue(quiet.guidance?.contains("without appearing on screen") == true)
+        XCTAssertTrue(quiet.guidance?.contains("only reach Notification Center") == true)
         XCTAssertTrue(quiet.guidance?.contains("Temporary or Persistent") == true)
         XCTAssertEqual(Settings(authorization: .authorized, lockScreen: .disabled).lockScreenText, "Not shown")
     }
 
-    /// Both styles explained, and that only System Settings chooses: no
-    /// AgentMeter switch could change it (`alertStyle` is read-only).
+    /// One line on the pane says where the style is chosen: no AgentMeter
+    /// switch could change it (`alertStyle` is read-only). The help names
+    /// both styles and the exact place.
     func testTheStyleExplanationNamesBothAndWhereToChoose() {
-        let text = Settings.styleExplanation
-        for fragment in ["Temporary:", "Persistent:", "until you click it or close it",
-                         "System Settings › Notifications › AgentMeter › Alert style", "Temporary is the default",
-                         "never changes it"] {
-            XCTAssertTrue(text.contains(fragment), fragment)
+        XCTAssertEqual(Settings.styleExplanation, "Change how long notifications stay visible in macOS System Settings.")
+        for fragment in ["Temporary", "Persistent", "until you close them",
+                         "System Settings › Notifications › AgentMeter › Alert style"] {
+            XCTAssertTrue(Settings.styleHelp.contains(fragment), fragment)
         }
     }
 

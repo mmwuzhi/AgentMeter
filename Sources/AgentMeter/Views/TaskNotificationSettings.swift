@@ -29,22 +29,22 @@ struct TaskNotificationSettingsSections: View {
     }
 
     var body: some View {
-        Section("Claude Code tasks: macOS banners") {
+        Section("Claude Code Tasks") {
             Toggle("Show a banner when a task finishes", isOn: $completed)
             Toggle("Show a banner when a task fails", isOn: $failed)
             Toggle("Show a banner when a session needs input", isOn: $waiting)
-            Text("These switches only turn macOS notification banners on or off. Either way AgentMeter keeps the outcome in its history, and while the session is open its row in the Sessions list shows how its last turn ended. A task whose background work was still running at the last check is never sent as a banner.")
+            Text("Turning these off stops only the banners; each session's row still shows how its last turn ended.")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Show session titles in banners", isOn: $showsSessionTitle)
-            Text("Banners name the session as the Sessions list does. Unless you renamed the session, its title is Claude's summary of your first prompt, and banners can appear on the lock screen; off, they show the project and a short session id instead. AgentMeter keeps each task's session title in its history on this Mac either way. Applies to banners sent from now on.")
+                .help("Off, banners name the project and a short session ID instead.")
+            Text("Include session titles in notifications. Titles may appear on the Lock Screen.")
                 .font(.caption).foregroundStyle(.secondary)
-        }
-        Section("Claude Code tasks: headless runs") {
             Toggle("Notify about headless runs", isOn: $notifiesHeadlessRuns)
-            Text("Runs Claude Code itself marks as unattended: claude -p, the Agent SDK, and Claude Code started from inside another session, such as a batch job's helpers. Off, they get no banner: what becomes of them is kept in AgentMeter's history (and a run still open shows it on its row like any session). On, they are announced like your own sessions. Your sessions in a terminal, VS Code or the desktop app, and background sessions you start (claude --bg), are announced either way. An editor that runs Claude Code through the Agent SDK counts as unattended too: turn this on if you use one. Applies from the next finished, failed or waiting task.")
+                .help("Doesn't affect your own sessions in a terminal, VS Code or the desktop app. An editor that runs Claude Code through the Agent SDK counts as headless.")
+            Text("Also notify for unattended runs, such as claude -p and Agent SDK tasks.")
                 .font(.caption).foregroundStyle(.secondary)
         }
-        Section("macOS notifications") {
+        Section("macOS Notifications") {
             switch system {
             case .reading:
                 Text("Reading notification settings…").foregroundStyle(.secondary)
@@ -54,6 +54,7 @@ struct TaskNotificationSettingsSections: View {
                 LabeledContent("Permission", value: settings.authorizationText)
                 if settings.canPost {
                     LabeledContent("Alert style", value: settings.alertStyleText)
+                        .help(AgentMeterNotificationSettings.styleHelp)
                     Text(AgentMeterNotificationSettings.styleExplanation)
                         .font(.caption).foregroundStyle(.secondary)
                     LabeledContent("Lock screen", value: settings.lockScreenText)

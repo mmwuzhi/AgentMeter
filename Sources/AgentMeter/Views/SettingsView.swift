@@ -323,13 +323,13 @@ private struct AlertSettings: View {
 
     var body: some View {
         Form {
-            Section("Alerts") {
+            Section("Quota") {
                 thresholdField("Warn (yellow dot) at", $warnThresholdPercent)
                 thresholdField("Critical (red dot) at", $alertThresholdPercent)
                 Toggle("Notify when critical", isOn: $alertsEnabled)
                 Toggle("Notify when quota recovers after critical", isOn: $quotaRecoveryNotificationsEnabled)
                     .disabled(!alertsEnabled)
-                Text("A yellow then red dot appears as quota runs low. Critical notifications fire once, and recovery notifications fire only after a critical window resets.")
+                Text("You get one critical notification per quota window, and a recovery notice once it resets.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             TaskNotificationSettingsSections()

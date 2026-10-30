@@ -128,13 +128,15 @@ struct AgentMeterNotificationSettings: Sendable, Equatable {
         }
     }
 
-    /// The two styles, and that only System Settings chooses between them:
-    /// `UNNotificationSettings.alertStyle` is read-only, and no request
-    /// option or interruption level makes a notification stay. macOS 26
-    /// calls them Temporary and Persistent (Banners and Alerts on older
-    /// macOS); a new app starts with Temporary, which AgentMeter keeps (no
-    /// `NSUserNotificationAlertStyle` in its Info.plist).
-    static let styleExplanation = "Temporary: a notification appears once, leaves the screen by itself after a few seconds and stays in Notification Center. Persistent: it stays on screen until you click it or close it. macOS lets only you choose, per app, in System Settings › Notifications › AgentMeter › Alert style (Banners and Alerts on older macOS). Temporary is the default; AgentMeter follows your choice and never changes it."
+    /// Only System Settings chooses the style, so the pane says where (one
+    /// line) and the help names the two: `UNNotificationSettings.alertStyle`
+    /// is read-only, and no request option or interruption level makes a
+    /// notification stay. macOS 26 calls them Temporary and Persistent
+    /// (Banners and Alerts on older macOS); a new app starts with Temporary,
+    /// which AgentMeter keeps (no `NSUserNotificationAlertStyle` in its
+    /// Info.plist).
+    static let styleExplanation = "Change how long notifications stay visible in macOS System Settings."
+    static let styleHelp = "Temporary banners leave the screen by themselves; Persistent alerts stay until you close them. Choose in System Settings › Notifications › AgentMeter › Alert style."
 
     /// What stands between AgentMeter's notifications and the screen. Nil
     /// when they appear in whichever style the user chose.
@@ -143,7 +145,7 @@ struct AgentMeterNotificationSettings: Sendable, Equatable {
         case .notDetermined:
             return "AgentMeter asks for permission the first time it has something to tell you."
         case .denied:
-            return "Notifications are off for AgentMeter. Turn on Allow notifications in System Settings › Notifications › AgentMeter; meanwhile the Sessions list still shows how each session's last turn ended."
+            return "Turn on Allow notifications in System Settings › Notifications › AgentMeter."
         case .unknown:
             return nil
         case .authorized, .provisional, .ephemeral:
@@ -153,13 +155,13 @@ struct AgentMeterNotificationSettings: Sendable, Equatable {
         case .alert, .banner, .unknown:
             return nil
         case .none:
-            return "Notifications go to Notification Center without appearing on screen. To see them as they arrive, let AgentMeter show notifications on the desktop and choose Temporary or Persistent in System Settings › Notifications › AgentMeter."
+            return "Notifications only reach Notification Center. To see them on screen, allow them on the desktop and choose Temporary or Persistent in System Settings › Notifications › AgentMeter."
         }
     }
 
     /// Only when the lock screen shows a notification's text.
     var privacyNote: String? {
         guard canPost, lockScreen == .enabled, previews == .always else { return nil }
-        return "The lock screen shows the project name (and the session title, if turned on). Set Show previews to When unlocked in System Settings › Notifications to hide it there."
+        return "Banner text shows on the Lock Screen. To hide it, set Show Previews to When Unlocked in System Settings › Notifications."
     }
 }
