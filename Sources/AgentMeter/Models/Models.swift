@@ -858,13 +858,16 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     /// hook state to say otherwise (Codex, and every subagent).
     static let recentActivityWindow: TimeInterval = 120
     static let futureActivityTolerance: TimeInterval = 60
-    /// How long a hook-reported `error` keeps the row red. Nothing but the
-    /// session's next hook event overwrites the state, so a failed turn in a
-    /// tab nobody returns to would otherwise stay "needs attention" — and turn
-    /// its whole group red — for as long as the tab is open. The same 12 hours
-    /// after which the launch sweep (`AgentStatusStore.sweepStale`) drops a
-    /// payload outright.
-    static let errorAttentionWindow: TimeInterval = 12 * 3_600
+    /// How long a hook-reported `error` keeps the row failed (red, a cross,
+    /// first in the order, its group open): the same hour a finished turn is
+    /// marked (`turnResultWindow`, 2026-10-30; it was 12 hours). Nothing but
+    /// the session's next hook event overwrites the state, so a failed turn
+    /// in a tab nobody returns to would otherwise stay failed for as long as
+    /// the tab is open. After it the row is plain idle.
+    static let errorAttentionWindow: TimeInterval = turnResultWindow
+    /// Hook payloads older than this are dropped by the launch sweep
+    /// (`AgentStatusStore.sweepStale`): files of sessions long gone.
+    static let stalePayloadAge: TimeInterval = 12 * 3_600
 
     let provider: Provider
     let pid: Int
@@ -918,7 +921,7 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
     }
 
     /// The hook last recorded a failed turn, longer ago than
-    /// `errorAttentionWindow`: the row goes gray and says when it failed.
+    /// `errorAttentionWindow`: the row is plain idle again.
     var hasStaleError: Bool {
         guard status == .error, let statusUpdatedAt else { return false }
         return observedAt.timeIntervalSince(statusUpdatedAt) > Self.errorAttentionWindow
@@ -939,23 +942,26 @@ struct ActiveAgent: Identifiable, Codable, Sendable, Equatable {
             // that the user has to act.
             return waitingReason?.activityText ?? (statusSource == .registry ? "waiting" : "waiting for input")
         case .error:
-            // Red while it is recent, gray after `errorAttentionWindow`; the
-            // words say what happened and when either way.
+            // Failed for `errorAttentionWindow`, then plain idle.
+            guard !hasStaleError else { return idleText }
             guard let statusUpdatedAt else { return "last turn failed" }
             return "last turn failed · \(relativeAge(since: statusUpdatedAt))"
         case .idle:
-            // The turn ended with work still in flight (the last `Stop`'s
-            // count, kept beside the registry's idle): that goes in the age's
-            // place, which would otherwise read as the session having been
-            // quiet all that time.
-            if let pending = backgroundTaskText { return "idle · \(pending)" }
-            guard let lastActivityAt else { return "idle" }
-            return "idle · \(relativeAge(since: lastActivityAt))"
+            return idleText
         case nil:
             guard let lastUpdatedAt = session?.lastUpdatedAt else { return "open now" }
             if hasRecentSessionActivity { return "active now" }
             return "idle · \(relativeAge(since: lastUpdatedAt))"
         }
+    }
+
+    /// The turn ended with work still in flight (the last `Stop`'s count,
+    /// kept beside the registry's idle): that goes in the age's place, which
+    /// would otherwise read as the session having been quiet all that time.
+    private var idleText: String {
+        if let pending = backgroundTaskText { return "idle · \(pending)" }
+        guard let lastActivityAt else { return "idle" }
+        return "idle · \(relativeAge(since: lastActivityAt))"
     }
 
     /// True when the process is known only to exist: no hook-reported state and

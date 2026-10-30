@@ -149,8 +149,8 @@ final class ActiveAgentListingTests: XCTestCase {
     }
 
     func testAnOldFailureIsJustAnIdleSession() {
-        // Past `errorAttentionWindow` the row reads idle, so the idle rule
-        // applies: still listed at 13 h, hidden at 30 h.
+        // Past `errorAttentionWindow` (an hour) the row reads idle, so the
+        // idle rule applies: still listed at 13 h, hidden at 30 h.
         let thirteen = agent(1, status: .error, source: .hook, stateAge: 13 * hour, transcriptAge: 13 * hour)
         XCTAssertEqual(thirteen.displayStatus, .idle)
         XCTAssertTrue(thirteen.isListed)

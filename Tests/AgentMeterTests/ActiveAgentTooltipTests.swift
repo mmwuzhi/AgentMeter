@@ -198,11 +198,11 @@ final class ActiveAgentTooltipTests: XCTestCase {
         XCTAssertEqual(state(agent(status: nil)), "Open")
     }
 
-    func testAFailureOlderThanTwelveHoursReadsAsLastTurnFailed() {
+    func testAFailureOlderThanAnHourReadsAsIdle() {
         let stale = agent(status: .error, source: .hook, stateAge: ActiveAgent.errorAttentionWindow + 3_600)
 
         XCTAssertEqual(tooltip(stale).components(separatedBy: "\n")[1],
-                       "Last turn failed · Last activity: 13h ago (Oct 28, 11:00 PM)")
+                       "Idle · Last activity: 2h ago (10:00 AM)")
     }
 
     // MARK: Last activity

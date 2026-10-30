@@ -78,18 +78,50 @@ enum ActiveAgentService {
     /// Newest hook payload per running agent PID. A payload is attributed to
     /// the nearest ancestor in its recorded process chain that is a live agent
     /// PID, so helpers spawned by a session report for their owning agent.
+    ///
+    /// Unless a Claude process on the way there is the payload's own session:
+    /// a `claude -p` a session started from its Bash records the chain [itself,
+    /// the shell, the session's claude, …] (2.1.312, 2026-10-30) and registers
+    /// under its own session id, but it is no row until the next full refresh
+    /// (`ps`) — the popover's 2 s tick re-attaches state to the rows it has.
+    /// Its payload then reached the parent first, and a `StopFailure` in it
+    /// stood beside the parent's idle registry: the parent read "last turn
+    /// failed" until the child exited (its `SessionEnd` removes the payload).
+    /// So a payload whose chain passes a non-row process registered
+    /// (`registrySessions`, pid → session id) under the payload's session
+    /// belongs to that process, and no row gets it. A helper registered under
+    /// the row's own session still reports for the row, as before; without a
+    /// registry entry for the child the old attribution stands.
     static func latestPayloadsByPID(
         _ payloads: [AgentStatusPayload],
-        agentPIDs: Set<Int>
+        agentPIDs: Set<Int>,
+        registrySessions: [Int: String] = [:]
     ) -> [Int: AgentStatusPayload] {
         var byPID: [Int: AgentStatusPayload] = [:]
         for payload in payloads {
-            if let pid = payload.processAncestry?.first(where: agentPIDs.contains),
-               payload.updatedAt > (byPID[pid]?.updatedAt ?? .distantPast) {
-                byPID[pid] = payload
-            }
+            guard let pid = owner(of: payload, agentPIDs: agentPIDs, registrySessions: registrySessions),
+                  payload.updatedAt > (byPID[pid]?.updatedAt ?? .distantPast) else { continue }
+            byPID[pid] = payload
         }
         return byPID
+    }
+
+    /// The agent row a payload reports for, or nil (`latestPayloadsByPID`).
+    static func owner(of payload: AgentStatusPayload, agentPIDs: Set<Int>,
+                      registrySessions: [Int: String]) -> Int? {
+        var claimed = false
+        for pid in payload.processAncestry ?? [] {
+            if agentPIDs.contains(pid) {
+                return claimed && registrySessions[pid] != payload.sessionID ? nil : pid
+            }
+            if registrySessions[pid] == payload.sessionID { claimed = true }
+        }
+        return nil
+    }
+
+    /// Each registry entry's session id by PID, for `latestPayloadsByPID`.
+    static func registrySessions(_ registry: [Int: ClaudeSessionRegistryEntry]) -> [Int: String] {
+        registry.compactMapValues(\.sessionID)
     }
 
     /// The hook payload attributable to this PID, guarded against PID reuse:
@@ -128,7 +160,8 @@ enum ActiveAgentService {
         registry: [Int: ClaudeSessionRegistryEntry] = [:]
     ) -> [ActiveAgent] {
         let claudePIDs = Set(agents.lazy.filter { $0.provider == .claude }.map(\.pid))
-        let byPID = latestPayloadsByPID(payloads, agentPIDs: claudePIDs)
+        let byPID = latestPayloadsByPID(payloads, agentPIDs: claudePIDs,
+                                        registrySessions: registrySessions(registry))
 
         return agents.map { agent in
             guard agent.provider == .claude else { return agent }
@@ -220,7 +253,8 @@ enum ActiveAgentService {
                   process.provider == .claude else { return nil }
             return row.pid
         })
-        let payloadsByPID = latestPayloadsByPID(payloads, agentPIDs: claudePIDs)
+        let payloadsByPID = latestPayloadsByPID(payloads, agentPIDs: claudePIDs,
+                                                registrySessions: registrySessions(registry))
         let claudeStarts = Dictionary(
             rows.lazy.filter { claudePIDs.contains($0.pid) }
                 .map { ($0.pid, observedAt.addingTimeInterval(-$0.elapsedSeconds)) },

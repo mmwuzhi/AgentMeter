@@ -154,10 +154,10 @@ final class ActiveAgentServiceTests: XCTestCase {
         XCTAssertEqual(attached?.status, .error)
         XCTAssertEqual(attached?.statusUpdatedAt, failed.updatedAt)
         XCTAssertEqual(attached?.displayStatus, .idle)
-        XCTAssertEqual(attached?.activityText, "last turn failed · 4d ago")
+        XCTAssertEqual(attached?.activityText, "idle · 4d ago", "past the hour a failure is plain idle")
     }
 
-    func testAFailedTurnStaysRedForTwelveHoursThenGoesGray() {
+    func testAFailedTurnStaysFailedForAnHourThenIsPlainIdle() {
         let now = Date(timeIntervalSince1970: 1_000_000)
         func agent(failedAgo age: TimeInterval?) -> ActiveAgent {
             ActiveAgent(provider: .claude, pid: 100, parentPID: 1, command: "claude",
@@ -165,15 +165,19 @@ final class ActiveAgentServiceTests: XCTestCase {
                         statusUpdatedAt: age.map { now.addingTimeInterval(-$0) })
         }
 
-        let fresh = agent(failedAgo: 3_600)
+        XCTAssertEqual(ActiveAgent.errorAttentionWindow, 3_600, "the same hour as a finished turn's mark")
+        XCTAssertEqual(ActiveAgent.errorAttentionWindow, ActiveAgent.turnResultWindow)
+        let fresh = agent(failedAgo: 1_800)
         XCTAssertEqual(fresh.displayStatus, .error)
-        XCTAssertEqual(fresh.activityText, "last turn failed · 1h ago", "fresh or stale, the words say what happened and when")
+        XCTAssertEqual(fresh.activityText, "last turn failed · 30m ago")
         XCTAssertEqual(agent(failedAgo: ActiveAgent.errorAttentionWindow).displayStatus, .error)
 
         let stale = agent(failedAgo: ActiveAgent.errorAttentionWindow + 1)
         XCTAssertEqual(stale.displayStatus, .idle)
-        XCTAssertEqual(stale.activityText, "last turn failed · 12h ago")
-        XCTAssertTrue(ActiveAgentTooltip.text(for: stale).split(separator: "\n")[1].hasPrefix("Last turn failed"))
+        XCTAssertEqual(stale.activityText, "idle · 1h ago", "no red, no cross, no failure words")
+        XCTAssertTrue(ActiveAgentTooltip.text(for: stale).split(separator: "\n")[1].hasPrefix("Idle"))
+        // The launch sweep of old payload files keeps its own, longer age.
+        XCTAssertEqual(ActiveAgent.stalePayloadAge, 12 * 3_600)
 
         // A state built without a write time keeps its color.
         XCTAssertEqual(agent(failedAgo: nil).displayStatus, .error)
@@ -733,6 +737,85 @@ final class ActiveAgentServiceTests: XCTestCase {
 
         XCTAssertEqual(byPID.count, 1)
         XCTAssertEqual(byPID[100]?.sessionID, "new")
+    }
+
+    // MARK: A child session's payload
+
+    /// The chain a `claude -p` run from a session's Bash recorded on
+    /// 2026-10-30 (2.1.312): itself, the shell, the session's claude, the
+    /// editor's helper, the editor. Each claude registers under its own
+    /// session id.
+    private let childChain = [95_067, 95_066, 5_234, 27_934, 27_875]
+    private let childRegistry = [95_067: "child-session", 5_234: "parent-session"]
+
+    func testAChildSessionsPayloadIsNotTheParentsBeforeTheChildIsARow() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let child = AgentStatusPayload(state: .error, sessionID: "child-session",
+                                       processAncestry: childChain, updatedAt: now)
+        let parent = AgentStatusPayload(state: .idle, sessionID: "parent-session",
+                                        processAncestry: [5_234, 27_934, 27_875], updatedAt: now.addingTimeInterval(-60))
+
+        // The popover's tick: only the parent is a row yet.
+        let tick = ActiveAgentService.latestPayloadsByPID([child, parent], agentPIDs: [5_234],
+                                                          registrySessions: childRegistry)
+        XCTAssertEqual(tick[5_234]?.sessionID, "parent-session", "the newer child payload stays the child's")
+        // Before the fix, the nearest row took it.
+        XCTAssertEqual(ActiveAgentService.latestPayloadsByPID([child, parent], agentPIDs: [5_234])[5_234]?.sessionID,
+                       "child-session")
+
+        // The next full refresh lists the child: it gets its own.
+        let full = ActiveAgentService.latestPayloadsByPID([child, parent], agentPIDs: [5_234, 95_067],
+                                                          registrySessions: childRegistry)
+        XCTAssertEqual(full[95_067]?.sessionID, "child-session")
+        XCTAssertEqual(full[5_234]?.sessionID, "parent-session")
+    }
+
+    func testAHelperRegisteredUnderTheRowsOwnSessionStillReportsForIt() {
+        // Claude Code can register a helper it spawns under the session's id;
+        // its payload names that session, and the row is that session.
+        let now = Date(timeIntervalSince1970: 10_000)
+        let helper = AgentStatusPayload(state: .working, sessionID: "parent-session",
+                                        processAncestry: [700, 5_234, 1], updatedAt: now)
+        let byPID = ActiveAgentService.latestPayloadsByPID(
+            [helper], agentPIDs: [5_234], registrySessions: [700: "parent-session", 5_234: "parent-session"])
+        XCTAssertEqual(byPID[5_234]?.sessionID, "parent-session")
+        // A child the registry does not know (a missed read): as before.
+        let unknown = AgentStatusPayload(state: .error, sessionID: "child-session",
+                                         processAncestry: childChain, updatedAt: now)
+        XCTAssertEqual(ActiveAgentService.latestPayloadsByPID([unknown], agentPIDs: [5_234],
+                                                              registrySessions: [5_234: "parent-session"])[5_234]?.sessionID,
+                       "child-session", "without the child's registry entry nothing proves whose it is")
+    }
+
+    func testAChildsFailureDoesNotMarkItsIdleParentFailed() {
+        // The parent's turn ended (registry idle); the child it left running
+        // in the background hits a StopFailure before the next full refresh.
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let parentRow = ActiveAgent(provider: .claude, pid: 5_234, parentPID: 27_934, command: "claude",
+                                    elapsedSeconds: 3_600, observedAt: now, cwd: "/tmp/project")
+        let idle = ClaudeSessionRegistryEntry(pid: 5_234, sessionID: "parent-session", cwd: "/tmp/project",
+                                              startedAt: now.addingTimeInterval(-3_596), status: .idle,
+                                              waitingFor: nil, statusUpdatedAt: now.addingTimeInterval(-5))
+        let childEntry = ClaudeSessionRegistryEntry(pid: 95_067, sessionID: "child-session", cwd: "/tmp/project",
+                                                    startedAt: now.addingTimeInterval(-20), status: .idle,
+                                                    waitingFor: nil, statusUpdatedAt: now)
+        let ownIdle = AgentStatusPayload(state: .idle, sessionID: "parent-session",
+                                         processAncestry: [5_234, 27_934], updatedAt: now.addingTimeInterval(-5))
+        let childFailure = AgentStatusPayload(state: .error, sessionID: "child-session",
+                                              processAncestry: childChain, updatedAt: now)
+
+        let row = ActiveAgentService.attachStatus([parentRow], payloads: [ownIdle, childFailure],
+                                                  registry: [5_234: idle, 95_067: childEntry]).first
+        XCTAssertEqual(row?.status, .idle)
+        XCTAssertNil(row?.turnMarker(in: [:]), "no \"last turn failed\" on the parent")
+
+        // The parent's own failure still shows.
+        let ownFailure = AgentStatusPayload(state: .error, sessionID: "parent-session",
+                                            processAncestry: [5_234, 27_934], updatedAt: now.addingTimeInterval(-5))
+        let failed = ActiveAgentService.attachStatus([parentRow], payloads: [ownFailure, childFailure],
+                                                     registry: [5_234: idle, 95_067: childEntry]).first
+        XCTAssertEqual(failed?.status, .error)
+        XCTAssertEqual(failed?.activityText, "last turn failed · 5s ago")
     }
 
     func testParsePSOutputAssociatesIdentifiedCodexSandboxesInSameDirectory() {

@@ -445,7 +445,7 @@ usage presentation, cached state, or Claude live-session integration.
   it, and none invents one: a registry state without a stamp stays undated
   (`resolveStatus` does not fill in "now"), an undated session shows no age,
   sorts last among the idle and the tooltip leaves "Last activity" out. A
-  failed turn's own row text ("last turn failed · 12h ago") keeps the failure's
+  failed turn's own row text ("last turn failed · 12m ago") keeps the failure's
   time, which is what it says. A count of background tasks from the last `Stop`
   is not a sign of life.
 - Order (`ActiveAgentGrouping.OrderKey`, one comparator for processes, nodes
@@ -542,10 +542,12 @@ since as unread.
   session is resumed in a new process (the parked ledger issue), and only
   `lastPromptAt` decides.
 - On a row (`ActiveAgent.turnMarker(in:)`), the state wins: working and
-  waiting show no result. `error` (the hook's `StopFailure`, red for
-  `errorAttentionWindow`, 12 h) is the failed turn itself: a red cross and
-  "last turn failed · 3m ago" (it read "needs attention"), timed by the
-  hook. An idle (or undated) row shows its session's result for
+  waiting show no result. `error` (the hook's `StopFailure`) is the failed
+  turn itself: a red cross and "last turn failed · 3m ago" (it read "needs
+  attention"), timed by the hook, for `errorAttentionWindow`, the same hour
+  as a finished mark (the user's choice, 2026-10-30; it was red for 12 h).
+  After it the row is plain idle: gray, "idle · 1h ago", ordered and grouped
+  as idle, its group no longer opened for it. An idle (or undated) row shows its session's result for
   `ActiveAgent.turnResultWindow` (1 h) after the turn ended, measured at the
   row's `observedAt` like its other ages: a green check and "last turn
   finished · 3m ago", or a red cross and "last turn failed · 3m ago" for a
@@ -805,10 +807,11 @@ since as unread.
   `agent_id` beside the parent's `session_id`, and the main agent gets that
   failure back as a tool result and carries on. Nothing but the session's
   next hook event overwrites an `error`, so `ActiveAgent.displayStatus`
-  shows it red for `ActiveAgent.errorAttentionWindow` (12 h, the launch
-  sweep's age) after the write and gray after that, with the row reading
-  "last turn failed · 4d ago". Without the window a 429 in a tab nobody went
-  back to turned its group red for four days.
+  shows it failed for `ActiveAgent.errorAttentionWindow` (1 h since
+  2026-10-30, 12 h before) after the write and plain idle after that ("idle
+  · 4d ago"). Without the window a 429 in a tab nobody went back to turned
+  its group red for four days. The launch sweep of old payload files keeps
+  its own 12 h (`ActiveAgent.stalePayloadAge`).
 - The bundled helper reads the whole hook input (`HookStandardInput`), never
   a fixed prefix: a `PostToolUse` input carries the tool's response, and a
   fixed-size read could truncate a large input. Only
@@ -896,6 +899,22 @@ since as unread.
   fallback: the only payloads it could match are the ones the PID-lifetime
   guard refused — a dead predecessor's after a crash or a `--resume`, which
   painted a fresh process yellow or green until its first hook event.
+- Ancestry goes to the nearest row, except past a Claude process that is the
+  payload's own session (`ActiveAgentService.owner(of:)`). A `claude -p` a
+  session runs from its Bash records [itself, the shell, the session's
+  claude, …] and registers under its own session id (2.1.312, checked
+  2026-10-30), but it is a row only from the next full refresh (`ps`); the
+  popover's 2 s tick re-attaches state to the rows it has. Until then its
+  payload reached the parent first, and a `StopFailure` in it stood beside
+  the parent's idle registry (`resolveStatus`): the parent read "last turn
+  failed" (red, first, its group opened) until the child exited and its
+  `SessionEnd` removed the payload, or the next full refresh. Now a payload
+  whose chain passes a non-row PID registered under the payload's session
+  goes to no row. Only an `error` showed that way (the registry outranks
+  the payload otherwise), and only while a popover was open. A helper
+  registered under the row's own session still reports for the row, and a
+  child whose registry file was not read (a read mid-write, twice) is
+  attributed as before for that tick.
 - Hook-reported session IDs pin a PID to its exact transcript
   (`identifiedClaudeSession`), so per-session usage stays correct when several
   agents share a working directory. A pinned ID whose transcript is under

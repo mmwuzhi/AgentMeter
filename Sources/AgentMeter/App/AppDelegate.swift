@@ -44,8 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Repair launch-at-login if an update (ad-hoc signature change) silently dropped it.
         LoginItem.reconcile()
 
-        // The same age after which a hook-reported error stops being red.
-        AgentStatusStore.sweepStale(olderThan: ActiveAgent.errorAttentionWindow)
+        AgentStatusStore.sweepStale(olderThan: ActiveAgent.stalePayloadAge)
         if UserDefaults.standard.bool(forKey: "statusHooksEnabled") {
             _ = ClaudeHookInstaller.installManagedCLI()
             _ = try? ClaudeHookInstaller.install()

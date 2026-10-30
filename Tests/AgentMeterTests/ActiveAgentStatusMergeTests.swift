@@ -209,8 +209,8 @@ final class ActiveAgentStatusMergeTests: XCTestCase {
         XCTAssertEqual(row.status, .error)
     }
 
-    func testAStaleErrorGoesGrayBesideTheRegistryToo() {
-        // A tab open for two days whose turn failed 13 hours ago and that
+    func testAStaleErrorIsPlainIdleBesideTheRegistryToo() {
+        // A tab open for two days whose turn failed over an hour ago and that
         // nobody went back to: the registry has said idle since that moment.
         let processAge: TimeInterval = 2 * 86_400
         let failedAt = now.addingTimeInterval(-ActiveAgent.errorAttentionWindow - 60)
@@ -222,7 +222,7 @@ final class ActiveAgentStatusMergeTests: XCTestCase {
 
         XCTAssertEqual(row.status, .error)
         XCTAssertEqual(row.displayStatus, .idle)
-        XCTAssertEqual(row.activityText, "last turn failed · 12h ago")
+        XCTAssertEqual(row.activityText, "idle · 30s ago", "its transcript's age, as any idle row")
     }
 
     // MARK: Fallback

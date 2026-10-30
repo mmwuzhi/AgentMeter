@@ -172,11 +172,26 @@ final class SessionTurnResultTests: XCTestCase {
         XCTAssertNotNil(row.turnMarker(in: ["s1": finished(ago: -300)]), "a five-minute refresh interval")
     }
 
-    func testAStaleFailureKeepsItsGrayRowAndOldText() {
-        let row = agent(status: .error, stateAge: 13 * 3_600)
+    func testAFailureGoesByItselfAfterTheSameHour() throws {
+        let recent = agent(status: .error, stateAge: 3_600)
+        XCTAssertEqual(recent.displayStatus, .error)
+        XCTAssertEqual(recent.turnMarker(in: [:]), .failed(at: observedAt.addingTimeInterval(-3_600)))
+
+        let row = agent(status: .error, stateAge: 3_601)
         XCTAssertTrue(row.hasStaleError)
-        XCTAssertNil(row.turnMarker(in: [:]), "no mark past the error's twelve hours")
-        XCTAssertEqual(row.activityText(marker: nil), "last turn failed · 13h ago")
+        XCTAssertEqual(row.displayStatus, .idle, "not red, not first in the order")
+        XCTAssertNil(row.turnMarker(in: [:]), "no cross past the hour")
+        XCTAssertEqual(row.activityText(marker: row.turnMarker(in: [:])), "idle · 5m ago", "plain idle with its age")
+        // The event saw the same failure: it goes at the same time.
+        let failed = SessionTurnResult(outcome: .failed, endedAt: observedAt.addingTimeInterval(-3_601), detail: nil)
+        XCTAssertNil(row.turnMarker(in: ["s1": failed]))
+        // Its group no longer opens or counts it.
+        let group = try XCTUnwrap(ActiveAgentGrouping.group([row, agent(pid: 2, session: "s2")]).first)
+        XCTAssertFalse(group.needsAttention)
+        XCTAssertNil(group.turnMarker(in: ["s1": failed]))
+        XCTAssertEqual(group.collapsedSummary(turnResults: ["s1": failed]), "2")
+        // A wait is the state now, whatever its age.
+        XCTAssertEqual(agent(status: .waiting, stateAge: 5 * 3_600).displayStatus, .waiting)
     }
 
     func testOnlyTheRowsOwnSessionCounts() {

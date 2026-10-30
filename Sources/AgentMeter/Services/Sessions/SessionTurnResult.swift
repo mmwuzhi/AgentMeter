@@ -133,9 +133,9 @@ extension ActiveAgent {
     /// The latest turn's mark for this row, measured at the row's own
     /// `observedAt` like its other ages. None while it works or waits: the
     /// state is what it is doing now. A hook-reported failure (`error`, red
-    /// for `errorAttentionWindow`) is the failed turn itself and keeps its
-    /// own time. Otherwise the session's latest result (`SessionTurnResults
-    /// .current`) within `turnResultWindow`.
+    /// for `errorAttentionWindow`, the same hour) is the failed turn itself
+    /// and keeps its own time. Otherwise the session's latest result
+    /// (`SessionTurnResults.current`) within `turnResultWindow`.
     func turnMarker(in results: [String: SessionTurnResult]) -> SessionTurnMarker? {
         switch displayStatus {
         case .working, .waiting:

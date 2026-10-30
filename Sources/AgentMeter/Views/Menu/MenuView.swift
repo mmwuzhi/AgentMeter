@@ -566,7 +566,6 @@ enum ActiveAgentTooltip {
         case .waiting: agent.waitingReason?.tooltipLead ?? (agent.statusSource == .registry ? "Waiting" : "Waiting for your input")
         case .error: "Failed"
         case .working: "Working"
-        case .idle where agent.hasStaleError: "Last turn failed"
         case .idle: "Idle"
         case nil: "Open"
         }
