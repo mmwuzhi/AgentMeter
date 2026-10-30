@@ -20,7 +20,9 @@ DMG creation, versions, or the GitHub release workflow.
 - `Scripts/dmg.sh` uses `dmgbuild` for the styled installer and falls back to
   plain `hdiutil`. Release images are `AgentMeter-<version>.dmg`; an rc build
   (`UPDATE_CHANNEL=rc`) makes `AgentMeter-<version>-rc.dmg`. Never publish an rc
-  image or put it in the appcast.
+  image. `Scripts/appcast.sh` leaves `*-rc.dmg` out of `make appcast` (it says
+  so), refuses a `SPARKLE_VERSION` that names one, and exits non-zero when only
+  rc images exist.
 
 ## Version and build number
 

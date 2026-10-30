@@ -33,35 +33,72 @@ One-time setup:
   3. Set SUFeedURL in Scripts/Info.plist to where you'll host appcast.xml.
   4. Re-run: make appcast
 
-By default, generate_appcast signs every DMG in dist/ and writes dist/appcast.xml.
+By default, generate_appcast signs every release DMG in dist/ (never an
+AgentMeter-<version>-rc.dmg) and writes dist/appcast.xml.
 Set SPARKLE_VERSION=1.2.3 to sign only dist/AgentMeter-1.2.3.dmg.
 Upload the selected DMG(s) + appcast.xml to your SUFeedURL host.
 EOF
   exit 1
 fi
 
-if ! find "$DIST" -maxdepth 1 -name '*.dmg' -print -quit | grep -q .; then
-  echo "No DMG found in $DIST. Run: make dmg" >&2
+# An rc image (AgentMeter-<version>-rc.dmg, from UPDATE_CHANNEL=rc) is a test
+# build and must never be signed into a feed.
+release_dmgs=()
+rc_dmgs=()
+while IFS= read -r dmg; do
+  case "$dmg" in
+    *-rc.dmg) rc_dmgs+=("$dmg") ;;
+    *) release_dmgs+=("$dmg") ;;
+  esac
+done < <(find "$DIST" -maxdepth 1 -name '*.dmg' | sort)
+
+if [[ ${#release_dmgs[@]} -eq 0 ]]; then
+  if [[ ${#rc_dmgs[@]} -gt 0 ]]; then
+    echo "Only rc DMGs found in $DIST; an rc image is never signed into a feed." >&2
+    echo "Build the release image first: make dmg (without UPDATE_CHANNEL=rc)" >&2
+  else
+    echo "No DMG found in $DIST. Run: make dmg" >&2
+  fi
   exit 1
 fi
 
 ARCHIVES_DIR="$DIST"
 APPCAST_OUTPUT=""
-TMP_ARCHIVES=""
+TMP_ARCHIVES="$(mktemp -d)"
+trap 'rm -rf "$TMP_ARCHIVES"' EXIT
+STAGED_APPCAST=""
 
 if [[ -n "${SPARKLE_VERSION:-}" ]]; then
   dmg="$DIST/AgentMeter-$SPARKLE_VERSION.dmg"
+  if [[ "$dmg" == *-rc.dmg ]]; then
+    echo "SPARKLE_VERSION=$SPARKLE_VERSION names an rc image; it is never signed into a feed." >&2
+    exit 1
+  fi
   if [[ ! -f "$dmg" ]]; then
     echo "No DMG found for SPARKLE_VERSION=$SPARKLE_VERSION at $dmg" >&2
     exit 1
   fi
 
-  TMP_ARCHIVES="$(mktemp -d)"
-  trap 'rm -rf "$TMP_ARCHIVES"' EXIT
   cp "$dmg" "$TMP_ARCHIVES/"
   ARCHIVES_DIR="$TMP_ARCHIVES"
   APPCAST_OUTPUT="$DIST/appcast.xml"
   rm -f "$APPCAST_OUTPUT"
+else
+  # Stage the release DMGs (with their release notes) and any existing feed, so
+  # generate_appcast updates that feed and sees no rc image.
+  for dmg in "${release_dmgs[@]}"; do
+    cp "$dmg" "$TMP_ARCHIVES/"
+    for notes in "${dmg%.dmg}".html "${dmg%.dmg}".md "${dmg%.dmg}".txt; do
+      if [[ -f "$notes" ]]; then cp "$notes" "$TMP_ARCHIVES/"; fi
+    done
+  done
+  if [[ -f "$DIST/appcast.xml" ]]; then cp "$DIST/appcast.xml" "$TMP_ARCHIVES/"; fi
+  ARCHIVES_DIR="$TMP_ARCHIVES"
+  STAGED_APPCAST="$TMP_ARCHIVES/appcast.xml"
+  if [[ ${#rc_dmgs[@]} -gt 0 ]]; then
+    echo "==> Skipping rc image(s), never signed into a feed:"
+    printf '    %s\n' "${rc_dmgs[@]}"
+  fi
 fi
 
 args=()
@@ -83,10 +120,14 @@ if [[ -n "$APPCAST_OUTPUT" ]]; then
 fi
 
 echo "==> Signing DMGs and writing appcast.xml"
+# ${args[@]+...}: an empty array is an unbound variable under set -u in macOS's bash 3.2.
 if [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]]; then
-  printf '%s' "$SPARKLE_PRIVATE_KEY" | "$GENERATE_APPCAST" "${args[@]}" "$ARCHIVES_DIR"
+  printf '%s' "$SPARKLE_PRIVATE_KEY" | "$GENERATE_APPCAST" ${args[@]+"${args[@]}"} "$ARCHIVES_DIR"
 else
-  "$GENERATE_APPCAST" "${args[@]}" "$ARCHIVES_DIR"
+  "$GENERATE_APPCAST" ${args[@]+"${args[@]}"} "$ARCHIVES_DIR"
+fi
+if [[ -n "$STAGED_APPCAST" ]]; then
+  cp "$STAGED_APPCAST" "$DIST/appcast.xml"
 fi
 echo "==> Done: $DIST/appcast.xml"
 echo "    Upload dist/*.dmg and dist/appcast.xml to your SUFeedURL host."
