@@ -3,7 +3,10 @@
 #
 # Environment (all optional):
 #   MARKETING_VERSION  CFBundleShortVersionString; defaults to the VERSION file.
-#   BUILD_VERSION      CFBundleVersion; defaults to Scripts/build-number.sh.
+#   BUILD_VERSION      CFBundleVersion; defaults to Scripts/build-number.sh,
+#                      kept above the last number it generated in this
+#                      checkout (.build/last-build-number). An explicit value
+#                      is used as given and never becomes that floor.
 #   UPDATE_CHANNEL     release (default) keeps the public Sparkle feed;
 #                      rc is a test build that never updates itself.
 #   CODESIGN_IDENTITY  signing identity; defaults to the first Developer ID
@@ -15,7 +18,15 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 CONFIG="${CONFIG:-release}"
 MARKETING_VERSION="${MARKETING_VERSION:-$(tr -d '[:space:]' < "$ROOT/VERSION")}"
-BUILD_VERSION="${BUILD_VERSION:-$(bash "$ROOT/Scripts/build-number.sh")}"
+LAST_BUILD_FILE="$ROOT/.build/last-build-number"
+GENERATED_BUILD_VERSION=""
+if [[ -z "${BUILD_VERSION:-}" ]]; then
+    if ! GENERATED_BUILD_VERSION="$(bash "$ROOT/Scripts/build-number.sh" "$(cat "$LAST_BUILD_FILE" 2>/dev/null || true)")"; then
+        echo "No build number. The floor is this checkout's last generated number in $LAST_BUILD_FILE; delete that file if it is wrong." >&2
+        exit 1
+    fi
+    BUILD_VERSION="$GENERATED_BUILD_VERSION"
+fi
 UPDATE_CHANNEL="${UPDATE_CHANNEL:-release}"
 APP="$ROOT/dist/AgentMeter.app"
 
@@ -137,6 +148,13 @@ sign --entitlements "$ROOT/Scripts/AgentMeter.entitlements" "$APP"
 
 echo "==> Verifying signature"
 codesign --verify --deep --strict --verbose=2 "$APP"
+
+# The floor for this checkout's next generated build number: only a number
+# build-number.sh made here, never an explicit BUILD_VERSION.
+if [[ -n "$GENERATED_BUILD_VERSION" ]]; then
+    mkdir -p "$(dirname "$LAST_BUILD_FILE")"
+    echo "$GENERATED_BUILD_VERSION" > "$LAST_BUILD_FILE"
+fi
 
 echo "==> Done: $APP"
 echo "    open \"$APP\""

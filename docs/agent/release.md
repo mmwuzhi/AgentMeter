@@ -41,6 +41,23 @@ DMG creation, versions, or the GitHub release workflow.
   The zone is fixed to Asia/Tokyo so the number does not depend on the
   machine, has no DST step, stays above earlier local builds (for example
   `202610301854`), and is comparable between local and CI builds.
+- Never twice: with a floor argument the script prints a number strictly
+  above it, waiting for the next minute when the floor is this minute and
+  failing when the clock is behind it (Sparkle never offers an update whose
+  number equals the installed one; two builds of one minute would collide).
+  `bundle.sh` passes the last number it generated in this checkout
+  (`.build/last-build-number`, written after a successful build; an explicit
+  `BUILD_VERSION` is used as given and never becomes the floor), so
+  consecutive local builds differ. Builds in two checkouts, two concurrent
+  builds in one checkout, or a rebuild right after `make clean` can still
+  share a minute; locally that only decides which copy owns the hook helper
+  (then the last launched wins). `release.yml` passes the published feed's
+  highest `sparkle:version`, and its `concurrency` group runs one release at a
+  time, so a release can never repeat or undercut the number of the one
+  before. GitHub keeps only one pending run per group: a third trigger cancels
+  the pending second one, which then has to be re-run. Do not re-run an older
+  tag after a newer release: it would get a higher build number and become
+  the newest version Sparkle offers.
 - Releases up to v0.8.2 used the CI run number (v0.8.2 is build 19), so any
   12-digit number is greater and Sparkle offers it. The verify step in
   `release.yml` requires 12 digits and a number above the `sparkle:version` of

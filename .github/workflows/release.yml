@@ -19,6 +19,12 @@ on:
 permissions:
   contents: write
 
+# One release at a time: each computes its build number above what the
+# previous one published.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build DMG and publish release
@@ -67,7 +73,35 @@ jobs:
 
       - name: Compute build number
         id: build
-        run: echo "number=$(bash Scripts/build-number.sh)" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Strictly above what the published feed already offers: Sparkle
+          # never offers an update whose number equals the installed one.
+          appcast="$(mktemp)"
+          status="$(curl -sSL --retry 3 --retry-delay 2 -o "$appcast" -w '%{http_code}' \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/appcast.xml")"
+          published=""
+          case "$status" in
+            200)
+              published="$(grep -oE '(<sparkle:version>|sparkle:version=")[0-9]+' "$appcast" \
+                | grep -oE '[0-9]+$' | sort -n | tail -n 1 || true)"
+              if [[ -z "$published" ]]; then
+                echo "::notice::The published appcast has no sparkle:version; no floor for the build number."
+              fi
+              ;;
+            404)
+              echo "::notice::No published appcast found; no floor for the build number."
+              ;;
+            *)
+              echo "Could not fetch the published appcast (HTTP $status)" >&2
+              exit 1
+              ;;
+          esac
+          # A plain assignment, so a failing build-number.sh stops the step.
+          number="$(bash Scripts/build-number.sh "$published")"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
 
       - name: Install dmgbuild
         run: pipx install dmgbuild
