@@ -44,8 +44,8 @@ final class AppViewModel {
     /// open, when views fall back to the main screen.
     var popoverScreenVisibleHeight: CGFloat?
     /// True until Claude's OAuth read has succeeded once on this machine.
-    /// Drives the popover primer shown before macOS's first Keychain prompt,
-    /// so "choose Always Allow" guidance no longer lives only in the README.
+    /// Drives the popover's one-line note on where Claude's login comes from
+    /// (`/usr/bin/security`, so normally no prompt; `KeychainToolReader`).
     var claudeKeychainPrimerNeeded = !UserDefaults.standard.bool(forKey: "claudeOAuthSucceededOnce")
     /// Each session's latest turn result by session id, for the session
     /// rows' marks (`TaskEventFeed`, `SessionTurnResults.current`). Empty

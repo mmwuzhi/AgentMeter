@@ -773,7 +773,7 @@ struct ProviderSection: View {
             }
 
             if showsKeychainPrimer {
-                Label("Reads Claude Code's credential from the Keychain — choose Always Allow when macOS asks.",
+                Label("Uses Claude Code's login from your Keychain, read with macOS's security tool.",
                       systemImage: "key")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
