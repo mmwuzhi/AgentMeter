@@ -45,3 +45,12 @@ the installed copy, and verify its process path plus bundle version/build.
 
 This is an agent handoff step. Do not add installation side effects to
 `make run`, `make app`, or other shared repository targets.
+
+Keep the replaced copy as an archive (`ditto -c -k --keepParent`), not as a
+loose `.app` in a backup folder, and check afterwards that
+`NSWorkspace.shared.urlForApplication(withBundleIdentifier:
+"com.shu.agentmeter")` names `/Applications/AgentMeter.app`. A banner click
+opens whatever that resolves to: on 2026-10-30 it resolved to an old build
+moved into `~/Backups` while it was registered as launchable, and the click
+started that copy next to the installed one. Unregister such a copy with
+`lsregister -u <path>` (repeat until `lsregister -dump` no longer lists it).

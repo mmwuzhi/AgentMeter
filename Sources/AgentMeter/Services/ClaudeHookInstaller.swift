@@ -22,23 +22,61 @@ enum ClaudeHookInstaller {
 
     static let executableName = "agentmeter-hook"
 
+    /// What `refreshManagedCLI` did with the shared helper.
+    enum ManagedCLIRefresh: Equatable {
+        /// It already was this build's.
+        case current
+        /// This build's is in place now; `replacedOther` when another
+        /// build's was there.
+        case installed(replacedOther: Bool)
+        /// Left alone: a newer AgentMeter is running and keeps its own
+        /// (`HookHelperOwnership`).
+        case ownedByNewerInstance
+        /// No bundled copy (a bare `swift run`).
+        case noBundledCopy
+        case failed
+    }
+
     @discardableResult
     static func installManagedCLI() -> URL? {
         let destination = managedCLIURL
-        guard let bundled = bundledCLIURL else {
+        switch refreshManagedCLI() {
+        case .current, .installed, .ownedByNewerInstance:
+            // A newer copy keeps the helper there: hooks point at it, never
+            // at this bundle's own copy.
+            return destination
+        case .noBundledCopy:
             return FileManager.default.fileExists(atPath: destination.path) ? destination : nil
+        case .failed:
+            // An existing helper may speak an older hook-input protocol. Do not
+            // install new commands against it when refreshing from the bundled
+            // copy failed.
+            return nil
         }
+    }
+
+    /// Puts this build's helper at `destination` unless it is there already
+    /// or another running AgentMeter owns it. Every Claude hook runs that one
+    /// file, so only the newest running build may write it: any copy of the
+    /// app used to install its own at launch, and a stale one opened from a
+    /// backup folder silenced every task notification (`HookHelperGuard`).
+    static func refreshManagedCLI(
+        at destination: URL = managedCLIURL,
+        from bundled: URL? = bundledCLIURL,
+        ownsHelper: () -> Bool = HookHelperOwnership.thisInstanceOwnsHelper
+    ) -> ManagedCLIRefresh {
+        guard let bundled else { return .noBundledCopy }
+        guard ownsHelper() else { return .ownedByNewerInstance }
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(
                 at: destination.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            if let sourceData = try? Data(contentsOf: bundled),
-               let currentData = try? Data(contentsOf: destination),
-               sourceData == currentData {
+            let currentData = try? Data(contentsOf: destination)
+            if let sourceData = try? Data(contentsOf: bundled), let currentData, sourceData == currentData {
                 try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
-                return destination
+                return .current
             }
             let temporary = destination.deletingLastPathComponent()
                 .appendingPathComponent("agentmeter-hook.\(UUID().uuidString).tmp")
@@ -50,12 +88,9 @@ enum ClaudeHookInstaller {
             } else {
                 try fileManager.moveItem(at: temporary, to: destination)
             }
-            return destination
+            return .installed(replacedOther: currentData != nil)
         } catch {
-            // An existing helper may speak an older hook-input protocol. Do not
-            // install new commands against it when refreshing from the bundled
-            // copy failed.
-            return nil
+            return .failed
         }
     }
 

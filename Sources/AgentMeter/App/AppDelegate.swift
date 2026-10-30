@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var taskOutcomes: TaskOutcomeMonitor?
     private var taskOutcomeQueue: TaskOutcomeQueue?
     private var taskEvents: TaskEventFeed?
+    private var hookHelperGuard: HookHelperGuard?
     private var quit: QuitSequence?
 
     /// AppKit's own per-app keys, in the registration domain, so a value set
@@ -49,6 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = ClaudeHookInstaller.installManagedCLI()
             _ = try? ClaudeHookInstaller.install()
         }
+        let hookHelperGuard = HookHelperGuard()
+        hookHelperGuard.start()
+        self.hookHelperGuard = hookHelperGuard
 
         // Start Sparkle's background update checks (relocated to Settings → manual check).
         _ = UpdaterController.shared

@@ -776,6 +776,18 @@ since as unread.
 ## Claude live sessions
 
 - Live Claude status is opt-in and must preserve user hooks.
+- Every hook runs one shared helper, `bin/agentmeter-hook` in the app's
+  support directory, and only the newest running AgentMeter writes it
+  (`HookHelperOwnership`: highest version, then build within one numbering
+  — local builds are timestamps, releases CI run numbers — then the last
+  launched; all read from the bundles on disk).
+  `HookHelperGuard` puts this build's helper back whenever the directory
+  changes and every minute (NSWorkspace posts no launch or quit notice for
+  an LSUIElement app), so a stale
+  copy started next to it (2026-10-30: a banner click, through LaunchServices,
+  opened one in `~/Backups`; its 10-16 helper wrote no turn ledgers and no
+  task was announced for two hours) cannot silence the running build, and a
+  build left running alone after a rollback installs its own.
 - `ClaudeHookInstaller` parses and backs up `~/.claude/settings.json`. It may
   remove only commands whose executable basename is exactly
   `agentmeter-hook`; never delete or replace a whole matcher group that may
