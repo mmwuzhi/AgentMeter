@@ -843,7 +843,13 @@ since as unread.
   from background work arrives as a new prompt with a new `prompt_id`
   (`<task-notification`, `<agent-message`, or any `<tag` while subagents or
   workflows run or within 10 min of an uncertain end) and joins the task, as
-  a new segment when the task had really ended. Its location (`cwd`,
+  a new segment when the task had failed, or had really ended more than
+  `TaskLedgerReducer.queuedReportWindow` (2 s, no more than the detector's
+  `confirmDelay`) before its `Stop`. A background agent that finished while the main
+  agent still worked is not listed by its `Stop`, and its queued hand-back
+  follows that `Stop` shortly afterward: it continues the same run, so the
+  task's end is announced once, timed from the person's prompt (opening a
+  segment there hid the end and left a 2 s follow-up under the 60 s minimum). Its location (`cwd`,
   transcript) comes from main-thread events only, and so does `attended`
   (the hook environment's `CLAUDE_CODE_SESSION_ATTENDED`): a task keeps the
   first value one of its main-thread events carried, and a new task starts

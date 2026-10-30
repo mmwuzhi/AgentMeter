@@ -245,6 +245,44 @@ final class TaskOutcomeDeliveryTests: XCTestCase {
         XCTAssertEqual(h.center.delivered.count, 1)
     }
 
+    /// A background report queued just after Stop belongs to the same turn.
+    func testReportQueuedBehindTheStopStillAnnouncesTheTask() async {
+        let h = harness()
+        var script = LedgerScript()
+        script.human("fixture-prompt", at: 0)
+        script.stop(at: 1800.0)
+        await h.pass(script, at: 1800.01, registry: reading(.busy, at: 0))
+        script.report("fixture-report", at: 1800.05)
+        await h.pass(script, at: 1800.5, registry: reading(.busy, at: 1800.1))
+        script.stop(at: 1802.0)
+        await h.pass(script, at: 1802.5, registry: reading(.idle, at: 1802.05))
+        let final = await h.pass(script, at: 1804.5, registry: reading(.idle, at: 1802.05))
+        XCTAssertEqual(delivery(final.first)?.state, .posted)
+        XCTAssertEqual(h.center.posted.map(\.content.body), ["Session 00000000\n30m run"])
+        let events = await h.store.events()
+        XCTAssertEqual(events.map(\.id), ["task_completed|\(script.sessionID)|fixture-prompt|0"])
+    }
+
+    /// The window ends where the detector can first call the end
+    /// (`confirmDelay` after the `Stop`). A hand-back exactly then, after the
+    /// end was announced, joins it: the follow-up's end has the same id and
+    /// posts nothing more.
+    func testQueuedReportAfterTheAnnouncedEndPostsNothingMore() async {
+        XCTAssertLessThanOrEqual(TaskLedgerReducer.queuedReportWindow, TaskOutcomeDetector.Timing.standard.confirmDelay)
+        let h = harness()
+        var script = LedgerScript()
+        script.human("p1", at: 0)
+        script.stop(at: 100)
+        let first = await h.pass(script, at: 102, registry: reading(.idle, at: 99.5))
+        XCTAssertEqual(delivery(first.first)?.state, .posted)
+        script.report("r1", at: 100 + TaskLedgerReducer.queuedReportWindow)
+        script.stop(at: 104)
+        await h.pass(script, at: 107, registry: reading(.idle, at: 104.03))
+        XCTAssertEqual(h.center.posted.count, 1)
+        let events = await h.store.events()
+        XCTAssertEqual(events.map(\.id), ["task_completed|\(script.sessionID)|p1|0"])
+    }
+
     /// Esc is recorded for the history, never shown; failure is shown at
     /// once whatever the task's length; a kind switched off is recorded as
     /// such.

@@ -344,6 +344,16 @@ public enum TaskLedgerReducer {
     /// do). Matches the detector's observation window: past it the end has
     /// been announced, and such a prompt is a person's.
     public static let taggedJoinWindow: TimeInterval = 10 * 60
+    /// How soon after the turn's end a report still belongs to the same run.
+    /// A background agent that finished while the main agent was still
+    /// working is not listed by its `Stop`, so the turn looks really over,
+    /// and its queued hand-back follows the `Stop` soon after it. Opening a new segment
+    /// hid the task's end before the detector could confirm it (`confirmDelay`
+    /// after the `Stop`): only the seconds-long follow-up was left, under the
+    /// 60 s minimum, and a person's half-hour task never got a banner.
+    /// No longer than `confirmDelay`, so the end joined was not yet announced
+    /// (at the very edge it was, and the follow-up's end shares its id).
+    public static let queuedReportWindow: TimeInterval = 2
 
     /// The ledger after `event`, or nil when the event changes nothing (a
     /// `Stop` with no task to end, for one) and nothing should be written.
@@ -362,9 +372,11 @@ public enum TaskLedgerReducer {
             }
             if joinsTask, var task = ledger.task {
                 if !task.isRunning {
-                    // Back from a pause or an uncertain end: the same run. Back
-                    // from a real end: the task reopens as a new segment.
-                    if task.hasEnded {
+                    // Back from a pause, an uncertain end, or a `Stop` the
+                    // report was queued behind: the same run. Back from a
+                    // real end or a failure: the task reopens as a new
+                    // segment.
+                    if task.hasEnded, !queuedBehindEnd(of: task, at: event.at) {
                         task.segment += 1
                         task.segmentStartedAt = event.at
                     }
@@ -456,6 +468,14 @@ public enum TaskLedgerReducer {
         ledger.sequence += 1
         ledger.updatedAt = event.at
         return ledger
+    }
+
+    /// A report at `date` arrives within `queuedReportWindow` of the task's
+    /// `Stop`. Never after a failure: joining would clear it and announce the
+    /// run's later end as Finished.
+    private static func queuedBehindEnd(of task: TaskLedgerTask, at date: Date) -> Bool {
+        guard task.failure == nil, let stop = task.stop else { return false }
+        return date.timeIntervalSince(stop.at) <= queuedReportWindow
     }
 
     /// Newest last, one entry per task id, at most `maximumBackgroundLaunches`.

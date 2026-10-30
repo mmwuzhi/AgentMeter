@@ -233,6 +233,37 @@ final class TaskLedgerTests: XCTestCase {
         XCTAssertEqual(script.task?.segment, 2, "a failure is an end too")
     }
 
+    /// A background agent finished while the main agent
+    /// still worked, so the `Stop` listed nothing, and its hand-back followed
+    /// soon after it. It stays in the same run because the end was not confirmed yet. Past the window
+    /// it is a follow-up as before.
+    func testReportQueuedBehindTheEndContinuesTheRun() {
+        var script = LedgerScript()
+        script.human("p1", at: 0)
+        script.stop(at: 2472.69)
+        XCTAssertTrue(script.task?.hasEnded == true)
+        script.report("r1", at: 2472.734)
+        XCTAssertEqual(script.task?.key, "p1")
+        XCTAssertEqual(script.task?.segment, 0)
+        XCTAssertEqual(script.task?.reports, 1)
+        XCTAssertTrue(script.task?.isRunning == true)
+        script.stop(at: 2474.94)
+        XCTAssertEqual(script.task?.segment, 0)
+        XCTAssertEqual(script.task?.startedAt, LedgerScript.at(0))
+
+        script.report("r2", at: 2474.94 + TaskLedgerReducer.queuedReportWindow)
+        XCTAssertEqual(script.task?.segment, 0, "at the window's edge")
+        script.stop(at: 2480)
+        script.report("r3", at: 2480 + TaskLedgerReducer.queuedReportWindow + 0.01)
+        XCTAssertEqual(script.task?.segment, 1, "past the window: a follow-up")
+
+        // Review finding: joining after a failure would clear it, and the
+        // run's later end would be announced as Finished.
+        script.apply(.stopFailure(error: "rate_limit"), at: 2500)
+        script.report("r4", at: 2500.05)
+        XCTAssertEqual(script.task?.segment, 2, "a failure is never continued")
+    }
+
     /// `CLAUDE_CODE_SESSION_ATTENDED`, as the helper reads it: Claude Code's
     /// "1" and "0", nothing else.
     func testAttendedComesOnlyFromClaudeCodesOwnValues() {
