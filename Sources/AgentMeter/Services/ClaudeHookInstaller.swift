@@ -47,7 +47,7 @@ enum ClaudeHookInstaller {
         case ownedByNewerInstance
         /// No bundled copy (a bare `swift run`).
         case noBundledCopy
-        /// The bundled copy's signature did not check out
+        /// The bundled copy did not pass this build's check
         /// (`HookHelperTrust.isTrusted`); nothing was installed.
         case untrusted
         case failed
@@ -76,13 +76,14 @@ enum ClaudeHookInstaller {
     /// file, so only the newest running build may write it: any copy of the
     /// app used to install its own at launch, and a stale one opened from a
     /// backup folder silenced every task notification (`HookHelperGuard`).
-    /// Only a helper whose signature checks out is installed, written from
-    /// its bytes (`HookHelperTrust` says what that does and does not prove).
+    /// Only a helper that passes this build's check is installed, written
+    /// from the bytes read for it (`HookHelperTrust` says what that does and
+    /// does not prove).
     static func refreshManagedCLI(
         at destination: URL = managedCLIURL,
         from bundled: URL? = bundledCLIURL,
         ownsHelper: () -> Bool = HookHelperOwnership.thisInstanceOwnsHelper,
-        isTrusted: (URL) -> Bool = { HookHelperTrust.isTrusted($0) }
+        isTrusted: (URL, Data) -> Bool = { HookHelperTrust.isTrusted($1, from: $0) }
     ) -> ManagedCLIRefresh {
         guard let bundled else { return .noBundledCopy }
         guard ownsHelper() else { return .ownedByNewerInstance }
@@ -98,8 +99,8 @@ enum ClaudeHookInstaller {
                 try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
                 return .current
             }
-            guard isTrusted(bundled) else { return .untrusted }
-            // The verified bytes, not a copy of the file and its attributes.
+            guard isTrusted(bundled, sourceData) else { return .untrusted }
+            // The bytes read above, not a copy of the file and its attributes.
             try AtomicFile.replace(destination, with: sourceData, permissions: 0o755)
             try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destination.path)
             return .installed(replacedOther: currentData != nil)
@@ -115,7 +116,7 @@ enum ClaudeHookInstaller {
 
     /// Hooks only ever run the installed copy: never the bundle's own file,
     /// which still carries a download's quarantine, and never when the copy
-    /// could not be refreshed or its signature did not check out.
+    /// could not be refreshed or did not pass this build's check.
     @discardableResult
     static func install(
         managedCLI: () -> URL? = { installManagedCLI() },
@@ -288,7 +289,7 @@ enum ClaudeHookInstaller {
         var errorDescription: String? {
             switch self {
             case .helperUnavailable:
-                return "the bundled hook helper is unavailable or its signature didn't check out"
+                return "the bundled hook helper is unavailable or didn't pass verification"
             case .invalidSettings:
                 return "the existing Claude settings file is not valid hook JSON"
             }

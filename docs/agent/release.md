@@ -91,7 +91,16 @@ signing failure fails the script, and it ends with
   runtime). `--timestamp` is added for Developer ID only (notarization needs it
   and it needs the network); otherwise `--timestamp=none`.
 - Ad-hoc signs the same way without the hardened runtime: library validation
-  would refuse to load an ad-hoc Sparkle.
+  would refuse to load an ad-hoc Sparkle. `make adhoc` builds that way on any
+  Mac (`CODESIGN_IDENTITY=- UPDATE_CHANNEL=rc`): no certificate, no Team ID,
+  updates off. The script then fails unless every signed item reports
+  `Signature=adhoc`, `TeamIdentifier=not set` and no `Authority`. On a Mac
+  that has a certificate, plain `make app` still picks it.
+- After signing the helper, `bundle.sh` writes its SHA-256 into the app's
+  Info.plist as `AgentMeterHookSHA256`, which the app's signature then seals.
+  An ad-hoc app installs the helper copy only when the bytes match it
+  (`HookHelperTrust`); a team-signed app checks the helper's team instead.
+  The script fails when the sealed value and the helper differ.
 - The only entitlement is `com.apple.security.automation.apple-events`: the app
   drives Terminal, iTerm2 and Ghostty with `NSAppleScript`, and the hardened
   runtime denies Apple Events without it.
@@ -105,10 +114,15 @@ signing failure fails the script, and it ends with
 ## Hook helper and Gatekeeper
 
 - Claude Code runs a copy of `Contents/Helpers/agentmeter-hook` in the app's
-  support directory, not the bundle's file. The app installs it only after a
-  strict signature check of the bundled helper (same team as the app when it
-  has one) and writes it from those bytes, so a download's quarantine is not
-  carried onto it (`HookHelperTrust`, `ClaudeHookInstaller.refreshManagedCLI`).
+  support directory, not the bundle's file. The app installs it only after
+  the bundled helper passes a strict signature check plus, for a team-signed
+  app, the same team, or, for an ad-hoc app, the SHA-256 its own signature
+  seals (a content match with the app the user opened, not a developer
+  identity), and writes it from the bytes it read, so a download's
+  quarantine is not carried onto it (`HookHelperTrust`,
+  `ClaudeHookInstaller.refreshManagedCLI`). Re-signing the whole bundle
+  (`codesign --force --deep -s -`, a common workaround for "damaged" apps)
+  re-signs the helper, so an ad-hoc app then refuses it: rebuild instead.
 - What was measured (2026-10-30, macOS 26, in scratch): a quarantined copy of
   a non-notarized helper, run from zsh, sh or node the way Claude Code runs
   hooks, raises "Not Opened" and hangs until killed; a copy without

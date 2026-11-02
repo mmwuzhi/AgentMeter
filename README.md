@@ -67,6 +67,7 @@ Requires the Xcode toolchain (Xcode 16+ / Swift 6).
 make run          # build release, assemble dist/AgentMeter.app, launch
 make debug        # quick terminal build+run of the data layer
 make app          # just assemble dist/AgentMeter.app
+make adhoc        # same, signed ad-hoc (no certificate needed), updates off
 make dmg          # package dist/AgentMeter-<version>.dmg
 make clean
 ```

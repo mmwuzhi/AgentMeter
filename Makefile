@@ -1,4 +1,4 @@
-.PHONY: build run app debug clean dmg appcast
+.PHONY: build run app adhoc debug clean dmg appcast
 
 # Compile (release)
 build:
@@ -7,6 +7,11 @@ build:
 # Assemble dist/AgentMeter.app
 app:
 	bash Scripts/bundle.sh
+
+# Assemble dist/AgentMeter.app signed ad-hoc: no certificate or Team ID
+# needed, and updates off (a test build never updates itself)
+adhoc:
+	CODESIGN_IDENTITY=- UPDATE_CHANNEL=rc bash Scripts/bundle.sh
 
 # Build, bundle, and launch
 run: app

@@ -872,14 +872,19 @@ since as unread.
   newest one, newest 5 kept) — never next to the settings file. Older
   builds left `settings.json.agentmeter-bak-*` files next to it; they are
   the user's to delete.
-- Only a helper whose signature passes strict validation, and that is signed
-  by this app's team when the app has one, is installed
-  (`HookHelperTrust`); the copy is written from its bytes, so a download's
-  `com.apple.quarantine` is not carried onto it. That is sound for a
-  notarized Developer ID build; for local and rc builds the copy runs on the
-  user's Open Anyway for the app plus this check, without a Gatekeeper
-  assessment of its own — a limitation, not a Gatekeeper-approved path
-  (docs/agent/release.md). Nothing strips or works around a quarantine on an
+- Only a helper that passes this build's check is installed
+  (`HookHelperTrust.Policy`): a team-signed app requires strict validation
+  and a signature by an Apple-issued certificate of its own team (a developer
+  identity check); an ad-hoc app, which has no team, requires strict
+  validation and bytes whose SHA-256 equals `AgentMeterHookSHA256` in its own
+  Info.plist, read only after the running app validates strictly against
+  itself on disk. That digest proves the helper is the one built into this
+  app, not who built it. The copy is written from the bytes read for it, so a
+  download's `com.apple.quarantine` is not carried onto it. That is sound for
+  a notarized Developer ID build; for local, rc and ad-hoc builds the copy
+  runs on the user's Open Anyway for the app (or on having built it) plus
+  this check, without a Gatekeeper assessment of its own — a limitation, not
+  a Gatekeeper-approved path (docs/agent/release.md). Nothing strips or works around a quarantine on an
   existing file. Enabling the hooks in Settings runs the copy's `path`
   command and says so when macOS refuses it.
 - Hook metadata comes from the official stdin JSON contract (`session_id`,

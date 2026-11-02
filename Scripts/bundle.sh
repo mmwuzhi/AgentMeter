@@ -11,7 +11,7 @@
 #                      rc is a test build that never updates itself.
 #   CODESIGN_IDENTITY  signing identity; defaults to the first Developer ID
 #                      Application identity, else the first Apple Development
-#                      one, else ad-hoc ("-").
+#                      one, else ad-hoc ("-"). `make adhoc` passes "-".
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -142,12 +142,40 @@ sign "$SPARKLE/Versions/B/Autoupdate"
 sign "$SPARKLE/Versions/B/Updater.app"
 sign "$SPARKLE"
 sign --identifier com.shu.agentmeter.hook "$APP/Contents/Helpers/agentmeter-hook"
+# The signed helper's SHA-256, sealed with the Info.plist by the app's
+# signature below. An ad-hoc app has no Team ID to compare, so it installs the
+# helper copy only when the bytes match this (HookHelperTrust): a content
+# check against the app the user opened, not a developer identity.
+HELPER_SHA256="$(shasum -a 256 "$APP/Contents/Helpers/agentmeter-hook" | cut -d' ' -f1)"
+/usr/libexec/PlistBuddy -c "Add :AgentMeterHookSHA256 string $HELPER_SHA256" "$APP/Contents/Info.plist"
 # The app drives Terminal, iTerm2 and Ghostty with NSAppleScript; the hardened
 # runtime denies Apple Events without this entitlement.
 sign --entitlements "$ROOT/Scripts/AgentMeter.entitlements" "$APP"
 
 echo "==> Verifying signature"
 codesign --verify --deep --strict --verbose=2 "$APP"
+SEALED_SHA256="$(/usr/libexec/PlistBuddy -c "Print :AgentMeterHookSHA256" "$APP/Contents/Info.plist")"
+if [[ "$SEALED_SHA256" != "$(shasum -a 256 "$APP/Contents/Helpers/agentmeter-hook" | cut -d' ' -f1)" ]]; then
+    echo "AgentMeterHookSHA256 does not match the bundled helper" >&2
+    exit 1
+fi
+
+# Ad-hoc means no certificate anywhere: every signed item must say so.
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    for item in "$SPARKLE/Versions/B/XPCServices/Installer.xpc" \
+                "$SPARKLE/Versions/B/XPCServices/Downloader.xpc" \
+                "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE/Versions/B/Updater.app" \
+                "$SPARKLE" "$APP/Contents/Helpers/agentmeter-hook" "$APP"; do
+        details="$(codesign -dvv "$item" 2>&1 || true)"
+        if ! grep -qx 'Signature=adhoc' <<<"$details" \
+            || ! grep -qx 'TeamIdentifier=not set' <<<"$details" \
+            || grep -q '^Authority=' <<<"$details"; then
+            echo "Not an ad-hoc signature without a team: $item" >&2
+            exit 1
+        fi
+    done
+    echo "    ad-hoc throughout: no certificate, no Team ID"
+fi
 
 # The floor for this checkout's next generated build number: only a number
 # build-number.sh made here, never an explicit BUILD_VERSION.

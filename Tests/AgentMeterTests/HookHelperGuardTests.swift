@@ -86,11 +86,11 @@ final class HookHelperGuardTests: XCTestCase {
 
     func testRefreshInstallsReplacesAndLeavesItsOwnAlone() throws {
         let mine = try bundled("helper 202610301031")
-        XCTAssertEqual(ClaudeHookInstaller.refreshManagedCLI(at: destination, from: mine, ownsHelper: { true }, isTrusted: { _ in true }),
+        XCTAssertEqual(ClaudeHookInstaller.refreshManagedCLI(at: destination, from: mine, ownsHelper: { true }, isTrusted: { _, _ in true }),
                        .installed(replacedOther: false))
-        XCTAssertEqual(ClaudeHookInstaller.refreshManagedCLI(at: destination, from: mine, ownsHelper: { true }, isTrusted: { _ in true }), .current)
+        XCTAssertEqual(ClaudeHookInstaller.refreshManagedCLI(at: destination, from: mine, ownsHelper: { true }, isTrusted: { _, _ in true }), .current)
         try overwriteAsAnotherBuild("helper 202610162111")
-        XCTAssertEqual(ClaudeHookInstaller.refreshManagedCLI(at: destination, from: mine, ownsHelper: { true }, isTrusted: { _ in true }),
+        XCTAssertEqual(ClaudeHookInstaller.refreshManagedCLI(at: destination, from: mine, ownsHelper: { true }, isTrusted: { _, _ in true }),
                        .installed(replacedOther: true))
         XCTAssertEqual(installed(), "helper 202610301031")
         let mode = try FileManager.default.attributesOfItem(atPath: destination.path)[.posixPermissions] as? Int
@@ -102,10 +102,10 @@ final class HookHelperGuardTests: XCTestCase {
     func testOutrankedCopyNeverWritesTheHelper() throws {
         try overwriteAsAnotherBuild("helper newer")
         let older = try bundled("helper older")
-        XCTAssertEqual(ClaudeHookInstaller.refreshManagedCLI(at: destination, from: older, ownsHelper: { false }, isTrusted: { _ in true }),
+        XCTAssertEqual(ClaudeHookInstaller.refreshManagedCLI(at: destination, from: older, ownsHelper: { false }, isTrusted: { _, _ in true }),
                        .ownedByNewerInstance)
         XCTAssertEqual(installed(), "helper newer")
-        XCTAssertEqual(ClaudeHookInstaller.refreshManagedCLI(at: destination, from: nil, ownsHelper: { true }, isTrusted: { _ in true }), .noBundledCopy)
+        XCTAssertEqual(ClaudeHookInstaller.refreshManagedCLI(at: destination, from: nil, ownsHelper: { true }, isTrusted: { _, _ in true }), .noBundledCopy)
     }
 
     // MARK: Guard
@@ -117,7 +117,7 @@ final class HookHelperGuardTests: XCTestCase {
         let mine = try bundled("helper 202610301031")
         let destination = destination
         let guardian = HookHelperGuard(directory: destination.deletingLastPathComponent(), enabled: { true },
-                                       refresh: { ClaudeHookInstaller.refreshManagedCLI(at: destination, from: mine, ownsHelper: { true }, isTrusted: { _ in true }) })
+                                       refresh: { ClaudeHookInstaller.refreshManagedCLI(at: destination, from: mine, ownsHelper: { true }, isTrusted: { _, _ in true }) })
         guardian.start()
         defer { guardian.stop() }
         XCTAssertEqual(installed(), "helper 202610301031", "at start")
@@ -144,7 +144,7 @@ final class HookHelperGuardTests: XCTestCase {
         var restores = 0
         func guardian(_ bundled: URL) -> HookHelperGuard {
             HookHelperGuard(directory: destination.deletingLastPathComponent(), enabled: { true }, refresh: {
-                let result = ClaudeHookInstaller.refreshManagedCLI(at: destination, from: bundled, ownsHelper: { true }, isTrusted: { _ in true })
+                let result = ClaudeHookInstaller.refreshManagedCLI(at: destination, from: bundled, ownsHelper: { true }, isTrusted: { _, _ in true })
                 if result == .installed(replacedOther: true) { restores += 1 }
                 return result
             })

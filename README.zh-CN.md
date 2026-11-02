@@ -41,6 +41,7 @@ AgentMeter 是一个原生 macOS 菜单栏应用，可以快速查看 **Codex**�
 make run          # release 构建，组装 dist/AgentMeter.app，然后启动
 make debug        # 快速终端构建并运行数据层
 make app          # 只组装 dist/AgentMeter.app
+make adhoc        # 同上，ad-hoc 签名（不需要证书），不自动更新
 make dmg          # 打包 dist/AgentMeter-<version>.dmg
 make clean
 ```

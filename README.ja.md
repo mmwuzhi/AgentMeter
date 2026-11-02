@@ -42,6 +42,7 @@ Xcode toolchain（Xcode 16+ / Swift 6）が必要です。
 make run          # release ビルド、dist/AgentMeter.app の組み立て、起動
 make debug        # データ層を素早くターミナルでビルドして実行
 make app          # dist/AgentMeter.app だけを組み立て
+make adhoc        # 同じ。ad-hoc署名（証明書不要）、アップデートなし
 make dmg          # dist/AgentMeter-<version>.dmg を作成
 make clean
 ```
