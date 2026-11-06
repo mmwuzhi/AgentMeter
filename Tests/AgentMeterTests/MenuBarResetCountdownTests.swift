@@ -169,7 +169,7 @@ final class MenuBarResetCountdownTests: XCTestCase {
         XCTAssertNil(segment?.reset)
     }
 
-    func testOtherProvidersKeepTheirCodes() {
+    func testCodexAndCopilotUseTheSharedCaptionMode() {
         let model = AppViewModel(snapshot: nil, storedLifetimeSpend: [])
         model.codex = ProviderState(
             provider: .codex,
@@ -179,12 +179,35 @@ final class MenuBarResetCountdownTests: XCTestCase {
                           window("secondary", "Weekly", used: 10, resetsIn: 3 * day)],
                 source: .appServer, planType: nil, fetchedAt: now, note: nil),
             usage: .empty(.codex))
+        model.copilot = ProviderState(
+            provider: .copilot,
+            quota: QuotaSnapshot(provider: .copilot, windows: [
+                window("premium_interactions", "Premium", used: 40, resetsIn: 14 * day),
+            ], source: .cli, planType: nil, fetchedAt: now, note: nil),
+            usage: .empty(.copilot))
         MenuBarLayout.save([
             MenuBarItem(key: "q:codex:primary", enabled: true),
-            MenuBarItem(key: "q:codex:secondary", enabled: true),
+            MenuBarItem(key: "b:codex:secondary", enabled: true),
         ], for: .codex)
+        MenuBarLayout.save([MenuBarItem(key: "q:copilot:premium_interactions", enabled: true)], for: .copilot)
+        setColors(["codex:secondary": "0088FF"])
 
+        setMode(.window)
         XCTAssertEqual(MenuBarLayout.activeSegments(model, slot: .codex, now: now).map(\.label), ["5h", "7d"])
+        XCTAssertEqual(MenuBarLayout.activeSegments(model, slot: .copilot, now: now).map(\.label), ["prem"])
+
+        setMode(.countdown)
+        XCTAssertEqual(MenuBarLayout.activeSegments(model, slot: .codex, now: now).map(\.label), ["2h00m", "3d00h"])
+        XCTAssertEqual(MenuBarLayout.activeSegments(model, slot: .copilot, now: now).map(\.label), ["14d00h"])
+
+        setMode(.both)
+        let elements = MenuBarLayout.activeElements(model, slot: .codex, now: now)
+        XCTAssertEqual(elements.compactMap(\.segment?.label), ["5h 2h00m", "7d 3d00h"])
+        XCTAssertEqual(MenuBarLayout.activeSegments(model, slot: .copilot, now: now).map(\.label), ["prem 14d00h"])
+        XCTAssertEqual(MenuBarLayout.nextCountdownChange(in: elements, after: now), now.addingTimeInterval(60))
+        let preview = MenuBarLayout.preview("b:codex:secondary", model, slot: .codex, now: now)
+        XCTAssertEqual(preview?.segment?.label, "7d 3d00h")
+        XCTAssertEqual(preview?.segment?.reset?.tint, ResetCaptionColors.tint(hex: "0088FF"))
     }
 
     func testSettingsChipsFollowTheCaptionMode() {

@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 import XCTest
 
-/// Renders menu-bar columns, the Settings field strips and the Claude Quota
+/// Renders menu-bar columns, the Settings field strips and the Quota
 /// Labels section to PNG files for a visual check, since this environment
 /// cannot capture the menu bar or the Settings window. Skipped unless
 /// `AGENTMETER_RENDER_DIR` names an output directory:
@@ -112,13 +112,22 @@ final class MenuBarPreviewRenderTests: XCTestCase {
         }
     }
 
-    func testRenderTheClaudeQuotaLabelsSection() throws {
-        let windows = [
-            QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 37, resetsAt: nil),
-            QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 12, resetsAt: nil),
-            QuotaWindow(id: "seven_day_fable", label: "Weekly (Fable)", usedPercent: 40, resetsAt: nil),
+    func testRenderTheQuotaLabelsSection() throws {
+        let now = Date()
+        let reset = now.addingTimeInterval(2 * 3600)
+        let quotas = [
+            QuotaSnapshot(provider: .claude, windows: [
+                QuotaWindow(id: "five_hour", label: "5-hour", usedPercent: 37, resetsAt: reset),
+                QuotaWindow(id: "seven_day", label: "Weekly", usedPercent: 12, resetsAt: reset),
+            ], source: .oauth, planType: nil, fetchedAt: now, note: nil),
+            QuotaSnapshot(provider: .codex, windows: [
+                QuotaWindow(id: "primary", label: "5-hour", usedPercent: 40, resetsAt: reset),
+            ], source: .appServer, planType: nil, fetchedAt: now, note: nil),
+            QuotaSnapshot(provider: .copilot, windows: [
+                QuotaWindow(id: "premium_interactions", label: "Premium", usedPercent: 40, resetsAt: reset),
+            ], source: .cli, planType: nil, fetchedAt: now, note: nil),
         ]
-        let custom = ResetCaptionColors.encode(["claude:seven_day_fable": "FF8C00"])
+        let custom = ResetCaptionColors.encode(["codex:primary": "FF8C00"])
         let cases: [(String, ResetCaptionMode, String)] = [
             ("period-custom", .window, custom),
             ("countdown-automatic", .countdown, ""),
@@ -127,7 +136,7 @@ final class MenuBarPreviewRenderTests: XCTestCase {
         for (name, mode, colors) in cases {
             for dark in [false, true] {
                 try render(Form {
-                    ClaudeQuotaLabelSettings(windows: windows, mode: .constant(mode), colors: .constant(colors))
+                    QuotaLabelSettings(quotas: quotas, mode: .constant(mode), colors: .constant(colors))
                 }.formStyle(.grouped).frame(width: 460), name: "labels-\(name)", dark: dark)
             }
         }

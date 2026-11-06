@@ -126,8 +126,8 @@ usage presentation, cached state, or Claude live-session integration.
   fill itself (yellow/red) instead of a separate dot.
 - `QuotaWindow.shortLabel` is menu-bar-only; `QuotaRow` shows the full label.
   Format all token counts with `TokenFormat.short`.
-- What a Claude quota column's caption says is a preference,
-  `ResetCaptionMode` (`menuBarResetCaptionMode`, Settings > Menu Bar > Claude
+- All providers share one preference for quota column captions,
+  `ResetCaptionMode` (`menuBarResetCaptionMode`, Settings > Menu Bar >
   Quota Labels, where `window` is titled Period): `window` (default; the
   `shortLabel` `5h` / `7d`, exactly what the app always showed, no countdown
   computed and no timer), `countdown` (the time left until that window's own
@@ -138,11 +138,11 @@ usage presentation, cached state, or Claude live-session integration.
   from the 5-hour or 7-day cycle. A window with no `resetsAt`, one already
   past, or one 100+ days out keeps its `shortLabel` in every mode, so the
   column never shows a negative or stale countdown. One-time credits (an
-  expiry, not a refill), Codex and Copilot keep their codes. The Settings chips
+  expiry, not a refill) keep their codes. The Settings chips
   (`MenuBarLayout.preview`) follow the mode and the colours as of when they are
   built; the mode and the colours are part of `MenuBarPreviewSignature`.
 - A countdown's colour is chosen per quota window (Settings > Menu Bar >
-  Claude Quota Labels, right under the mode, hidden while it is `window`; hiding
+  Quota Labels, right under the mode, hidden while it is `window`; hiding
   stores nothing) and keyed by the window's identity, `claude:seven_day_fable`
   (`ResetCaptionColors`, JSON under `menuBarResetColors`), never by a position
   in the layout and not inside `MenuBarItem`, which `commit()` rebuilds from

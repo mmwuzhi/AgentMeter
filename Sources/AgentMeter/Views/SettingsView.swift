@@ -32,8 +32,6 @@ struct MenuBarSettings: View {
     // reach the preview zones' rebuild signature or the chips keep the old fill
     // direction until some other display state changes.
     @AppStorage(QuotaDisplay.defaultsKey) private var quotaShowsUsed = false
-    // Edited in the Claude Quota Labels section, and the chips are drawn from
-    // them, so they go into the signature as well.
     @AppStorage(ResetCaptionMode.defaultsKey) private var resetCaptionMode = ResetCaptionMode.window
     @AppStorage(ResetCaptionColors.defaultsKey) private var resetColors = ""
     @State private var selectedSlot: MenuBarSlot = .codex
@@ -49,8 +47,8 @@ struct MenuBarSettings: View {
                 Text("Each visible provider becomes its own menu-bar icon with its own popover and fields.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            ClaudeQuotaLabelSettings(windows: model.claude.quota.windows,
-                                     mode: $resetCaptionMode, colors: $resetColors)
+            QuotaLabelSettings(quotas: [model.claude.quota, model.codex.quota, model.copilot.quota],
+                               mode: $resetCaptionMode, colors: $resetColors)
             Section("Provider Fields") {
                 Picker("Provider", selection: $selectedSlot) {
                     ForEach(MenuBarSlot.alphabetical) { slot in
@@ -81,14 +79,8 @@ enum MenuBarPreviewSignature {
     }
 }
 
-/// What a Claude quota column's caption says, and the colour of each quota's
-/// countdown, together: the colours mean nothing without a countdown, so they
-/// sit right under the mode and are hidden in Period mode, the default, where
-/// they would only be clutter. Hiding them stores nothing: a colour chosen
-/// earlier is kept and applies again with Countdown or Both.
-struct ClaudeQuotaLabelSettings: View {
-    /// Claude's quota windows; one colour row each.
-    let windows: [QuotaWindow]
+struct QuotaLabelSettings: View {
+    let quotas: [QuotaSnapshot]
     @Binding var mode: ResetCaptionMode
     /// `ResetCaptionColors` JSON, as stored.
     @Binding var colors: String
@@ -96,14 +88,14 @@ struct ClaudeQuotaLabelSettings: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Section("Claude Quota Labels") {
+        Section("Quota Labels") {
             Picker("Show", selection: $mode) {
                 ForEach(ResetCaptionMode.allCases) { mode in
                     Text(mode.title).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
-            Text("Period shows \(ResetCaptionMode.window.example), Countdown the time left until that quota resets (\(ResetCaptionMode.countdown.example)), Both the two together (\(ResetCaptionMode.both.example)).")
+            Text("Applies to all providers. Period shows the usual label (\(ResetCaptionMode.window.example)), Countdown shows the time until reset (\(ResetCaptionMode.countdown.example)), and Both shows them together (\(ResetCaptionMode.both.example)).")
                 .font(.caption).foregroundStyle(.secondary)
             countdownColors
         }
@@ -115,16 +107,17 @@ struct ClaudeQuotaLabelSettings: View {
         }
     }
 
-    /// One colour per quota window, so two weeklies can differ. The window's
-    /// identity keys it, so reordering the fields never moves a colour.
     @ViewBuilder
     private var countdownColors: some View {
-        let windows = windows.filter { $0.isOneTimeCredit != true }
-        if mode != .window, !windows.isEmpty {
-            ForEach(windows) { window in
-                let key = ResetCaptionColors.key(provider: .claude, windowID: window.id)
-                LabeledContent("\(window.label) countdown color") {
-                    colorControl(key: key, name: window.label)
+        let quotas = quotas.filter { $0.windows.contains { $0.isOneTimeCredit != true } }
+        if mode != .window, !quotas.isEmpty {
+            ForEach(quotas, id: \.provider) { quota in
+                ForEach(quota.windows.filter { $0.isOneTimeCredit != true }) { window in
+                    let key = ResetCaptionColors.key(provider: quota.provider, windowID: window.id)
+                    let name = "\(quota.provider.displayName) · \(window.label)"
+                    LabeledContent(name) {
+                        colorControl(key: key, name: name)
+                    }
                 }
             }
             Text("Automatic follows the menu bar's own text color, light or dark. A custom color tints only that quota's countdown, never its percentage.")

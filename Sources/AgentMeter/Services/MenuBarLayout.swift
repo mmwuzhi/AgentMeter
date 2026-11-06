@@ -344,13 +344,10 @@ enum MenuBarLayout {
 
     // MARK: - Resolution / rendering
 
-    /// The countdown to the window's own reset, as the caption of its column.
-    /// Claude only, and not for a one-time credit, whose date is an expiry
-    /// rather than a refill. A window with no usable reset (none stated,
-    /// already past) keeps its code, so it never reads as a stale countdown.
+    /// A one-time credit's date is an expiry, not a refill.
     private static func resetCaption(for window: QuotaWindow, provider: Provider, now: Date,
                                      mode: ResetCaptionMode) -> (label: String, caption: ResetCaption)? {
-        guard mode != .window, provider == .claude, window.isOneTimeCredit != true, let at = window.resetsAt,
+        guard mode != .window, window.isOneTimeCredit != true, let at = window.resetsAt,
               let countdown = ResetCountdown.text(until: at, now: now) else { return nil }
         let tint = ResetCaptionColors.tint(forKey: ResetCaptionColors.key(provider: provider, windowID: window.id))
         let caption = ResetCaption(windowName: window.label, at: at, countdown: countdown, tint: tint)

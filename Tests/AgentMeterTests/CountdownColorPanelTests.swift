@@ -2,7 +2,7 @@
 import AppKit
 import XCTest
 
-/// The colour panel behind Settings › Claude Quota Labels: only a colour the
+/// The colour panel behind Settings › Quota Labels: only a colour the
 /// user picks is stored, for the window the panel was opened for. Uses the
 /// real shared panel, never shown, and a defaults suite of its own.
 @MainActor

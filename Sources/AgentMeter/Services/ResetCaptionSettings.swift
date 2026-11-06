@@ -1,8 +1,6 @@
 import Foundation
 
-/// What a Claude quota column's caption says. `window` is what the app always
-/// showed and stays the default, so an upgrade changes nothing on screen. The
-/// raw values are stored; Settings calls `window` "Period".
+/// The raw values are stored; Settings calls `window` "Period".
 enum ResetCaptionMode: String, CaseIterable, Identifiable {
     case window
     case countdown
